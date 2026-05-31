@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Self-contained tests for lib/tuning.sh — no root. CPU topology is mocked
+# (sibling = c + total/2, the AMD SMT layout) so the isolation math can be
+# checked 1:1 against the operator's hand-built GRUB variants. System files are
+# written to temp paths; systemctl/sysctl/update-grub are mocked.
+#
+# Mocks shadow real commands and are invoked indirectly.
+# shellcheck disable=SC2329
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+export DEEPLOY_STATE_DIR="$WORK/state" DEEPLOY_BACKUP_DIR="$WORK/backups" DEEPLOY_LOG_DIR="$WORK/logs"
+export NONINTERACTIVE=1 DEEPLOY_COLOR=never
+
+# shellcheck source-path=SCRIPTDIR source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/tuning.sh
+source "$ROOT/lib/tuning.sh"
+
+PASS=0; FAIL=0
+check()      { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"
+    else FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: [%s]\n     actual:   [%s]\n' "$1" "$3" "$2"; fi; }
+check_true() { if eval "$2"; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; fi; }
+check_false(){ if eval "$2"; then FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; else PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; fi; }
+
+DRY_RUN=0 common_init
+
+# Parameterized AMD topology: physical core c (c < total/2) -> "c,c+total/2".
+MOCK_TOTAL=48
+_cpu_total()    { echo "$MOCK_TOTAL"; }
+_cpu_siblings() { local c=$1 half=$((MOCK_TOTAL/2)); if (( c < half )); then echo "$c,$((c+half))"; else echo "$((c-half)),$c"; fi; }
+systemctl()  { :; }
+sysctl()     { :; }
+update-grub(){ :; }
+
+iso() { MOCK_TOTAL=$1 _isolation_compute "$1" "$2" "$3"; }   # sets _ISO_SET / _ISO_IRQ
+
+echo "== list helpers =="
+check "_expand_list ranges" "$(_expand_list '1-2,10,25-26' | tr '\n' ' ')" "1 2 10 25 26 "
+check "_compress_ranges"    "$(printf '%s\n' 0 1 3 4 5 7 | _compress_ranges)" "0-1,3-5,7"
+
+echo "== isolation math vs the memo's hand-built variants =="
+iso 48 2 0;  check "POH2/48  set"  "$_ISO_SET" "2,26";              check "POH2/48  irq"  "$_ISO_IRQ" "0-1,3-25,27-47"
+iso 48 10 0; check "POH10/48 set"  "$_ISO_SET" "10,34";             check "POH10/48 irq"  "$_ISO_IRQ" "0-9,11-33,35-47"
+iso 32 2 0;  check "POH2/32  set"  "$_ISO_SET" "2,18";              check "POH2/32  irq"  "$_ISO_IRQ" "0-1,3-17,19-31"
+iso 32 10 0; check "POH10/32 set"  "$_ISO_SET" "10,26";             check "POH10/32 irq"  "$_ISO_IRQ" "0-9,11-25,27-31"
+iso 64 2 0;  check "POH2/64  set"  "$_ISO_SET" "2,34";              check "POH2/64  irq"  "$_ISO_IRQ" "0-1,3-33,35-63"
+iso 192 2 0; check "POH2/192 set"  "$_ISO_SET" "2,98";              check "POH2/192 irq"  "$_ISO_IRQ" "0-1,3-97,99-191"
+
+echo "== isolation math with reserved XDP cores (memo LAST_clear variants) =="
+iso 48 10 2; check "POH10+2xdp set" "$_ISO_SET" "1-2,10,25-26,34"; check "POH10+2xdp irq" "$_ISO_IRQ" "0,3-9,11-24,27-33,35-47"
+iso 48 10 4; check "POH10+4xdp set" "$_ISO_SET" "1-4,10,25-28,34"; check "POH10+4xdp irq" "$_ISO_IRQ" "0,5-9,11-24,29-33,35-47"
+
+echo "== _default_poh_core / _valid_cpu =="
+MOCK_TOTAL=48; check "default PoH core = 10 (prod)"        "$(_default_poh_core 48)" "10"
+MOCK_TOTAL=8;  check "small box falls back to 3rd primary" "$(_default_poh_core 8)"  "2"
+MOCK_TOTAL=48
+check_true  "valid cpu 2/48"  "_valid_cpu 2 48"
+check_false "cpu 48/48 invalid" "_valid_cpu 48 48"
+check_false "cpu abc invalid"   "_valid_cpu abc 48"
+
+echo "== DEFAULT layout: PoH=10 + XDP=2 (retransmit supported) -> 1-2,10,25-26,34 =="
+state_set retransmit_supported 1
+unset POH_CORE XDP_CORES_COUNT; MOCK_TOTAL=48
+tuning_resolve_config >/dev/null 2>&1
+check "default POH_CORE=10"       "$POH_CORE" "10"
+check "default XDP_CORES_COUNT=2" "$XDP_CORES_COUNT" "2"
+_isolation_compute "$TUNE_TOTAL" "$POH_CORE" "$XDP_CORES_COUNT"
+check "default isolated set"  "$_ISO_SET" "1-2,10,25-26,34"
+check "default irqaffinity"   "$_ISO_IRQ" "0,3-9,11-24,27-33,35-47"
+check "default xdp_cores"     "$_ISO_XDP" "1-2"
+# Without retransmit support, no XDP cores reserved -> simple 10,34.
+state_set retransmit_supported 0
+unset POH_CORE XDP_CORES_COUNT
+tuning_resolve_config >/dev/null 2>&1
+check "unsupported NIC: XDP=0" "$XDP_CORES_COUNT" "0"
+_isolation_compute "$TUNE_TOTAL" "$POH_CORE" "$XDP_CORES_COUNT"
+check "unsupported isolated set" "$_ISO_SET" "10,34"
+
+echo "== _grub_strip_managed preserves base, drops managed =="
+STRIP=$(_grub_strip_managed "quiet vendor ds=vendor console=tty0 amd_pstate=passive isolcpus=domain,managed_irq,2,26 nohz_full=2,26 rcu_nocbs=2,26 irqaffinity=0-1,3-25,27-47 nvme_core.default_ps_max_latency_us=0")
+check "strip keeps base only" "$STRIP" "quiet vendor ds=vendor console=tty0"
+
+echo "== tuning_grub: compose, preserve base, idempotent, state =="
+G="$WORK/grub"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=ttyS0,115200n8 console=tty0"' 'GRUB_TIMEOUT=5' >"$G"
+MOCK_TOTAL=48; TUNE_TOTAL=48; POH_CORE=2; XDP_CORES_COUNT=0; GRUB_FILE="$G"
+tuning_grub >/dev/null 2>&1
+EXPECT='GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=ttyS0,115200n8 console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,2,26 nohz_full=2,26 rcu_nocbs=2,26 irqaffinity=0-1,3-25,27-47"'
+check "grub line composed (base preserved + isolation appended)" "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$G")" "$EXPECT"
+check "unrelated grub lines untouched" "$(grep -c '^GRUB_TIMEOUT=5' "$G")" "1"
+BEFORE=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$G")
+tuning_grub >/dev/null 2>&1   # re-run
+check "grub idempotent (strip+readd = same)" "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$G")" "$BEFORE"
+check "reboot_required recorded" "$(state_get reboot_required)" "1"
+check "isolated_set recorded"    "$(state_get isolated_set)" "2,26"
+check "irqaffinity recorded"     "$(state_get irqaffinity)" "0-1,3-25,27-47"
+
+echo "== POH change 2 -> 10 re-run: exactly one isolcpus, new value, no concat =="
+GC="$WORK/grubchg"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"' >"$GC"
+MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=0; GRUB_FILE="$GC"
+POH_CORE=2;  tuning_grub >/dev/null 2>&1
+POH_CORE=10; tuning_grub >/dev/null 2>&1
+GLINE=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GC")
+check "exactly one isolcpus= token"     "$(grep -o 'isolcpus=' <<<"$GLINE" | wc -l | tr -d ' ')"   "1"
+check "exactly one irqaffinity= token"  "$(grep -o 'irqaffinity=' <<<"$GLINE" | wc -l | tr -d ' ')" "1"
+check "isolcpus has NEW value 10,34"    "$(grep -c 'isolcpus=domain,managed_irq,10,34' "$GC")"      "1"
+check "old value 2,26 fully gone"       "$(grep -c '2,26' "$GC")"                                   "0"
+
+echo "== writers produce expected content =="
+PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
+check "perf script governor"   "$(grep -c 'scaling_governor' "$WORK/perf.sh")" "1"
+check_true "perf script +x"    "[[ -x \"$WORK/perf.sh\" ]]"
+check "perf service oneshot"   "$(grep -c 'Type=oneshot' "$WORK/perf.service")" "1"
+SYSCTL_FILE="$WORK/21.conf" SYSCTL_SERVICE_FILE="$WORK/sysctl.service" tuning_sysctl >/dev/null 2>&1
+check "sysctl udp buffer"      "$(grep -c 'net.core.rmem_max=134217728' "$WORK/21.conf")" "1"
+check "sysctl congestion"      "$(grep -c 'tcp_congestion_control=westwood' "$WORK/21.conf")" "1"
+check "sysctl nr_open"         "$(grep -c 'fs.nr_open=2000000' "$WORK/21.conf")" "1"
+printf '[Manager]\n' >"$WORK/system.conf"
+LIMITS_FILE="$WORK/limits.conf" SYSTEM_CONF="$WORK/system.conf" tuning_limits >/dev/null 2>&1
+check "limits nofile"          "$(grep -c 'nofile 2000000' "$WORK/limits.conf")" "1"
+check "system.conf nofile"     "$(grep -c 'DefaultLimitNOFILE=2000000' "$WORK/system.conf")" "1"
+LIMITS_FILE="$WORK/limits.conf" SYSTEM_CONF="$WORK/system.conf" tuning_limits >/dev/null 2>&1   # idempotent
+check "system.conf nofile not duplicated" "$(grep -c 'DefaultLimitNOFILE' "$WORK/system.conf")" "1"
+
+echo ""
+echo "==================================="
+printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
+echo "==================================="
+[[ "$FAIL" -eq 0 ]]

@@ -1,0 +1,59 @@
+# ============================================================================
+# DeePloy example config  —  deeploy.conf
+# ----------------------------------------------------------------------------
+# Copy to deeploy.conf and edit, then:   deeploy.sh install --config deeploy.conf
+# (or let `deeploy install` prompt you, then `deeploy export` writes this file).
+#
+# THIS FILE HOLDS PATHS, PUBKEYS, AND SETTINGS ONLY — NEVER KEY MATERIAL.
+# The real staked keypair is placed MANUALLY and is never stored here.
+# All values below are PLACEHOLDERS — replace them for your host.
+# ============================================================================
+
+# --- Host ---
+NODE_NAME="my-validator"               # label (e.g. metrics/telegraf hostname)
+
+# --- Network and SSH ---
+SSH_PORT="22"                          # a non-default port reduces noise/scans
+
+# --- CPU tuning (PoH core is the single source of truth) ---
+POH_CORE="10"                          # isolated core for PoH (default: auto-detect)
+XDP_CORES_COUNT="2"                    # extra cores for XDP retransmit (0 = none)
+XDP_CORES="1-2"                        # computed: the reserved XDP cores
+ISOLATED_SET="1-2,10,25-26,34"         # computed by tuning; informational
+
+# --- NIC / retransmit (detected in preflight) ---
+NIC_DRIVER="mlx5_core"                 # mlx5_core (XDP+ZC) | bnxt_en (XDP, no ZC)
+RETRANSMIT_SUPPORTED="1"               # 1 if the driver supports XDP retransmit
+RETRANSMIT_ZERO_COPY="1"               # 1 if it supports the zero-copy flag (mlx5)
+
+# --- Disk (IDEAL: accounts and ledger on SEPARATE NVMe) ---
+DISK_LAYOUT="two-nvme"                 # two-nvme | root (single disk / RAID = suboptimal)
+LEDGER_DISK="/dev/nvme0n1"             # data disk for the ledger (will be WIPED)
+ACCOUNTS_DISK="/dev/nvme1n1"           # data disk for accounts (will be WIPED)
+SOLANA_HOME="/root/solana"
+LEDGER_PATH="/root/solana/ledger"
+ACCOUNTS_PATH="/mnt/accounts/solana/accounts"
+SNAPSHOTS_PATH="/root/solana/snapshots"   # rides with the LEDGER disk (I/O isolation)
+
+# --- Build (jito-solana from source) ---
+JITO_TAG="v4.0.0-jito"                 # see github.com/jito-foundation/jito-solana/releases
+
+# --- Keys: PATHS ONLY (no key material). Vote is a PUBLIC pubkey. ---
+FAKE_IDENTITY_KEYPAIR="/root/solana/mvkfake/mainnet-validator-keypair.json"
+UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"
+STAKED_KEYPAIR="/root/solana/mainnet-validator-keypair.json"   # PATH only; placed by YOU, manually
+VOTE_ACCOUNT_PUBKEY="YourVoteAccountPubkey22222222222222222222222"   # REQUIRED: replace with yours
+
+# --- MEV (BAM by default; commission tied to mode) ---
+MEV_MODE="bam"                         # bam (recommended)
+BAM_URL="http://frankfurt.mainnet.bam.jito.wtf"               # EXAMPLE region — preflight scores the closest
+BLOCK_ENGINE_URL="https://frankfurt.mainnet.block-engine.jito.wtf"   # EXAMPLE region
+SHRED_RECEIVER_ADDRESS="<shred-ip>:1002"   # for your block-engine region — see docs.jito.wtf/lowlatencytxnsend
+COMMISSION_BPS="0"                     # 0 is required by many pools (you are prompted at install)
+
+# --- DoubleZero (optional) ---
+DZ_ENABLED="false"                     # true to set up the DoubleZero tunnel
+DZ_ENV="mainnet-beta"
+DZ_MULTICAST="false"                   # true appends the DZ multicast shred receiver
+DZ_CLIENT_IP="203.0.113.7"             # EXAMPLE (RFC 5737 doc IP); your server's public IP (auto-detected)
+DZ_KEYPAIR="/root/solana/dz-keypair.json"   # PATH only (often carried over on a migration)

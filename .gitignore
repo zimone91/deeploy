@@ -1,0 +1,29 @@
+# ============================================================================
+# DeePloy .gitignore — keep the public repo clean of secrets and host state.
+# The private build overlay lives under private/ and is NEVER committed.
+# ============================================================================
+
+# Private build overlay (optional custom patches + their threshold) — the only
+# path by which a non-vanilla build is produced. Excluded so it cannot leak.
+private/
+*.patch
+
+# Real configs and key material (only the .example is tracked)
+deeploy.conf
+*.conf
+!deeploy.conf.example
+*-keypair.json
+unstaked-identity.json
+id.json
+dz-keypair*.json
+keys/
+
+# Runtime state / backups / logs (also live under /opt/deeploy at runtime)
+state/
+backups/
+logs/
+*.log
+
+# Editor / OS noise
+*.swp
+.DS_Store
