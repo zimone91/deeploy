@@ -12,6 +12,18 @@ and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
 ### Fixed
+- **DoubleZero migration no longer silently generates a new key.** `dz_keypair`
+  conflated "key file exists" with "is a migration": if the operator hadn't
+  pre-placed their production dz-keypair, DeePloy generated a brand-new key
+  (breaking the migration), with no pause to place the real key or to shut
+  DoubleZero down on the old server. Now the mode is asked explicitly (default
+  *migration*). Migration **blocks** until the existing key is placed at
+  `$DZ_KEYPAIR` and validates as a readable Solana keypair (re-prompts in a loop
+  if absent/invalid), then gates on confirming the old server is
+  disconnected/stopped. *Fresh* refuses to overwrite an existing key. A
+  non-interactive run that needs a manually-placed key fails with a clear pointer
+  instead of hanging or generating the wrong key. (`DZ_KEY_MODE=migration|fresh`
+  overrides the prompt for automation/tests.)
 - **Environment under systemd is now resolved explicitly (cargo PATH + `$HOME`).**
   Two bugs of one class — env vars present interactively but absent under systemd:
   - *cargo PATH:* `rustup` installs `cargo`/`rustc` to `~/.cargo/bin`; Phase 4

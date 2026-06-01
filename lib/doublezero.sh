@@ -74,10 +74,16 @@ dz_install() {
 }
 
 # --- dz keypair --------------------------------------------------------------
-# A deploy is OFTEN a migration from another server, so the DZ key is carried
-# over. Default assumption: the key already exists. Only generate on a genuinely
-# fresh setup. If it exists, treat it as a migration and make the operator shut
-# DoubleZero down on the OLD server first (same DZ key on two boxes = conflict).
+# A deploy is USUALLY a migration: the operator carries the SAME dz-keypair over
+# from another server. That key is production material DeePloy never invents — it
+# must be placed MANUALLY — and DoubleZero must be shut down on the OLD server
+# first (the same key connected on two boxes at once conflicts). Only a genuinely
+# fresh setup generates a new key. The mode is asked EXPLICITLY (default
+# migration) so an unplaced key can never silently become a brand-new identity
+# (which would break the migration). DZ_KEY_MODE overrides the prompt for
+# reproducible/--config runs and tests.
+DZ_KEY_MODE="${DZ_KEY_MODE:-}"          # "migration" | "fresh"; empty => ask (default migration)
+
 _dz_migration_warning() {
     warn "MIGRATION: this DZ key may still be ACTIVE on another server."
     warn "Two servers connected on the SAME DoubleZero key at once WILL conflict."
@@ -87,19 +93,61 @@ _dz_migration_warning() {
     info "    sudo systemctl disable doublezerod"
 }
 
+# Block until a VALID existing keypair is present at $DZ_KEYPAIR. The operator
+# places it by hand (in another shell), then continues; the loop re-checks. A
+# non-interactive run can't place a file, so it FAILS with a clear pointer rather
+# than hanging or silently generating a wrong key.
+_dz_await_migrated_key() {
+    local pk
+    while true; do
+        if [[ -f "$DZ_KEYPAIR" ]]; then
+            pk="$(_dz_pubkey "$DZ_KEYPAIR")"
+            [[ -n "$pk" ]] && { ok "dz-keypair present and valid (${pk}) — using it (migration; never regenerated)"; return 0; }
+            warn "File at ${DZ_KEYPAIR} is not a readable Solana keypair (solana-keygen pubkey failed)."
+        else
+            warn "No dz-keypair found at ${DZ_KEYPAIR}."
+        fi
+        if ! is_interactive; then
+            fail "Migration needs your EXISTING dz-keypair at ${DZ_KEYPAIR} (the SAME key active on your old DoubleZero server), but it is absent/invalid and this run is non-interactive. Place it (chmod 600) and re-run 'deeploy.sh install --only 7' interactively (or set DZ_KEY_MODE=fresh to generate a new key)."
+        fi
+        info "Place your existing dz-keypair at:  ${DZ_KEYPAIR}   (chmod 600)"
+        info "  — the SAME key currently active on your OLD DoubleZero server."
+        info "  In another shell: copy the keypair JSON to that path, then return here."
+        ask "Press Enter once the key is in place" ""    # blocking; the loop re-checks
+    done
+}
+
+_dz_keypair_migration() {
+    _dz_await_migrated_key                  # waits for a valid placed key (or fails non-interactively)
+    _dz_migration_warning
+    if ! confirm "Confirm the OLD server is disconnected and doublezerod is stopped" N; then
+        fail "Shut DoubleZero down on the old server first (same DZ key on two boxes = conflict), then re-run"
+    fi
+}
+
+_dz_keypair_fresh() {
+    # Refuse to clobber an existing key on a 'fresh' choice — it may be the
+    # operator's production DZ key (mirrors disk.sh / symlink no-clobber).
+    if [[ -f "$DZ_KEYPAIR" ]]; then
+        fail "A key already exists at ${DZ_KEYPAIR} but you chose to generate a FRESH one. Refusing to overwrite it (it may be your production DZ key). Move it aside, or choose migration, then re-run."
+    fi
+    warn "Generating a NEW dz-keypair at ${DZ_KEYPAIR} (fresh setup, not a migration)"
+    run mkdir -p "$(dirname "$DZ_KEYPAIR")"
+    run "$SOLANA_BIN/solana-keygen" new --no-bip39-passphrase --silent -o "$DZ_KEYPAIR"
+}
+
 dz_keypair() {
     step "DoubleZero keypair"
-    if [[ -f "$DZ_KEYPAIR" ]]; then
-        ok "dz-keypair present ($(_dz_pubkey "$DZ_KEYPAIR")) — using it (assumed migration; not regenerated)"
-        _dz_migration_warning
-        if ! confirm "Confirm the OLD server is disconnected and doublezerod is stopped" N; then
-            fail "Shut DoubleZero down on the old server first (same DZ key on two boxes = conflict), then re-run"
-        fi
-    else
-        warn "No dz-keypair at ${DZ_KEYPAIR} — generating a NEW one (fresh setup, not a migration)"
-        run mkdir -p "$(dirname "$DZ_KEYPAIR")"
-        run "$SOLANA_BIN/solana-keygen" new --no-bip39-passphrase --silent -o "$DZ_KEYPAIR"
+    local mode="${DZ_KEY_MODE:-}"
+    if [[ -z "$mode" ]]; then
+        ask_choice "DoubleZero key — migrate your existing key from another server, or generate a fresh one?" "migration" migration fresh
+        mode="$REPLY"
     fi
+    case "$mode" in
+        migration) _dz_keypair_migration ;;
+        fresh)     _dz_keypair_fresh ;;
+        *)         fail "Unknown DZ_KEY_MODE '${mode}' (expected migration|fresh)" ;;
+    esac
     run mkdir -p "$DZ_CONFIG_DIR"
     run cp "$DZ_KEYPAIR" "$DZ_CONFIG_DIR/id.json"
 }

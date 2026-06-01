@@ -72,8 +72,9 @@ check_false "not an ip"       "_dz_valid_ip nope"
 check "detect from ip route src" "$(_dz_detect_public_ip)" "203.0.113.7"
 
 echo "== full deploy flow: ORDER (GRE before connect, BGP after) =="
-: >"$CALLS"
-DZ_CLIENT_IP=203.0.113.7 DZ_MULTICAST=true ASSUME_YES=1 doublezero_run >/dev/null 2>&1
+: >"$CALLS"; rm -f "$DZ_KEYPAIR"
+# This block exercises ordering/UFW/multicast, not the migration gate -> fresh key.
+DZ_KEY_MODE=fresh DZ_CLIENT_IP=203.0.113.7 DZ_MULTICAST=true ASSUME_YES=1 doublezero_run >/dev/null 2>&1
 GRELN=$(grep -n 'ufw allow proto gre' "$CALLS" | head -1 | cut -d: -f1)
 CONLN=$(grep -n 'doublezero connect ibrl' "$CALLS" | head -1 | cut -d: -f1)
 BGPLN=$(grep -n 'ufw allow in on doublezero0' "$CALLS" | head -1 | cut -d: -f1)
@@ -98,24 +99,84 @@ check "no validator-deposit at deploy" "$(grep -c 'validator-deposit' "$CALLS")"
 
 echo "== multicast OFF -> no publish =="
 : >"$CALLS"
-DZ_CLIENT_IP=203.0.113.7 DZ_MULTICAST=false ASSUME_YES=1 doublezero_run >/dev/null 2>&1
+# key already present from the prior flow -> migration auto-passes (valid + ASSUME_YES); fresh would refuse to clobber
+DZ_KEY_MODE=migration DZ_CLIENT_IP=203.0.113.7 DZ_MULTICAST=false ASSUME_YES=1 doublezero_run >/dev/null 2>&1
 check "no multicast publish when off" "$(grep -c 'connect multicast' "$CALLS")" "0"
 
-echo "== dz_keypair: fresh setup generates =="
+echo "== dz_keypair: FRESH mode generates (no key present) =="
 : >"$CALLS"; rm -f "$DZ_KEYPAIR"; : >"$KEYGENLOG"
 DZ_CLIENT_IP=203.0.113.7 dz_resolve_config >/dev/null 2>&1
-dz_keypair >/dev/null 2>&1
+DZ_KEY_MODE=fresh dz_keypair >/dev/null 2>&1
 check_true "fresh: dz-keypair generated" "[[ -f \"$DZ_KEYPAIR\" ]]"
 check "fresh: keygen invoked once"       "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "1"
 
-echo "== dz_keypair: migration (key present) = default, warns + gates on confirm =="
-MOUT=$(ASSUME_YES=1 dz_keypair 2>&1)
+echo "== dz_keypair: FRESH refuses to clobber an existing key =="
+: >"$KEYGENLOG"   # key now exists from the previous block
+( DZ_KEY_MODE=fresh dz_keypair ) >/dev/null 2>&1
+check "fresh + existing key -> fail (no clobber)" "$?" "1"
+check "fresh refusal: keygen NOT invoked"         "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
+
+echo "== dz_keypair: MIGRATION with key already present -> warns + gates, never regenerates =="
+: >"$KEYGENLOG"
+MOUT=$(DZ_KEY_MODE=migration ASSUME_YES=1 dz_keypair 2>&1)
 check "migration: disconnect shown"     "$(grep -c 'doublezero disconnect' <<<"$MOUT")" "1"
 check "migration: stop doublezerod"     "$(grep -c 'systemctl stop doublezerod' <<<"$MOUT")" "1"
 check "migration: disable doublezerod"  "$(grep -c 'systemctl disable doublezerod' <<<"$MOUT")" "1"
-check "migration: NOT regenerated"      "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "1"
-( dz_keypair ) >/dev/null 2>&1   # ASSUME_YES=0, non-interactive -> confirm N -> fail
-check "migration decline -> fail"       "$?" "1"
+check "migration: NOT regenerated"      "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
+( DZ_KEY_MODE=migration dz_keypair ) >/dev/null 2>&1   # ASSUME_YES=0, non-interactive -> confirm N -> fail
+check "migration decline old-server -> fail" "$?" "1"
+
+echo "== dz_keypair: MIGRATION key-absent-then-placed (interactive wait loop) =="
+rm -f "$DZ_KEYPAIR"; : >"$KEYGENLOG"
+# Simulate the operator: first 'ask' fires while the key is missing; our stubbed
+# ask PLACES the key (as if done in another shell) then returns, so the loop's
+# re-check finds it. confirm() returns 0 (old server stopped). Force interactive.
+ask()     { printf '[7,7,7]' >"$DZ_KEYPAIR"; REPLY=""; }   # places key on the blocking prompt
+confirm() { return 0; }
+WAITOUT=$( NONINTERACTIVE=0 DZ_KEY_MODE=migration dz_keypair 2>&1 ); WRC=$?
+check "migration wait: succeeds once key placed" "$WRC" "0"
+check "migration wait: 'Place your existing' shown" "$(grep -c 'Place your existing dz-keypair' <<<"$WAITOUT")" "1"
+check "migration wait: key NOT regenerated"      "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
+check_true "migration wait: key now present"     "[[ -f \"$DZ_KEYPAIR\" ]]"
+unset -f ask confirm
+
+echo "== dz_keypair: MIGRATION rejects an INVALID placed key, then accepts a valid one =="
+: >"$KEYGENLOG"
+printf 'not-a-keypair' >"$DZ_KEYPAIR"     # invalid: solana-keygen pubkey fails on it
+# Mock keygen pubkey to fail for THIS garbage file but succeed once it's replaced.
+cat >"$WORK/bin/solana-keygen" <<'EOF'
+#!/bin/bash
+case "$1" in
+  pubkey) if grep -q 'not-a-keypair' "$2" 2>/dev/null; then exit 1; fi
+          echo "DZaddr1111111111111111111111111111111111111" ;;
+  new) prev=""; out=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; echo "[1,2,3]" >"$out"; echo "new $out" >>"$KEYGENLOG" ;;
+esac
+EOF
+chmod +x "$WORK/bin/solana-keygen"
+ask()     { printf '[8,8,8]' >"$DZ_KEYPAIR"; REPLY=""; }   # replaces garbage with a valid key
+confirm() { return 0; }
+IOUT=$( NONINTERACTIVE=0 DZ_KEY_MODE=migration dz_keypair 2>&1 ); IRC=$?
+check "migration: invalid key rejected then valid accepted" "$IRC" "0"
+check "migration: 'not a readable Solana keypair' warned"   "$(grep -c 'not a readable Solana keypair' <<<"$IOUT")" "1"
+unset -f ask confirm
+# restore the standard keygen mock for any later use
+cat >"$WORK/bin/solana-keygen" <<'EOF'
+#!/bin/bash
+case "$1" in
+  new) prev=""; out=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; echo "[1,2,3]" >"$out"; echo "new $out" >>"$KEYGENLOG" ;;
+  pubkey) case "$2" in *dz-keypair*) echo "DZaddr1111111111111111111111111111111111111";;
+                       *mainnet-validator-keypair*) echo "Stakedid111111111111111111111111111111111";;
+                       *) echo "Other11111111111111111111111111111111111111";; esac ;;
+esac
+EOF
+chmod +x "$WORK/bin/solana-keygen"
+
+echo "== dz_keypair: MIGRATION non-interactive + key absent -> FAIL (no hang, no generate) =="
+rm -f "$DZ_KEYPAIR"; : >"$KEYGENLOG"
+( NONINTERACTIVE=1 DZ_KEY_MODE=migration dz_keypair ) >/dev/null 2>&1
+check "migration non-interactive absent-key -> fail" "$?" "1"
+check "migration non-interactive: did NOT generate"  "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
+check_false "migration non-interactive: no key created" "[[ -f \"$DZ_KEYPAIR\" ]]"
 
 echo "== dz-finalize: gated on staked key; passport ONLY (no deposit) =="
 : >"$CALLS"
