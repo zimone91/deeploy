@@ -125,6 +125,25 @@ check "RUSTFLAGS has lld linker arg"  "$(grep -c -- '-Clink-arg=-fuse-ld=lld' <<
 check "RUSTFLAGS has target-cpu"      "$(grep -c -- '-Ctarget-cpu=native' <<<"$BUILDCMD")"         "1"
 check "trailing . build context"      "$(grep -c -- 'cargo-install-all.sh .* \.$' <<<"$BUILDCMD")" "1"
 
+echo "== toolchain_rust: file-form rustup install passes ONLY -y to rustup-init =="
+# Real-box regression: the installer is downloaded to a FILE then run as
+# `sh "$inst" <args>`, so args after the filename go to rustup-init itself.
+# The old `sh "$inst" -s -- -y` made rustup-init choke ("unexpected argument '-s'")
+# because -s is sh's pipe-form stdin flag. Capture the exact sh invocation.
+RUSTLOG="$WORK/rustlog"; : >"$RUSTLOG"
+have()    { [[ "$1" == rustup ]] && return 1; command -v "$1" >/dev/null 2>&1; }  # force the install path
+curl()    { local o; while [[ $# -gt 0 ]]; do [[ "$1" == -o ]] && { o="$2"; }; shift; done; [[ -n "${o:-}" ]] && printf '#fake rustup-init\n' >"$o"; return 0; }
+sh()      { printf 'sh %s\n' "$*" >>"$RUSTLOG"; }                                # record argv, run nothing
+rustup()  { echo "rustup $*" >>"$CALLS"; }
+HOME="$WORK/fakehome"; mkdir -p "$HOME"
+toolchain_rust >/dev/null 2>&1
+RUSTCALL=$(grep '^sh ' "$RUSTLOG" | head -1)
+check "rustup install passes -y"                 "$(grep -c -- '-y' <<<"$RUSTCALL")"      "1"
+check "NO bogus -s flag (the bug)"               "$(grep -c -- ' -s' <<<"$RUSTCALL")"     "0"
+check "NO leading -- forwarded to rustup-init"   "$(grep -c -- 'init -- -y\|fake -- ' <<<"$RUSTCALL")" "0"
+check "default toolchain set to stable"          "$(grep -c 'rustup default stable' "$CALLS")" "1"
+unset -f have curl sh rustup
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

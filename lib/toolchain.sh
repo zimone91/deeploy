@@ -74,7 +74,12 @@ toolchain_rust() {
     else
         local inst; inst=$(_mktemp)
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$inst"
-        sh "$inst" -s -- -y
+        # File form: args after the script go to rustup-init itself. Pass ONLY -y
+        # (non-interactive; default toolchain = stable). NOT `-s` (that is sh's
+        # read-from-stdin flag, for the `curl | sh -s -- -y` PIPE form) and NOT a
+        # leading `--` (in the pipe form `sh` eats the `--`; forwarding it here
+        # would make rustup-init treat -y as an unexpected positional).
+        sh "$inst" -y
         rm -f "$inst"
         # shellcheck disable=SC1091
         [[ -r "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
