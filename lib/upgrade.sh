@@ -26,7 +26,7 @@ STAKED_RESTART=0
 _upgrade_fetch_tags() {
     local repo=$1
     curl -s -m 15 "https://api.github.com/repos/${repo}/releases?per_page=15" 2>/dev/null \
-        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/'
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' || true
 }
 
 upgrade_check_releases() {
@@ -48,9 +48,9 @@ upgrade_check_releases() {
 # --- staked-identity guard (mockable probes) ---------------------------------
 _upgrade_running_identity() {
     local pid idfile
-    pid=$(pgrep -f '^agave-validator --identity' 2>/dev/null | head -1)
+    pid=$(pgrep -f '^agave-validator --identity' 2>/dev/null | head -1 || true)
     [[ -z "$pid" ]] && return 0
-    idfile=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed -nE 's/.*--identity[[:space:]=]+([^[:space:]]+).*/\1/p' | head -1)
+    idfile=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed -nE 's/.*--identity[[:space:]=]+([^[:space:]]+).*/\1/p' | head -1 || true)
     [[ -n "$idfile" ]] && "$SOLANA_BIN/solana-keygen" pubkey "$idfile" 2>/dev/null
 }
 _upgrade_staked_pubkey() {
@@ -61,12 +61,12 @@ _upgrade_staked_pubkey() {
 upgrade_identity_guard() {
     step "Identity check before rebuild/restart"
     local running staked
-    running=$(_upgrade_running_identity)
+    running=$(_upgrade_running_identity || true)
     if [[ -z "$running" ]]; then
         info "Validator not running (or identity undetectable) — no staked-restart risk"
         return 0
     fi
-    staked=$(_upgrade_staked_pubkey)
+    staked=$(_upgrade_staked_pubkey || true)
     if [[ -n "$staked" && "$running" == "$staked" ]]; then
         warn "The validator is running on the STAKED identity: ${running}"
         warn "Rebuilding + restarting it WILL skip leader slots during the restart."

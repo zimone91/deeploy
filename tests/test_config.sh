@@ -62,6 +62,7 @@ check "NO key material (JSON array)" "$(grep -cE '\[[0-9]+,[0-9]+' "$CONFIG_FILE
 check "NO .json contents leaked"    "$(grep -cE '^\[|,[0-9]+,[0-9]+,' "$CONFIG_FILE")" "0"
 # shellcheck disable=SC2012  # ls is fine here; portable perm read for the test
 check "chmod 600"                   "$(ls -l "$CONFIG_FILE" | cut -c1-10)" "-rw-------"
+check "DeePloy version stamped in header" "$(grep -c '# Created with DeePloy v' "$CONFIG_FILE")" "1"
 
 echo "== validate: rejects key material / missing keys / bad pubkey =="
 cp "$CONFIG_FILE" "$WORK/mat.conf"; echo 'LEAK="[174,12,99]"' >>"$WORK/mat.conf"
@@ -95,6 +96,12 @@ RESCORE=1 config_import >/dev/null 2>&1
 check "--rescore DID call region_recommend"  "$(wc -l <"$RC" | tr -d ' ')" "1"
 check "--rescore overrides bam_url"          "$(state_get bam_url)" "http://ny.mainnet.bam.jito.wtf"
 check "--rescore overrides shred"            "$(state_get shred_receiver)" "141.98.216.96:1002"
+
+echo "== export stamps the RECORDED build version (state, not just the live constant) =="
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+state_set deeploy_version 0.9.9
+CONFIG_FILE="$WORK/ver.conf" config_export >/dev/null 2>&1
+check "export header shows recorded version 0.9.9" "$(grep -c '# Created with DeePloy v0.9.9' "$WORK/ver.conf")" "1"
 
 echo ""
 echo "==================================="

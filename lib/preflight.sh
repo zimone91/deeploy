@@ -69,7 +69,7 @@ _pf_check_platform() {
 _pf_check_cpu() {
     local cpuinfo="${PROC_CPUINFO:-/proc/cpuinfo}" logical model
     if have nproc; then logical=$(nproc 2>/dev/null); else logical=$(grep -c '^processor' "$cpuinfo" 2>/dev/null || echo 0); fi
-    model=$(grep -m1 '^model name' "$cpuinfo" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//')
+    model=$(grep -m1 '^model name' "$cpuinfo" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//' || true)
     info "CPU: ${model:-unknown} (${logical:-0} logical cores)"
     if grep -qm1 '\baes\b' "$cpuinfo" 2>/dev/null; then pf_ok "AES-NI present"
     else pf_warn "AES-NI not detected — Solana signature verification will be slow"; fi
@@ -92,32 +92,77 @@ _pf_check_memory() {
     return 0
 }
 
-# --- storage: enumerate disks, count data disks, RAID/LVM hints --------------
+# Resolve the base disk(s) that hold the system. RAID-aware: when / is on an md
+# device, the array's member disks ARE the system disks (so they aren't
+# miscounted as data candidates — the old base-name match turned /dev/md0 into
+# "md" and counted the real members sda/sdb as data). Otherwise the single root
+# disk. Echoes base disk names, one per line.
+_pf_resolve_system_disks() {                      # <rootsrc>
+    local rootsrc=$1 mdstat="${PROC_MDSTAT:-/proc/mdstat}" md name _ rest tok
+    local -a toks
+    case "$rootsrc" in
+        /dev/md*)
+            md="${rootsrc##*/}"; md="${md%%p[0-9]*}"
+            [[ -f "$mdstat" ]] || return 0
+            while read -r name _ rest; do
+                [[ "$name" == "$md" ]] || continue
+                toks=(); read -ra toks <<<"$rest"
+                for tok in ${toks[@]+"${toks[@]}"}; do
+                    case "$tok" in *\[*\]*) printf '%s\n' "$(_pf_base_disk "${tok%%\[*}")";; esac
+                done
+            done < "$mdstat"
+            ;;
+        ?*) printf '%s\n' "$(_pf_base_disk "$rootsrc")" ;;
+    esac
+    return 0   # set -e guard: never return a while-read EOF status to a caller
+}
+
+# --- storage: enumerate disks, count eligible NVMe data disks, RAID/LVM ------
 _pf_check_storage() {
     if ! have lsblk; then pf_warn "lsblk absent — storage audit skipped"; return 0; fi
-    local rootsrc rootdisk count=0 name size type rota model
+    local rootsrc name size type rota model count=0 nvme_data=0 d
     if have findmnt; then rootsrc=$(findmnt -no SOURCE / 2>/dev/null); fi
-    rootdisk=$(_pf_base_disk "${rootsrc:-}")
-    info "Root filesystem: ${rootsrc:-?}  (system disk: ${rootdisk:-?})"
+    local sys_on_md=0; case "${rootsrc:-}" in /dev/md*) sys_on_md=1;; esac
+    # System disk(s) — RAID-aware, so md members aren't miscounted as data.
+    local sysset=" "
+    while read -r d; do [[ -n "$d" ]] && sysset+="$d "; done < <(_pf_resolve_system_disks "${rootsrc:-}")
+    if [[ "$sys_on_md" == "1" ]]; then
+        info "Root filesystem: ${rootsrc:-?}  (system on software RAID; members:${sysset% })"
+    else
+        info "Root filesystem: ${rootsrc:-?}  (system disk:${sysset% })"
+    fi
     while read -r name size type rota model; do
         [[ "$type" == "disk" ]] || continue
-        if [[ "$name" == "$rootdisk" ]]; then
+        if [[ "$sysset" == *" $name "* ]]; then
             info "  /dev/$name  $size  [system]  ${model:-}"
         else
             count=$((count + 1))
-            info "  /dev/$name  $size  rota=$rota  [data candidate]  ${model:-}"
+            if [[ "$name" == nvme* ]]; then
+                nvme_data=$((nvme_data + 1)); info "  /dev/$name  $size  rota=$rota  [data, NVMe]  ${model:-}"
+            else
+                info "  /dev/$name  $size  rota=$rota  [data, NOT NVMe — ineligible for accounts/ledger]  ${model:-}"
+            fi
         fi
     done < <(lsblk -dn -o NAME,SIZE,TYPE,ROTA,MODEL 2>/dev/null)
     state_set data_disk_count "$count"
-    if [[ "$count" -lt 2 ]]; then
-        pf_warn "$count data disk(s) besides system — Phase 3 recommends 2 (accounts/ledger on separate disks)"
-    else pf_ok "$count data disks available besides system"; fi
-
+    # The recommendation tracks Phase 3 eligibility (separate NVMe), not raw count.
+    if [[ "$nvme_data" -lt 2 ]]; then
+        pf_warn "$nvme_data eligible NVMe data disk(s) besides system — Phase 3 wants 2 (accounts/ledger on separate NVMe); fewer falls back to a single-volume layout"
+    else
+        pf_ok "$nvme_data eligible NVMe data disks (accounts/ledger can be isolated)"
+    fi
+    # RAID: a SYSTEM array is normal (its members are excluded above); only a
+    # DATA-disk array changes Phase 3 (it uses the existing array as one volume,
+    # never creating or wiping arrays). This matches what Phase 3 actually does.
     local mdstat="${PROC_MDSTAT:-/proc/mdstat}"
     if [[ -f "$mdstat" ]] && grep -qE '^md[0-9]' "$mdstat" 2>/dev/null; then
-        pf_warn "Software RAID (md) detected — Phase 3 will use a single-volume root layout"
+        if [[ "$sys_on_md" == "1" ]]; then
+            pf_ok "Software RAID is the SYSTEM volume (normal) — its member disks are excluded; Phase 3 uses the separate NVMe"
+        else
+            pf_warn "Software RAID on NON-system disks — Phase 3 will use the existing array as a single data volume (it does not create or wipe arrays)"
+        fi
     fi
-    if have lvs && lvs >/dev/null 2>&1; then info "LVM present (Phase 3 will note single-volume layout)"; fi
+    if have lvs && lvs >/dev/null 2>&1; then info "LVM present (Phase 3 resolves LVM/RAID members the same way)"; fi
     return 0
 }
 
@@ -171,7 +216,7 @@ _pf_check_cluster() {
     local rpc="${DEFAULT_PUBLIC_RPC}" resp hash
     resp=$(curl -s -m 10 "$rpc" -X POST -H 'Content-Type: application/json' \
         -d '{"jsonrpc":"2.0","id":1,"method":"getGenesisHash"}' 2>/dev/null || true)
-    hash=$(printf '%s' "$resp" | grep -oE '"result":"[A-Za-z0-9]+"' | head -1 | cut -d'"' -f4)
+    hash=$(printf '%s' "$resp" | grep -oE '"result":"[A-Za-z0-9]+"' | head -1 | cut -d'"' -f4 || true)
     if [[ -z "$hash" ]]; then
         pf_warn "Cluster RPC unreachable ($rpc) — verify internet connectivity"
     elif [[ "$hash" == "$MAINNET_GENESIS_HASH" ]]; then

@@ -4,7 +4,8 @@
 # (set-identity PATH form, no stdin form, failover pointer).
 #
 # Mocks shadow real commands and are invoked indirectly.
-# shellcheck disable=SC2329
+# The catchup mock is printf'd as a script with literal $(...) / $n on purpose.
+# shellcheck disable=SC2329,SC2016
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +64,19 @@ CATCHUP_TIMEOUT=1 CATCHUP_INTERVAL=1 start_wait_catchup >/dev/null 2>&1; check "
 printf '#!/bin/bash\necho "0 slot(s) behind"\n' >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"
 DRY_RUN=1; : >"$CALLS"; start_wait_catchup >/dev/null 2>&1; DRY_RUN=0
 check "dry-run catchup polls nothing" "$(grep -c solana "$CALLS")" "0"
+
+echo "== set -e: catchup loop POLLS through non-zero catchup (the real-box scenario) =="
+# 'solana catchup' returns NON-ZERO the whole time the node is behind (normal
+# mid-sync). Under main()'s exact flags (set -Eeuo pipefail) the poll loop must
+# keep polling, not abort. Mock: behind (exit 1) twice, then caught up (exit 0).
+CC="$WORK/cc"; : >"$CC"
+printf '#!/bin/bash\necho c >> "%s"\nn=$(wc -l < "%s")\nif [ "$n" -lt 3 ]; then echo "$((90 - n*10)) slot(s) behind (us:1 them:99)"; exit 1; fi\necho "0 slot(s) behind (us:100 them:100)"; exit 0\n' "$CC" "$CC" >"$WORK/bin/solana"
+chmod +x "$WORK/bin/solana"
+sleep() { :; }   # don't actually wait CATCHUP_INTERVAL between polls
+e_out=$( set -Eeuo pipefail; CATCHUP_INTERVAL=0 start_wait_catchup 2>&1 ); e_rc=$?
+check "catchup loop survives non-zero catchup under set -Eeuo (rc 0)" "$e_rc" "0"
+check "loop POLLED 3x (did NOT abort on the 1st non-zero)"            "$(wc -l <"$CC" | tr -d ' ')" "3"
+check "loop reported caught up at the end"                            "$(grep -c 'Caught up' <<<"$e_out")" "1"
 
 echo "== final summary: set-identity PATH form, no stdin, failover pointer =="
 SUM=$(start_print_summary 2>&1)

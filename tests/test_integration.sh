@@ -31,7 +31,7 @@ export SET_POH_SCRIPT="$WORK/root/solana/set_poh_affinity.sh" WAIT_PIN_SCRIPT="$
 export LOGROTATE_FILE="$WORK/logrotate" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"
 export MLX5_IRQ_SCRIPT="$WORK/root/solana/mlx5-irq.sh" MLX5_IRQ_SERVICE="$WORK/mlx5.service"
 export SOLANA_INSTALL_DIR="$WORK/install" MOSTLY_THRESHOLD_ROOT="$WORK/mct" RESUME_SERVICE_FILE="$WORK/deeploy-resume.service"
-export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo"
+export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo" PROC_MDSTAT="$WORK/mdstat"
 export SSHD_CONFIG="$WORK/etc/sshd_config" NIC_TUNING_SCRIPT="$WORK/nic-tuning.sh" NIC_TUNING_SERVICE="$WORK/nic-tuning.service"
 # NB: do NOT pre-create $WORK/root/solana — phase 3 (disk) creates it as a symlink.
 mkdir -p "$WORK/etc/default" "$WORK/etc" "$WORK/root" "$WORK/bin" "$WORK/install/releases"
@@ -40,6 +40,7 @@ printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"\n' >"$GRUB_FILE"
 printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$OS_RELEASE_FILE"
 { echo "model name : AMD EPYC 9354"; echo "flags : fpu aes sse2 avx"; for i in $(seq 0 47); do echo "processor : $i"; done; } >"$PROC_CPUINFO"
 printf 'MemTotal:       395264000 kB\nSwapTotal:       2097152 kB\n' >"$PROC_MEMINFO"
+: >"$WORK/mdstat"   # no software RAID on the simulated box (empty mdstat)
 # mock solana toolchain binaries
 printf '#!/bin/bash\ncase "$1" in new) for a in "$@";do [ "$p" = -o ]&&o="$a";p="$a";done; echo x>"$o";; pubkey) case "$2" in *mvkfake*)echo FakeId11111111111111111111111111111111111;;*unstaked*)echo Unstaked111111111111111111111111111111111;;*)echo Other1111111111111111111111111111111111111;;esac;; esac\n' >"$WORK/bin/solana-keygen"
 printf '#!/bin/bash\ncase "$1" in catchup) echo "0 slot(s) behind (us:100 them:100)";; *) :;; esac\n' >"$WORK/bin/solana"
@@ -66,8 +67,10 @@ _cpu_siblings(){ local c=$1; if (( c<24 )); then echo "$c,$((c+24))"; else echo 
 ethtool()     { echo "driver: mlx5_core"; }
 ip()          { case "$*" in *"route show default"*) echo "default via 10.0.0.1 dev enp1s0";;
                               *"route get"*) echo "1.1.1.1 dev enp1s0 src 203.0.113.7";; *) echo "enp1s0 UP";; esac; }
-lsblk()       { case "$*" in *"NAME,SIZE,TYPE,ROTA,MODEL"*) printf '%s\n' "nvme0n1 1920383410176 disk 0 SAMSUNG" "nvme1n1 1920383410176 disk 0 SAMSUNG" "sda 256060514304 disk 0 BOOT";;
-                              *"-b -o SIZE"*) echo 1920383410176;; *"-o MODEL"*) echo SAMSUNG;; *"-nr -o MOUNTPOINT"*) echo "";; *) echo "  (tree)";; esac; }
+lsblk()       { local last=${!#}; case "$*" in *"NAME,SIZE,TYPE,ROTA,MODEL"*) printf '%s\n' "nvme0n1 1920383410176 disk 0 SAMSUNG" "nvme1n1 1920383410176 disk 0 SAMSUNG" "sda 256060514304 disk 0 BOOT";;
+                              *"-b -o SIZE"*) echo 1920383410176;; *"-o MODEL"*) echo SAMSUNG;;
+                              *"-nr -o MOUNTPOINT"*) case "$last" in */sda) echo "/";; *) echo "";; esac;;
+                              *"-nr -o FSTYPE"*) echo "";; *) echo "  (tree)";; esac; }
 findmnt()     { echo "/dev/sda2"; }
 blkid()       { local d=${!#}; echo "UUID-${d##*/}"; }
 mountpoint()  { return 1; }
@@ -79,7 +82,7 @@ curl()        { case "$*" in *getGenesisHash*) printf '{"result":"5eykt4UsFv8P8N
                              *-o*) local i j o; for ((i=1;i<=$#;i++));do [ "${!i}" = -o ]&&{ j=$((i+1)); o="${!j}"; };done; [ -n "${o:-}" ]&&:>"$o";; *) :;; esac; }
 # --- mocks: mutations (recorded, never executed) -----------------------------
 ALLCALLS="$WORK/allcalls"; : >"$ALLCALLS"
-for c in apt-get ufw systemctl blkdiscard mount swapoff umount cargo rustup setcap getcap update-grub sysctl cp logger sh; do eval "${c}() { echo '${c}' \"\$*\" >>'$CALLS'; echo '${c}' >>'$ALLCALLS'; return 0; }"; done
+for c in apt-get ufw systemctl blkdiscard mount swapoff umount mdadm cargo rustup setcap getcap update-grub sysctl cp logger sh; do eval "${c}() { echo '${c}' \"\$*\" >>'$CALLS'; echo '${c}' >>'$ALLCALLS'; return 0; }"; done
 mkfs.xfs() { echo "mkfs.xfs $*" >>"$CALLS"; echo mkfs.xfs >>"$ALLCALLS"; }
 ln()       { case "$*" in */etc/*) echo "ln $*" >>"$CALLS";; *) command ln "$@";; esac; }
 require_yes() { return 0; }   # simulate the operator typing 'yes' to the disk wipe
@@ -155,6 +158,7 @@ check "resume service written (would install)"   "$(grep -c 'install --resume --
 check "resume service enabled (mocked systemctl)" "$(grep -c 'systemctl enable deeploy-resume.service' "$CALLS")" "1"
 check "would reboot (mocked, not executed)"       "$(grep -c 'systemctl reboot' "$CALLS")" "1"
 check "phase 8 NOT run before reboot"             "$(state_has phase-8 && echo y || echo n)" "n"
+check "install recorded deeploy_version in state" "$(sget deeploy_version)" "0.1.0"
 
 echo ""
 echo "############ POST-REBOOT RESUME -> verify isolation -> phase 8 ############"
@@ -181,6 +185,22 @@ DRY_RUN=0
 check "dry-run prints 'would' for mkfs"    "$(grep -c 'mkfs.xfs /dev/nvme0n1' <<<"$DRYOUT")" "1"
 check "dry-run prints 'would' for restart" "$(grep -c 'systemctl restart solana' <<<"$DRYOUT")" "1"
 check "dry-run marks them as dry-run"      "$(grep -c 'dry-run' <<<"$DRYOUT")" "2"
+
+echo ""
+echo "############ PRODUCTION FLAGS: full install path survives set -Eeuo pipefail ############"
+# THE structural guard. The disk + catchup bug class slipped through because the
+# whole suite runs 'set -uo pipefail' (no -e); only the real main() sets -Eeuo.
+# Re-run the ENTIRE install under main()'s exact flags. Heavy build + the catchup
+# poll stay stubbed (covered by their own tests); this proves every phase's control
+# flow survives errexit+pipefail (a function ending in while-read returning EOF=1,
+# or a var=$(pipeline) aborting on an expected non-zero, would fail here).
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( set -Eeuo pipefail; install_run ) >/dev/null 2>&1
+check "install_run survives set -Eeuo pipefail (phases 0-7 + reboot gate)" "$?" "0"
+check "reached the reboot gate under -e"  "$(grep -c 'install --resume --post-reboot' "$RESUME_SERVICE_FILE")" "1"
+( set -Eeuo pipefail; POST_REBOOT=1 install_run ) >/dev/null 2>&1
+check "POST_REBOOT install_run survives set -Eeuo pipefail (phase 8)" "$?" "0"
+check "phase 8 completed under -e"        "$(state_has phase-8 && echo y || echo n)" "y"
 
 echo ""
 echo "==================================="

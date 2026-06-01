@@ -23,20 +23,25 @@ vf_fail() { _VF_FAIL=$((_VF_FAIL + 1)); printf '%s  [FAIL]%s %s\n' "$C_RED" "$C_
 _vf_expect() { if [[ "$2" == "$3" ]]; then vf_ok "$1 = $3"; else vf_warn "$1 = ${2:-?} (expected $3)"; fi; }
 
 # --- mockable probes ---------------------------------------------------------
-_vf_pid()          { pgrep -f '^agave-validator --identity' 2>/dev/null | head -1; }
-_vf_proc_limits()  { cat "/proc/$1/limits" 2>/dev/null; }
-_vf_oom_score()    { cat "/proc/$1/oom_score_adj" 2>/dev/null; }
-_vf_proc_nice()    { ps -o ni= -p "$1" 2>/dev/null | tr -d ' '; }
-_vf_poh_thread()   { ps -T -p "$1" -o spid,comm 2>/dev/null | awk '/solPohTickProd/{print $1; exit}'; }
-_vf_taskset()      { taskset -cp "$1" 2>/dev/null | awk '{print $NF}'; }
-_vf_isolated()     { cat /sys/devices/system/cpu/isolated 2>/dev/null; }
-_vf_governor()     { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null; }
-_vf_thp()          { cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; }
-_vf_ksm()          { cat /sys/kernel/mm/ksm/run 2>/dev/null; }
-_vf_numa()         { cat /proc/sys/kernel/numa_balancing 2>/dev/null; }
-_vf_sysctl()       { sysctl -n "$1" 2>/dev/null; }
-_vf_catchup()      { "$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1; }
-_vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null; }
+# Each probe ends with `|| true`: under set -e+pipefail a probe whose command
+# legitimately returns non-zero (pgrep no match, systemctl is-active when
+# inactive, cat of a /sys file absent on this kernel, catchup mid-sync, taskset
+# on an empty tid) must NOT errexit the caller — every check tolerates empty
+# output by design (`[[ -z ... ]]` / `_vf_expect`).
+_vf_pid()          { pgrep -f '^agave-validator --identity' 2>/dev/null | head -1 || true; }
+_vf_proc_limits()  { cat "/proc/$1/limits" 2>/dev/null || true; }
+_vf_oom_score()    { cat "/proc/$1/oom_score_adj" 2>/dev/null || true; }
+_vf_proc_nice()    { ps -o ni= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+_vf_poh_thread()   { ps -T -p "$1" -o spid,comm 2>/dev/null | awk '/solPohTickProd/{print $1; exit}' || true; }
+_vf_taskset()      { taskset -cp "$1" 2>/dev/null | awk '{print $NF}' || true; }
+_vf_isolated()     { cat /sys/devices/system/cpu/isolated 2>/dev/null || true; }
+_vf_governor()     { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true; }
+_vf_thp()          { cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true; }
+_vf_ksm()          { cat /sys/kernel/mm/ksm/run 2>/dev/null || true; }
+_vf_numa()         { cat /proc/sys/kernel/numa_balancing 2>/dev/null || true; }
+_vf_sysctl()       { sysctl -n "$1" 2>/dev/null || true; }
+_vf_catchup()      { "$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1 || true; }
+_vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
 
 # --- checks ------------------------------------------------------------------
 verify_process() {

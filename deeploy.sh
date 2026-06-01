@@ -154,6 +154,7 @@ _install_reboot_boundary() {
 # --- install dispatch --------------------------------------------------------
 install_run() {
     require_root
+    state_set deeploy_version "$DEEPLOY_VERSION"
     local p
     for p in "${DEEPLOY_PHASES[@]}"; do
         # --only <phase>: run exactly that phase, nothing else.
@@ -196,6 +197,8 @@ _load_config() {
     fi
 }
 
+print_version() { printf 'DeePloy %s\n' "$DEEPLOY_VERSION"; }
+
 usage() {
     cat <<USAGE
 DeePloy — Solana mainnet validator deploy/tune/upgrade
@@ -216,6 +219,7 @@ Flags:
   --yes                Auto-confirm normal prompts (never disk wipes)
   --config <path>      Load a deeploy.conf as defaults
   --post-reboot        Internal: unattended resume after the reboot
+  --version, -V        Print version and exit
 USAGE
 }
 
@@ -233,6 +237,7 @@ parse_args() {
             --rollback)    ROLLBACK=1 ;;
             --only)        ONLY_PHASE="$2"; shift ;;
             --config)      CONFIG_FILE="$2"; shift ;;
+            --version|-V)  print_version; exit 0 ;;
             -h|--help)     usage; exit 0 ;;
             *)             fail "Unknown argument: $1" ;;
         esac
@@ -243,6 +248,7 @@ parse_args() {
 main() {
     set -Eeuo pipefail
     parse_args "$@"
+    case "$SUBCMD" in --version|-V|version) print_version; exit 0 ;; esac
     common_init
     deeploy_init_traps
     _load_config

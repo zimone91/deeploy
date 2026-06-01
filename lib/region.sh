@@ -52,7 +52,7 @@ REGION_TIMEOUT_SENTINEL=999999          # avg value standing in for unreachable
 region_ping() {
     local host=$1 out loss rtt_line avg jitter
     out=$(ping -n -q -c "$REGION_PING_COUNT" -W "$REGION_PING_TIMEOUT" "$host" 2>&1) || true
-    loss=$(printf '%s\n' "$out" | grep -oE '[0-9]+% packet loss' | cut -d' ' -f1)
+    loss=$(printf '%s\n' "$out" | grep -oE '[0-9]+% packet loss' | cut -d' ' -f1 || true)
     rtt_line=$(printf '%s\n' "$out" | awk -F'/' '/rtt|round-trip/{print $4"/"$5"/"$6"/"$7}')
     avg=$(printf '%s' "$rtt_line" | cut -d'/' -f2)
     jitter=$(printf '%s' "$rtt_line" | cut -d'/' -f4 | cut -d' ' -f1)

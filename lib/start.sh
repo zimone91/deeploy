@@ -67,7 +67,7 @@ start_wait_catchup() {
         now=$(date +%s); elapsed=$((now - start_ts))
         if (( elapsed > CATCHUP_TIMEOUT )); then warn "catchup timed out after ${CATCHUP_TIMEOUT}s"; return 1; fi
         if ! systemctl is-active --quiet solana; then warn "solana.service not active — aborting wait"; return 1; fi
-        out=$("$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1)
+        out=$("$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1 || true)   # catchup is non-zero until synced; must not errexit the poll loop
         if grep -qE 'has caught up|^0 slot\(s\) behind' <<<"$out"; then ok "Caught up: $out"; return 0; fi
         info "catchup: ${out} (elapsed ${elapsed}s)"
         sleep "$CATCHUP_INTERVAL"

@@ -42,9 +42,13 @@ done
 reset_state() { rm -rf "${DEEPLOY_STATE_DIR:?}/state.d" "$RESUME_SERVICE_FILE"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; }
 mark_07_done() { local i; for i in 0 1 2 3 4 5 6 7; do mark_phase_done "$i"; done; }
 
+echo "== version: --version flag output =="
+check "print_version prints 'DeePloy <ver>'" "$(print_version)" "DeePloy $DEEPLOY_VERSION"
+
 echo "== full run (no reboot needed): all phases, then re-run skips done =="
 reset_state; ONLY_PHASE=""; FORCE=0; POST_REBOOT=0; DZ_ENABLED=false
 : >"$RAN"; install_run >/dev/null 2>&1
+check "install records deeploy_version at start" "$(state_get deeploy_version)" "$DEEPLOY_VERSION"
 check "phase fns ran (0-6 incl nic, +start; DZ off)" "$(wc -l <"$RAN" | tr -d ' ')" "9"
 check "start_run ran"  "$(grep -c '^start_run$' "$RAN")" "1"
 : >"$RAN"; install_run >/dev/null 2>&1

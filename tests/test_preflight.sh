@@ -70,12 +70,27 @@ reset; PROC_MEMINFO="$MEM_BIG"   _pf_check_memory >/dev/null 2>&1; counts "377 G
 reset; PROC_MEMINFO="$MEM_SMALL" _pf_check_memory >/dev/null 2>&1; counts "16 GiB warn"  0 1
 
 echo "== storage =="
+export PROC_MDSTAT="$WORK/nomd"; : >"$WORK/nomd"   # deterministic: no RAID unless a case overrides
 findmnt() { echo "/dev/nvme2n1p2"; }
 lsblk()   { printf '%s\n' "nvme0n1 1.9T disk 0 Samsung_PM9A3" "nvme1n1 1.9T disk 0 Samsung_PM9A3" "nvme2n1 240G disk 0 BootSSD"; }
-reset; _pf_check_storage >/dev/null 2>&1; counts "2 data disks ok" 0 0
+reset; _pf_check_storage >/dev/null 2>&1; counts "2 NVMe data disks ok" 0 0
 check "data_disk_count recorded" "$(state_get data_disk_count)" "2"
 lsblk() { printf '%s\n' "nvme0n1 1.9T disk 0 OnlyOne" "nvme2n1 240G disk 0 BootSSD"; }
-reset; _pf_check_storage >/dev/null 2>&1; counts "1 data disk warn" 0 1
+reset; _pf_check_storage >/dev/null 2>&1; counts "1 NVMe data disk warn" 0 1
+
+echo "== storage: software-RAID SYSTEM vs DATA-disk RAID (the fixed warn) =="
+# OS on md0 (raid1 across sda2+sdb2); the 2 NVMe are the real data disks. The old
+# code warned "single-volume root layout" and counted 4 data disks — both wrong.
+RAIDSYS=$(mkfix mdstat_sys $'Personalities : [raid1]\nmd0 : active raid1 sdb2[1] sda2[0]\n      234419136 blocks super 1.2 [2/2] [UU]\n')
+findmnt() { echo "/dev/md0"; }
+lsblk()   { printf '%s\n' "sda 256G disk 0 SATA_A" "sdb 256G disk 0 SATA_B" "nvme0n1 1.9T disk 0 Samsung" "nvme1n1 1.9T disk 0 Samsung"; }
+reset; PROC_MDSTAT="$RAIDSYS" _pf_check_storage >/dev/null 2>&1; counts "system-RAID: NO false warn" 0 0
+check "system-RAID members excluded -> data_disk_count=2" "$(state_get data_disk_count)" "2"
+# A RAID on NON-system disks DOES change Phase 3 (single data volume) -> a correct warn.
+RAIDDATA=$(mkfix mdstat_data $'Personalities : [raid0]\nmd1 : active raid0 nvme0n1[0] nvme1n1[1]\n      blocks super 1.2\n')
+findmnt() { echo "/dev/sda2"; }
+lsblk()   { printf '%s\n' "sda 256G disk 0 BootSSD" "nvme0n1 1.9T disk 0 Samsung" "nvme1n1 1.9T disk 0 Samsung" "md1 3.8T raid0 0 "; }
+reset; PROC_MDSTAT="$RAIDDATA" _pf_check_storage >/dev/null 2>&1; counts "data-RAID: warns (matches Phase 3)" 0 1
 
 echo "== nic =="
 ip() { case "$*" in *"route show default"*) echo "default via 10.0.0.1 dev enp1s0 proto static";;

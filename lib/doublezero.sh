@@ -27,7 +27,7 @@ DZ_SETUP_URL="${DZ_SETUP_URL:-https://dl.cloudsmith.io/public/malbeclabs/doublez
 DZ_CONFIG_DIR="${DZ_CONFIG_DIR:-$HOME/.config/doublezero}"
 DZ_OVERRIDE_CONF="${DZ_OVERRIDE_CONF:-/etc/systemd/system/doublezerod.service.d/override.conf}"
 
-_dz_pubkey()   { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null; }
+_dz_pubkey()   { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null || true; }   # set -e: empty on bad/missing key, caller checks
 _dz_valid_ip() {
     [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
     local o; for o in ${1//./ }; do (( o >= 0 && o <= 255 )) || return 1; done
@@ -176,7 +176,7 @@ dz_finalize_passport() {
         return 0
     fi
     # Sign with the REAL staked key, then chain the signature into the request.
-    sig_raw=$("$SOLANA_BIN/solana" sign-offchain-message "service_key=${dz_addr}" -k "$STAKED_KEYPAIR" 2>/dev/null)
+    sig_raw=$("$SOLANA_BIN/solana" sign-offchain-message "service_key=${dz_addr}" -k "$STAKED_KEYPAIR" 2>/dev/null || true)
     # The signature is the last non-empty line of stdout (a lone base58 string).
     sig=$(printf '%s\n' "$sig_raw" | awk 'NF{last=$0} END{print last}' | tr -d '[:space:]')
     [[ "$sig" =~ ^[1-9A-HJ-NP-Za-km-z]{40,}$ ]] || fail "Could not parse a base58 signature from sign-offchain-message output"
