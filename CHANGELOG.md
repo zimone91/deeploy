@@ -12,6 +12,24 @@ and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
 ### Fixed
+- **Environment under systemd is now resolved explicitly (cargo PATH + `$HOME`).**
+  Two bugs of one class — env vars present interactively but absent under systemd:
+  - *cargo PATH:* `rustup` installs `cargo`/`rustc` to `~/.cargo/bin`; Phase 4
+    sourced `~/.cargo/env` only in its own context, so Phase 6's bnxt XDP
+    self-check hit `cargo: command not found` (and on `--resume`, Phase 4 is
+    skipped, so nothing put it on PATH). New shared `ensure_cargo_env` sources the
+    env and puts `~/.cargo/bin` on PATH exactly once; the toolchain build and the
+    nic XDP test both call it. The XDP test fails cleanly (`return 1`,
+    do-not-start) if cargo is genuinely absent.
+  - *empty `$HOME`:* the systemd resume service starts with an empty environment,
+    so `SOLANA_BIN="$HOME/.local/..."` collapsed to `/.local/...` and Phase 8's
+    catchup-verify loop ran a non-existent path. The resume service unit now sets
+    `Environment=HOME=/root` and a full `PATH` (incl. `/root/.cargo/bin`), and
+    `SOLANA_BIN` is resolved `$HOME`-free via shared `deeploy_solana_bin` (explicit
+    > state-recorded `solana_bin` > `/root` default) in start/verify/keys/
+    doublezero/upgrade. `toolchain_install_release` records the absolute bin path
+    to state. (The generated `wait_and_pin_poh.sh` already baked an absolute path
+    at generation time, so PoH pinning was unaffected.)
 - **XFS sysctl no longer aborts Phase 2 on a fresh box.** `fs.xfs.xfssyncd_centisecs`
   was in Phase 2's `/etc/sysctl.d/21-agave-validator.conf`, but `/proc/sys/fs/xfs/`
   doesn't exist until an XFS filesystem is mounted — so `sysctl -p` returned

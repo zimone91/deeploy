@@ -104,6 +104,47 @@ require_cmds() {
 
 _mktemp() { mktemp "${TMPDIR:-/tmp}/deeploy.XXXXXX"; }
 
+# ensure_cargo_env — make the rustup-installed cargo/rustc resolvable for THIS
+# process. rustup installs to $HOME/.cargo/bin and writes $HOME/.cargo/env, but a
+# fresh install only affects PATH if that env is sourced — and it must reach
+# EVERY later step that shells out to cargo (the toolchain build AND nic.sh's XDP
+# self-check), not only the function that ran the install. Two failure modes this
+# closes: (1) under sudo's secure_path the inherited PATH lacks ~/.cargo/bin even
+# though cargo exists; (2) on --resume, Phase 4 (which sources the env) is skipped
+# as already-done, so the process that reaches nic.sh never had it sourced.
+# Idempotent (PATH guarded against double-prepend) and a safe no-op when cargo
+# isn't installed — the caller's own `cargo: command not found` handling stands.
+# deeploy_solana_bin — the active-release bin dir, resolved WITHOUT depending on
+# $HOME. Under the systemd resume service $HOME is empty, so "$HOME/.local/..."
+# collapsed to "/.local/..." and Phase 8's catchup loop ran the wrong path. Order:
+#   1) an explicitly-set SOLANA_BIN (tests / --config) wins;
+#   2) the path recorded to state by toolchain_install_release (authoritative);
+#   3) ${SOLANA_INSTALL_HOME:-/root}/.local/... — DeePloy runs as root, so /root
+#      is the correct base; never the empty-HOME "/.local/...".
+# Modules use this for their SOLANA_BIN default instead of "$HOME/.local/...".
+deeploy_solana_bin() {
+    if [[ -n "${SOLANA_BIN:-}" ]]; then printf '%s' "$SOLANA_BIN"; return 0; fi
+    local s; s="$(state_get solana_bin "")"
+    if [[ -n "$s" ]]; then printf '%s' "$s"; return 0; fi
+    printf '%s' "${SOLANA_INSTALL_HOME:-/root}/.local/share/solana/install/active_release/bin"
+}
+
+ensure_cargo_env() {
+    local ch="${CARGO_HOME:-$HOME/.cargo}"
+    # shellcheck disable=SC1090,SC1091
+    [[ -r "$ch/env" ]] && source "$ch/env"            # rustup's env (may or may not be PATH-idempotent)
+    # Ensure ~/.cargo/bin is on PATH EXACTLY once. Rebuild PATH dropping any
+    # existing occurrence, then prepend — so repeat calls (and a non-idempotent
+    # env file) never stack duplicate entries.
+    if [[ -d "$ch/bin" ]]; then
+        local newp="" seg IFS=':'
+        for seg in $PATH; do [[ "$seg" == "$ch/bin" ]] || newp="${newp:+$newp:}$seg"; done
+        export PATH="$ch/bin${newp:+:$newp}"
+    fi
+    debug "ensure_cargo_env: cargo=$(command -v cargo 2>/dev/null || echo '<not found>')"
+    return 0
+}
+
 # run — execute a state-changing command, honoring --dry-run.
 # Use for simple argv commands; redirections/pipes must guard with is_dry_run.
 run() {

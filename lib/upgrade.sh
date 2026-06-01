@@ -118,6 +118,7 @@ upgrade_rollback() {
 # --- orchestrator ------------------------------------------------------------
 upgrade_run() {
     require_root
+    SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (identity guard reads pubkeys via solana-keygen)
     if [[ "${ROLLBACK:-0}" == "1" ]]; then upgrade_rollback; return; fi
     upgrade_check_releases
     upgrade_identity_guard

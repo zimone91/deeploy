@@ -74,6 +74,10 @@ check "phases 0-7 ran"                         "$(grep -c '^keys_run$' "$RAN")" 
 check_true "resume service written"            "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
 check "resume ExecStart = install --resume --post-reboot" "$(grep -c 'ExecStart=.*install --resume --post-reboot' "$RESUME_SERVICE_FILE")" "1"
 check "resume WantedBy=multi-user.target"      "$(grep -c 'WantedBy=multi-user.target' "$RESUME_SERVICE_FILE")" "1"
+# systemd starts with an empty env; without these, Phase 8's catchup wait runs
+# '/.local/.../solana' (empty $HOME) and cargo isn't on PATH. (env-class fix)
+check "resume sets HOME=/root"                 "$(grep -c 'Environment=\"HOME=/root\"' "$RESUME_SERVICE_FILE")" "1"
+check "resume sets PATH incl /root/.cargo/bin" "$(grep -c 'Environment=\"PATH=.*/root/.cargo/bin\"' "$RESUME_SERVICE_FILE")" "1"
 check "resume service enabled"                 "$(grep -c 'systemctl enable deeploy-resume.service' "$CALLS")" "1"
 check "reboot_pending recorded"                "$(state_has reboot_pending && echo y || echo n)" "y"
 check "systemctl reboot issued (confirm Y)"    "$(grep -c 'systemctl reboot' "$CALLS")" "1"

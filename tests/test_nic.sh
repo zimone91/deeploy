@@ -4,7 +4,9 @@
 # IRQ map, bnxt ring/offload tuning, dispatch by driver, and the ZC-test dry-run.
 #
 # Mocks shadow real commands and are invoked indirectly.
-# shellcheck disable=SC2329
+# SC2016: printf'd cargo/env scripts intentionally contain literal $PWD/$PATH.
+# SC2030/SC2031: env tweaks inside $(..)/(..) are deliberately subshell-local.
+# shellcheck disable=SC2329,SC2016,SC2030,SC2031
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,6 +109,33 @@ git()   { if [[ "$1" == clone ]]; then local d=${!#}; mkdir -p "$d/target/releas
 nic_bnxt_xdp_test >/dev/null 2>&1
 check "xdp test: '8.8.8.8 --xdp-interface bnxtnic --timeout-ms 1000'" \
     "$(grep -c 'xdpargs: 8.8.8.8 --xdp-interface bnxtnic --timeout-ms 1000' "$XDPCALLS")" "1"
+
+echo "== REGRESSION: nic resolves rustup cargo from ~/.cargo/bin (not on ambient PATH) =="
+# The real-box bug: after a fresh rustup install, cargo lives in ~/.cargo/bin,
+# which is NOT on the PATH nic.sh inherits -> 'cargo: command not found'. Use a
+# REAL on-disk cargo (no cargo() shell mock, which would mask PATH resolution)
+# and a CARGO_HOME whose bin is absent from PATH; ensure_cargo_env must find it.
+unset -f cargo
+CARGO_SBX="$WORK/cargohome"; mkdir -p "$CARGO_SBX/bin"
+CARGOLOG="$WORK/cargo.log"; : >"$CARGOLOG"
+printf '#!/bin/bash\necho "cargo $*" >> "%s"\nmkdir -p "$PWD/target/release"\nprintf "#!/bin/bash\\necho built >> \\"%s\\"\\nexit 0\\n" > "$PWD/target/release/xdptest"\nchmod +x "$PWD/target/release/xdptest"\n' "$CARGOLOG" "$XDPCALLS" >"$CARGO_SBX/bin/cargo"
+chmod +x "$CARGO_SBX/bin/cargo"
+printf 'export PATH="%s/bin:$PATH"\n' "$CARGO_SBX" >"$CARGO_SBX/env"
+git()    { if [[ "$1" == clone ]]; then local d=${!#}; mkdir -p "$d"; fi; }   # bare clone; cargo makes the binary
+setcap() { :; }
+export XDP_COMPAT_SRC="$WORK/xdpsrc2"
+RC=$( export CARGO_HOME="$CARGO_SBX" PATH="/usr/bin:/bin"      # cargo NOT on PATH initially
+      command -v cargo >/dev/null 2>&1 && echo "PRE_FOUND" >&2
+      nic_bnxt_xdp_test >/dev/null 2>&1; echo $? )
+check "nic ZC test SUCCEEDS once cargo is resolved (rc 0)" "$RC" "0"
+check "cargo build --release actually ran"                 "$(grep -c 'cargo build --release' "$CARGOLOG")" "1"
+
+echo "== nic warns cleanly (no crash) when cargo is truly absent =="
+git() { if [[ "$1" == clone ]]; then local d=${!#}; mkdir -p "$d"; fi; }
+WOUT=$( export CARGO_HOME="$WORK/nocargo_at_all" PATH="/usr/bin:/bin" XDP_COMPAT_SRC="$WORK/xdpsrc3"
+        nic_bnxt_xdp_test 2>&1; echo "rc=$?" )
+check "absent cargo -> returns 1 (do-not-start)"  "$(grep -c 'rc=1' <<<"$WOUT")" "1"
+check "absent cargo -> warns 'cargo not found'"   "$(grep -c 'cargo not found' <<<"$WOUT")" "1"
 
 echo ""
 echo "==================================="

@@ -134,6 +134,14 @@ nic_bnxt_xdp_test() {
     fi
     [[ -d "$XDP_COMPAT_SRC" ]] && run rm -rf "$XDP_COMPAT_SRC"
     run git clone "$XDP_COMPAT_REPO" "$XDP_COMPAT_SRC"
+    # rustup installs cargo to ~/.cargo/bin, which isn't on the PATH nic.sh
+    # inherits (Phase 4 sourced it only in its own context, and on --resume Phase 4
+    # is skipped entirely). Resolve it the SAME way the toolchain build does.
+    ensure_cargo_env
+    if ! have cargo; then
+        warn "cargo not found (rustup toolchain unavailable) — cannot build agave-xdp-compatibility to verify XDP"
+        return 1
+    fi
     if ! ( cd "$XDP_COMPAT_SRC" && cargo build --release ); then
         warn "agave-xdp-compatibility build failed — cannot verify XDP; do not start until resolved"
         return 1

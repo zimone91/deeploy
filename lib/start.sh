@@ -29,6 +29,9 @@ start_resolve_config() {
     SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
     SOLANA_SERVICE="${SOLANA_SERVICE:-$SOLANA_HOME/solana.service}"
     DZ_ENABLED="$(state_get dz_multicast false)"
+    # Resolve the validator bin dir WITHOUT $HOME — Phase 8 runs under the systemd
+    # resume service where $HOME is empty (was: "/.local/.../solana" -> not found).
+    SOLANA_BIN="$(deeploy_solana_bin)"
 }
 
 # Free space on the FS holding a path, in GiB (mockable).

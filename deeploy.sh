@@ -107,6 +107,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# systemd starts services with an empty environment. DeePloy's later phases read
+# \$HOME (active_release path) and need cargo on PATH, so set both explicitly —
+# otherwise \$HOME is empty and Phase 8's catchup wait runs '/.local/.../solana'.
+Environment=\"HOME=/root\"
+Environment=\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.cargo/bin\"
 ExecStart=${DEEPLOY_SELF} install --resume --post-reboot
 RemainAfterExit=yes
 

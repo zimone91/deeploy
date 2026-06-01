@@ -81,8 +81,7 @@ toolchain_rust() {
         # would make rustup-init treat -y as an unexpected positional).
         sh "$inst" -y
         rm -f "$inst"
-        # shellcheck disable=SC1091
-        [[ -r "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+        ensure_cargo_env            # put the just-installed cargo/rustc on PATH for this run
         run rustup default stable
         run rustup update
     fi
@@ -207,6 +206,7 @@ toolchain_compile() {
         info "${C_DIM}[dry-run]${C_NC} would run: RUSTFLAGS=\"${rustflags}\" ./scripts/cargo-install-all.sh ${TOOLCHAIN_BUILD_FLAGS[*]} ."
         return 0
     fi
+    ensure_cargo_env            # resolve cargo even on --only 4 / a resume where toolchain_rust was skipped
     ( cd "$JITO_SRC" && RUSTFLAGS="$rustflags" ./scripts/cargo-install-all.sh "${TOOLCHAIN_BUILD_FLAGS[@]}" . )
 }
 
@@ -225,6 +225,9 @@ toolchain_install_release() {
         fi
     fi
     run ln -sfn "$dest" "$ACTIVE_RELEASE"
+    # Record the absolute bin dir so later phases (Phase 8 catchup wait, verify)
+    # resolve it WITHOUT $HOME — which is empty under the systemd resume service.
+    state_set solana_bin "$ACTIVE_RELEASE/bin"
     ok "active_release -> releases/${tag}"
 }
 

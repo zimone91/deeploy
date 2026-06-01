@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Self-contained tests for lib/common.sh — no root, no network, no live node.
 # Runs every public helper against temp dirs and asserts behavior.
+#
+# SC2016: printf'd helper scripts intentionally contain literal $PATH etc.
+# SC2030/SC2031: env tweaks inside (..)/$(..) are deliberately subshell-local.
+# shellcheck disable=SC2016,SC2030,SC2031
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -124,6 +128,42 @@ check "write_file content correct"     "$(grep -c 'echo hi' "$WF")" "1"
 write_file "$WF" "$(printf '#!/bin/bash\necho bye\n')"$'\n' 0700  # overwrite
 check "write_file overwrote"           "$(grep -c bye "$WF")" "1"
 check_true "write_file backed up prior" "[[ -f \"$DEEPLOY_BACKUP_DIR/$RUN_TS$WF\" ]]"
+
+echo "== deeploy_solana_bin: \$HOME-independent (systemd resume has empty HOME) =="
+# Precedence: explicit SOLANA_BIN > state solana_bin > /root default. NEVER the
+# empty-HOME '/.local/...' that broke Phase 8's catchup wait on the real box.
+( export SOLANA_BIN="/explicit/bin"; deeploy_solana_bin ) >"$WORK/sb1" 2>&1
+check "explicit SOLANA_BIN wins" "$(cat "$WORK/sb1")" "/explicit/bin"
+( unset SOLANA_BIN; state_set solana_bin "/root/.local/share/solana/install/active_release/bin"
+  HOME="" ; deeploy_solana_bin ) >"$WORK/sb2" 2>&1
+check "state solana_bin used when no explicit (HOME unset)" "$(cat "$WORK/sb2")" "/root/.local/share/solana/install/active_release/bin"
+state_clear solana_bin
+( unset SOLANA_BIN; HOME="" ; deeploy_solana_bin ) >"$WORK/sb3" 2>&1
+check "fallback base is /root (NOT empty-HOME /.local)" "$(cat "$WORK/sb3")" "/root/.local/share/solana/install/active_release/bin"
+check "deeploy_solana_bin never yields a leading /.local" "$(grep -c '^/\.local' "$WORK/sb3")" "0"
+
+echo "== ensure_cargo_env: puts rustup cargo on PATH for the whole run =="
+# Simulate a rustup install: ~/.cargo/bin/cargo + ~/.cargo/env, with bin NOT yet
+# on PATH (the real-box bug: nic.sh couldn't find cargo after Phase 4).
+CARGO_SBX="$WORK/cargohome"
+mkdir -p "$CARGO_SBX/bin"
+printf '#!/bin/bash\necho cargo "$@"\n' >"$CARGO_SBX/bin/cargo"; chmod +x "$CARGO_SBX/bin/cargo"
+printf 'export PATH="%s/bin:$PATH"\n' "$CARGO_SBX" >"$CARGO_SBX/env"
+( export CARGO_HOME="$CARGO_SBX" PATH="/usr/bin:/bin"   # cargo NOT reachable initially
+  command -v cargo >/dev/null 2>&1 && echo PRE_FOUND || echo PRE_MISSING
+  ensure_cargo_env
+  command -v cargo >/dev/null 2>&1 && echo POST_FOUND || echo POST_MISSING ) >"$WORK/cargoenv.out" 2>&1
+check "cargo NOT on PATH before"       "$(grep -c PRE_MISSING "$WORK/cargoenv.out")" "1"
+check "ensure_cargo_env puts it on PATH" "$(grep -c POST_FOUND "$WORK/cargoenv.out")" "1"
+# Idempotent: a second call must not double-prepend ~/.cargo/bin.
+( export CARGO_HOME="$CARGO_SBX" PATH="/usr/bin:/bin"
+  ensure_cargo_env; ensure_cargo_env
+  awk -v p="$CARGO_SBX/bin" 'BEGIN{n=split(ENVIRON["PATH"],a,":"); c=0; for(i=1;i<=n;i++) if(a[i]==p) c++; print c}' ) >"$WORK/cargoenv2.out" 2>&1
+check "idempotent: ~/.cargo/bin appears once" "$(cat "$WORK/cargoenv2.out")" "1"
+# Safe no-op when cargo isn't installed at all (no env, no bin).
+( export CARGO_HOME="$WORK/nocargo" PATH="/usr/bin:/bin"
+  ensure_cargo_env; echo "rc=$?" ) >"$WORK/cargoenv3.out" 2>&1
+check "no-op + returns 0 when cargo absent" "$(grep -c 'rc=0' "$WORK/cargoenv3.out")" "1"
 
 echo "== apply_sysctl_file: tolerant under set -e (missing key warns, others apply) =="
 # Mock sysctl: accept everything EXCEPT keys under a missing subtree (fs.xfs.*),

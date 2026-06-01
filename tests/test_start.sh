@@ -65,6 +65,23 @@ printf '#!/bin/bash\necho "0 slot(s) behind"\n' >"$WORK/bin/solana"; chmod +x "$
 DRY_RUN=1; : >"$CALLS"; start_wait_catchup >/dev/null 2>&1; DRY_RUN=0
 check "dry-run catchup polls nothing" "$(grep -c solana "$CALLS")" "0"
 
+echo "== env-class: SOLANA_BIN resolves to an absolute path with HOME UNSET (systemd) =="
+# The real-box bug: under the resume service $HOME was empty, so SOLANA_BIN
+# became '/.local/.../solana/...'. start_resolve_config must derive it $HOME-free.
+( unset SOLANA_BIN                                   # don't let the test's export win
+  state_set solana_bin "/root/.local/share/solana/install/active_release/bin"
+  HOME="" start_resolve_config
+  echo "$SOLANA_BIN" ) >"$WORK/binout" 2>&1
+check "SOLANA_BIN from state (HOME unset)" "$(cat "$WORK/binout")" "/root/.local/share/solana/install/active_release/bin"
+check "never the empty-HOME '/.local' path"  "$(grep -c '^/\.local' "$WORK/binout")" "0"
+# With no state recorded either, falls back to /root (NOT '/'), still HOME-free.
+( unset SOLANA_BIN; rm -f "$DEEPLOY_STATE_DIR/state.d/solana_bin"
+  HOME="" start_resolve_config
+  echo "$SOLANA_BIN" ) >"$WORK/binout2" 2>&1
+check "fallback base is /root, not empty HOME" "$(grep -c '^/root/.local/share/solana' "$WORK/binout2")" "1"
+# restore the suite's pinned bin for later sections
+export SOLANA_BIN="$WORK/bin"; printf '#!/bin/bash\necho "0 slot(s) behind"\n' >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"; start_resolve_config
+
 echo "== set -e: catchup loop POLLS through non-zero catchup (the real-box scenario) =="
 # 'solana catchup' returns NON-ZERO the whole time the node is behind (normal
 # mid-sync). Under main()'s exact flags (set -Eeuo pipefail) the poll loop must

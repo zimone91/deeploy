@@ -111,6 +111,9 @@ verify_pohpin_timer() {
 # --- orchestrator ------------------------------------------------------------
 verify_run() {
     step "Post-install verification"
+    # Re-resolve WITHOUT $HOME: verify runs inside Phase 8 via the systemd resume
+    # service, where $HOME is empty (the source-time default would be "/.local/..").
+    SOLANA_BIN="$(deeploy_solana_bin)"
     _VF_WARN=0; _VF_FAIL=0
     verify_process
     verify_limits

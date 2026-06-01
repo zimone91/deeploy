@@ -30,6 +30,7 @@ _keys_valid_pubkey() { [[ "$1" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; }
 
 # --- config resolution -------------------------------------------------------
 keys_resolve_config() {
+    SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (consistent across phases)
     local home; home="$(state_get solana_home /root/solana)"
     FAKE_IDENTITY="${FAKE_IDENTITY:-$home/mvkfake/mainnet-validator-keypair.json}"
     UNSTAKED_KEYPAIR="${UNSTAKED_KEYPAIR:-$home/unstaked-identity.json}"

@@ -54,6 +54,16 @@ reset; verify_sysctl       >/dev/null 2>&1; check "sysctl ok"        "$_VF_WARN"
 reset; verify_catchup      >/dev/null 2>&1; check "catchup ok"       "$_VF_WARN" "0"
 reset; verify_pohpin_timer >/dev/null 2>&1; check "timer ok"         "$_VF_WARN" "0"
 
+echo "== env-class: verify_run resolves SOLANA_BIN absolute with HOME UNSET (systemd) =="
+# verify runs inside Phase 8 via the resume service, where $HOME is empty. The
+# source-time default would be '/.local/...'; verify_run must re-resolve HOME-free.
+( unset SOLANA_BIN
+  state_set solana_bin "/root/.local/share/solana/install/active_release/bin"
+  HOME="" verify_run >/dev/null 2>&1
+  echo "$SOLANA_BIN" ) >"$WORK/vbin" 2>&1
+check "verify SOLANA_BIN from state (HOME unset)" "$(cat "$WORK/vbin")" "/root/.local/share/solana/install/active_release/bin"
+check "verify never '/.local' (empty-HOME) path"  "$(grep -c '^/\.local' "$WORK/vbin")" "0"
+
 echo "== bad system: failures + warnings detected =="
 _vf_pid() { echo ""; }
 reset; verify_process >/dev/null 2>&1; check "no process -> FAIL" "$_VF_FAIL" "1"

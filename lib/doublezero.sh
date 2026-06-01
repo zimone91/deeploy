@@ -41,6 +41,7 @@ _dz_detect_public_ip() {
 
 # --- config ------------------------------------------------------------------
 dz_resolve_config() {
+    SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (dz-finalize may run standalone)
     SOLANA_HOME="$(state_get solana_home /root/solana)"
     DZ_KEYPAIR="${DZ_KEYPAIR:-$SOLANA_HOME/dz-keypair.json}"
     DZ_ENV="${DZ_ENV:-mainnet-beta}"
