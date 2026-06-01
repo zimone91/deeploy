@@ -26,6 +26,7 @@ export NONINTERACTIVE=1 DEEPLOY_COLOR=never
 export GRUB_FILE="$WORK/etc/default/grub" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service"
 export SYSCTL_FILE="$WORK/21.conf" SYSCTL_SERVICE_FILE="$WORK/sysctl.service" LIMITS_FILE="$WORK/limits.conf" SYSTEM_CONF="$WORK/system.conf"
 export FSTAB_FILE="$WORK/etc/fstab" LEDGER_MOUNT="$WORK/mnt/ledger" ACCOUNTS_MOUNT="$WORK/mnt/accounts" SOLANA_LINK="$WORK/root/solana"
+export XFS_SYSCTL_FILE="$WORK/etc/22-agave-xfs.conf" XFS_MODLOAD_FILE="$WORK/etc/modules-load-xfs.conf"
 export VALIDATOR_SH="$WORK/root/solana/validator.sh" SOLANA_SERVICE="$WORK/root/solana/solana.service"
 export SET_POH_SCRIPT="$WORK/root/solana/set_poh_affinity.sh" WAIT_PIN_SCRIPT="$WORK/root/solana/wait_and_pin_poh.sh"
 export LOGROTATE_FILE="$WORK/logrotate" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"
@@ -134,6 +135,9 @@ check "disk->validatorcfg: ledger_path"                   "$(sget ledger_path)" 
 check "disk->validatorcfg: accounts_path (separate disk)" "$(sget accounts_path)" "$ACCOUNTS_MOUNT/solana/accounts"
 check "disk->validatorcfg: snapshots on LEDGER side"      "$(sget snapshots_path)" "$WORK/root/solana/snapshots"
 check "region->validatorcfg: bam_url chosen"              "$(sget bam_url)" "http://frankfurt.mainnet.bam.jito.wtf"
+# XFS tuning belongs to Phase 3 (after the FS exists), NOT Phase 2's sysctl.
+check "Phase 2 sysctl has NO fs.xfs key"                  "$(grep -c 'fs.xfs' "$SYSCTL_FILE")" "0"
+check "Phase 3 wrote the XFS drop-in"                     "$(grep -c 'fs.xfs.xfssyncd_centisecs' "$XFS_SYSCTL_FILE")" "1"
 
 echo ""
 echo "############ GENERATED validator.sh threads the chain ############"

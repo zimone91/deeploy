@@ -50,6 +50,9 @@ DATA_MOUNT="${DATA_MOUNT:-/mnt/data}"             # single-volume data-RAID moun
 SOLANA_LINK="${SOLANA_LINK:-/root/solana}"        # symlink -> <ledger>/solana (overridable for tests)
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
 XFS_MOUNT_OPTS="defaults,noatime,logbufs=8,nofail"
+XFS_SYSCTL_FILE="${XFS_SYSCTL_FILE:-/etc/sysctl.d/22-agave-xfs.conf}"
+XFS_SYNCD_CENTISECS="${XFS_SYNCD_CENTISECS:-10000}"   # default 3000 -> 10000: less accountsdb overhead
+XFS_MODLOAD_FILE="${XFS_MODLOAD_FILE:-/etc/modules-load.d/deeploy-xfs.conf}"
 
 # Classification buckets (module globals, filled by _disk_classify/_disk_scan_raid).
 _DISK_ELIGIBLE=()             # eligible NVMe candidate disk names (selectable)
@@ -378,6 +381,7 @@ _disk_finalize_two_nvme() {
     run mkdir -p "$LEDGER_MOUNT/solana" "$ACCOUNTS_MOUNT/solana"
     _disk_symlink_home "$LEDGER_MOUNT/solana" "$SOLANA_LINK"
     _disk_record_paths "$SOLANA_LINK" "$ACCOUNTS_MOUNT/solana/accounts"
+    _disk_tune_xfs                  # XFS sysctl now that the filesystems are mounted
     run systemctl daemon-reload
 }
 
@@ -391,6 +395,7 @@ _disk_raid_volume() {
     [[ -n "${_DISK_RAID_MOUNT:-}" ]] && _disk_mount_data_array "/dev/${_DISK_RAID_MD}" "$_DISK_RAID_MOUNT"
     run mkdir -p "$home"/ledger "$home"/accounts "$home"/snapshots
     _disk_record_paths "$home" "$home/accounts"
+    _disk_tune_xfs                  # XFS sysctl (the RAID volume is mkfs.xfs'd above)
     ok "RAID single-volume layout prepared at ${home}"
 }
 _disk_mount_data_array() {                        # <md-device> <mount> — ensure a data array is mounted
@@ -424,6 +429,7 @@ _disk_emergency_layout() {
     _fstab_comment_swap
     run mkdir -p "$home"/ledger "$home"/accounts "$home"/snapshots
     _disk_record_paths "$home" "$home/accounts"
+    _disk_tune_xfs                  # tolerant: warn-skips if the system disk isn't XFS
     ok "Emergency single-volume layout prepared at ${home}"
 }
 
@@ -433,6 +439,29 @@ _disk_record_paths() {                            # solana_home accounts_dir
     state_set ledger_path   "$home/ledger"
     state_set snapshots_path "$home/snapshots"
     state_set accounts_path "$accounts"
+}
+
+# XFS sync-interval tuning. Lives in Phase 3 (NOT Phase 2's sysctl) because
+# /proc/sys/fs/xfs/ only exists once an XFS filesystem is mounted, which happens
+# here after mkfs.xfs. Two parts:
+#   * a drop-in (22-agave-xfs.conf) + modules-load.d xfs preload, so the value
+#     re-applies on EVERY boot — crucial because the isolation reboot (after this
+#     phase) wipes any live sysctl, and systemd-sysctl runs before fstab mounts;
+#   * apply it live NOW via the tolerant helper (warns, never aborts, if for some
+#     reason the xfs subtree still isn't present).
+_disk_tune_xfs() {
+    step "XFS sync-interval tuning (fs.xfs.xfssyncd_centisecs=${XFS_SYNCD_CENTISECS})"
+    write_file "$XFS_MODLOAD_FILE" \
+"# Preload xfs so systemd-sysctl can apply fs.xfs.* on boot (DeePloy).
+xfs
+"
+    write_file "$XFS_SYSCTL_FILE" \
+"# XFS sync interval (default 3000 -> ${XFS_SYNCD_CENTISECS} = less overhead on accountsdb).
+# Applied in Phase 3 after the XFS filesystems exist; re-applied each boot.
+fs.xfs.xfssyncd_centisecs=${XFS_SYNCD_CENTISECS}
+"
+    apply_sysctl_file "$XFS_SYSCTL_FILE"    # tolerant; safe even if xfs subtree not yet visible
+    ok "XFS tuning written (${XFS_SYSCTL_FILE}) and applied"
 }
 
 # --- orchestrator ------------------------------------------------------------

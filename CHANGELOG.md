@@ -12,6 +12,17 @@ and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
 ### Fixed
+- **XFS sysctl no longer aborts Phase 2 on a fresh box.** `fs.xfs.xfssyncd_centisecs`
+  was in Phase 2's `/etc/sysctl.d/21-agave-validator.conf`, but `/proc/sys/fs/xfs/`
+  doesn't exist until an XFS filesystem is mounted — so `sysctl -p` returned
+  non-zero and, under `set -Eeuo pipefail`, aborted the install before Phase 3.
+  The XFS tuning now lives in Phase 3 (`disk.sh`), applied after `mkfs.xfs`, via a
+  dedicated `/etc/sysctl.d/22-agave-xfs.conf` plus a `modules-load.d` xfs preload
+  so it re-applies on every boot (the isolation reboot would otherwise drop a live
+  value, and `systemd-sysctl` runs before fstab mounts). Phase 2's sysctl file now
+  holds only always-valid kernel/net/vm keys. Belt-and-suspenders: all sysctl
+  drop-ins are now applied key-by-key (`apply_sysctl_file`) so any not-yet-present
+  key warns and is skipped instead of failing the run.
 - **Phase 3 no longer treats system disks as wipe candidates.** System-disk
   detection is now by mount and resolves RAID/LVM to physical members: a disk is
   a *system* disk if anything in its block subtree carries `/`, `/boot`,

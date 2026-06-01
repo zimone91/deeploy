@@ -118,6 +118,29 @@ SYSCTL_FILE="$WORK/21.conf" SYSCTL_SERVICE_FILE="$WORK/sysctl.service" tuning_sy
 check "sysctl udp buffer"      "$(grep -c 'net.core.rmem_max=134217728' "$WORK/21.conf")" "1"
 check "sysctl congestion"      "$(grep -c 'tcp_congestion_control=westwood' "$WORK/21.conf")" "1"
 check "sysctl nr_open"         "$(grep -c 'fs.nr_open=2000000' "$WORK/21.conf")" "1"
+# Phase 2 must contain ONLY always-valid keys — no fs.xfs.* (moved to Phase 3).
+check "Phase 2 has NO fs.xfs key (moved to disk.sh)" "$(grep -c 'fs.xfs' "$WORK/21.conf")" "0"
+
+echo "== Phase 2 sysctl: tolerant apply does NOT abort under set -Eeuo on a box w/o XFS =="
+# Reproduce the real-box crash conditions: production flags + a sysctl that
+# rejects fs.xfs.* (subtree absent). Even if a stale key were present, the run
+# must survive; with the key removed it simply applies cleanly.
+sysctl() { if [[ "$1" == "-w" ]]; then case "$2" in fs.xfs.*) return 1;; *) return 0;; esac; fi; }
+( set -Eeuo pipefail
+  SYSCTL_FILE="$WORK/21b.conf" SYSCTL_SERVICE_FILE="$WORK/sysctl2.service" tuning_sysctl ) >/dev/null 2>&1
+check "tuning_sysctl survives set -Eeuo pipefail (no XFS loaded)" "$?" "0"
+
+echo "== RESUME: re-running Phase 2 over an OLD config drops the bad fs.xfs key =="
+# The box has the OLD 21-agave-validator.conf from the failed run (with the bad
+# XFS key). Phase 2 re-runs on --resume; write_file must REWRITE it XFS-free,
+# not rely solely on the apply-tolerance.
+OLDCONF="$WORK/21-old.conf"
+printf '%s\n' 'net.core.rmem_max=134217728' 'fs.nr_open=2000000' 'fs.xfs.xfssyncd_centisecs=10000' >"$OLDCONF"
+check "precondition: old config HAS the bad key" "$(grep -c 'fs.xfs' "$OLDCONF")" "1"
+SYSCTL_FILE="$OLDCONF" SYSCTL_SERVICE_FILE="$WORK/sysctl3.service" tuning_sysctl >/dev/null 2>&1
+check "resume rewrote config: fs.xfs key GONE"   "$(grep -c 'fs.xfs' "$OLDCONF")" "0"
+check "resume kept the good keys (rmem_max)"     "$(grep -c 'net.core.rmem_max=134217728' "$OLDCONF")" "1"
+unset -f sysctl
 printf '[Manager]\n' >"$WORK/system.conf"
 LIMITS_FILE="$WORK/limits.conf" SYSTEM_CONF="$WORK/system.conf" tuning_limits >/dev/null 2>&1
 check "limits nofile"          "$(grep -c 'nofile 2000000' "$WORK/limits.conf")" "1"

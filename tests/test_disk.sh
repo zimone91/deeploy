@@ -21,6 +21,7 @@ export NONINTERACTIVE=1 DEEPLOY_COLOR=never
 # Sandbox every path disk.sh would touch.
 export LEDGER_MOUNT="$WORK/ledger" ACCOUNTS_MOUNT="$WORK/accounts" SOLANA_LINK="$WORK/solana" FSTAB_FILE="$WORK/fstab"
 export DATA_MOUNT="$WORK/data"
+export XFS_SYSCTL_FILE="$WORK/22-xfs.conf" XFS_MODLOAD_FILE="$WORK/modload-xfs.conf"
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
@@ -39,6 +40,7 @@ CALLS="$WORK/calls"; : >"$CALLS"
 # --- shared mocks ------------------------------------------------------------
 require_root() { :; }                                            # bypass root gate (tested in common)
 blkid()      { local d=${!#}; echo "U-${d##*/}"; }
+sysctl()     { echo "sysctl $*" >>"$CALLS"; return 0; }          # XFS tuning apply (Phase 3)
 blkdiscard() { echo "blkdiscard $*" >>"$CALLS"; }
 mkfs.xfs()   { echo "mkfs.xfs $*"   >>"$CALLS"; }
 mount()      { echo "mount $*"      >>"$CALLS"; }
@@ -141,6 +143,10 @@ check "accounts_path recorded" "$(state_get accounts_path)" "$WORK/accounts/sola
 # I/O isolation: snapshots ride with the LEDGER disk (via /root/solana symlink), never accounts.
 check "snapshots on ledger (not accounts)"      "$(state_get snapshots_path)" "$SOLANA_LINK/snapshots"
 check_true "snapshots NOT under accounts mount" "[[ \"\$(state_get snapshots_path)\" != \"$ACCOUNTS_MOUNT\"* ]]"
+# XFS tuning is applied HERE (Phase 3), after the XFS filesystems are mounted — NOT in Phase 2.
+check "XFS drop-in written (22-agave-xfs)"  "$(grep -c 'fs.xfs.xfssyncd_centisecs=10000' "$XFS_SYSCTL_FILE")" "1"
+check "xfs modules-load preload written"    "$(grep -cx 'xfs' "$XFS_MODLOAD_FILE")" "1"
+check "XFS sysctl applied live (Phase 3)"   "$(grep -c 'sysctl -w fs.xfs.xfssyncd_centisecs=10000' "$CALLS")" "1"
 
 echo "== fstab idempotent (re-run finalize) =="
 ACCOUNTS_DISK=/dev/nvme0n1 LEDGER_DISK=/dev/nvme1n1 _disk_finalize_two_nvme >/dev/null 2>&1

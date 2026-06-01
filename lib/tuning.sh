@@ -245,10 +245,11 @@ vm.dirtytime_expire_seconds=43200
 
 # File descriptors
 fs.nr_open=2000000
-
-# XFS sync interval (default 3000 -> 10000 = less overhead on accountsdb)
-fs.xfs.xfssyncd_centisecs=10000
 '
+    # NOTE: fs.xfs.* tuning is intentionally NOT here. /proc/sys/fs/xfs/ only
+    # exists once the xfs module is loaded (i.e. after Phase 3 makes the XFS
+    # filesystems), so a sysctl applying it now would fail on a fresh box. The
+    # XFS sync-interval is written + applied in Phase 3 (disk.sh) after mkfs.xfs.
     write_file "${SYSCTL_SERVICE_FILE:-/etc/systemd/system/solana-sysctl.service}" \
 '[Unit]
 Description=Apply Solana sysctl tuning
@@ -262,7 +263,7 @@ RemainAfterExit=true
 [Install]
 WantedBy=multi-user.target
 '
-    run sysctl -p "$f"
+    apply_sysctl_file "$f"          # tolerant: a not-yet-present key warns, never aborts the run
     run systemctl daemon-reload
     run systemctl enable --now solana-sysctl.service
     ok "sysctl applied"

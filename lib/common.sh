@@ -116,6 +116,34 @@ run() {
     "$@"
 }
 
+# apply_sysctl_file <file> — apply a sysctl drop-in TOLERANTLY (belt + suspenders
+# for set -e). `sysctl -p <file>` returns non-zero the moment it hits a key whose
+# subtree isn't present yet — e.g. fs.xfs.* before the xfs module is loaded, or a
+# tcp_congestion_control whose module is absent — and under the installer's
+# `set -Eeuo pipefail` that single missing key would abort the whole run. We
+# apply key-by-key instead: a rejected key WARNS (naming it) and every other key
+# still takes effect; the function always returns 0. Honors --dry-run.
+apply_sysctl_file() {
+    local file=$1 line="" key value skipped=0
+    [[ -f "$file" ]] || { warn "sysctl file not found: $file"; return 0; }
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would apply sysctl keys from $file (tolerant)"; return 0; fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"                                  # drop comments
+        [[ "$line" =~ [^[:space:]] ]] || continue            # skip blank lines
+        [[ "$line" == *=* ]] || continue                     # skip non key=value
+        key="${line%%=*}";  key="${key//[[:space:]]/}"       # keys never contain spaces
+        value="${line#*=}"; value="${value#"${value%%[![:space:]]*}"}"   # ltrim value (keep internal spaces)
+        if sysctl -w "${key}=${value}" >/dev/null 2>&1; then
+            debug "sysctl ${key}=${value}"
+        else
+            warn "sysctl: '${key}' not accepted (kernel subtree not present yet?) — skipped"
+            skipped=$((skipped + 1))
+        fi
+    done < "$file"
+    (( skipped > 0 )) && warn "sysctl: applied ${file} with ${skipped} key(s) skipped"
+    return 0
+}
+
 # ----------------------------------------------------------------------------
 # Interactive prompts — REPLY convention preserved from the failover script.
 # In non-interactive mode the default is used; a missing default is fatal so we

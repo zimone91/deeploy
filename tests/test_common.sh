@@ -125,6 +125,30 @@ write_file "$WF" "$(printf '#!/bin/bash\necho bye\n')"$'\n' 0700  # overwrite
 check "write_file overwrote"           "$(grep -c bye "$WF")" "1"
 check_true "write_file backed up prior" "[[ -f \"$DEEPLOY_BACKUP_DIR/$RUN_TS$WF\" ]]"
 
+echo "== apply_sysctl_file: tolerant under set -e (missing key warns, others apply) =="
+# Mock sysctl: accept everything EXCEPT keys under a missing subtree (fs.xfs.*),
+# which a fresh box rejects with non-zero — the exact crash we are guarding.
+SYSCTL_LOG="$WORK/sysctl.log"; : >"$SYSCTL_LOG"
+sysctl() {   # shadow real sysctl
+    if [[ "$1" == "-w" ]]; then
+        case "$2" in
+            fs.xfs.*) return 1 ;;                       # subtree not present yet
+            *) echo "$2" >>"$SYSCTL_LOG"; return 0 ;;
+        esac
+    fi
+}
+SF="$WORK/sysctl.d.conf"
+printf '%s\n' '# a comment' '' 'vm.swappiness=0' 'net.core.rmem_max=134217728' 'fs.xfs.xfssyncd_centisecs=10000' 'net.ipv4.tcp_rmem=10240 87380 12582912' >"$SF"
+# The whole point: this must NOT abort under the installer's production flags.
+APPLY_OUT=$( set -Eeuo pipefail; apply_sysctl_file "$SF" 2>&1 ); APPLY_RC=$?
+check "apply_sysctl_file returns 0 under set -Eeuo (no abort)" "$APPLY_RC" "0"
+check "good keys applied (swappiness)"      "$(grep -c '^vm.swappiness=0$' "$SYSCTL_LOG")" "1"
+check "good keys applied (rmem_max)"        "$(grep -c 'net.core.rmem_max=134217728' "$SYSCTL_LOG")" "1"
+check "multi-value key kept whole (tcp_rmem)" "$(grep -c 'net.ipv4.tcp_rmem=10240 87380 12582912' "$SYSCTL_LOG")" "1"
+check "missing-subtree key NOT applied"     "$(grep -c 'fs.xfs' "$SYSCTL_LOG")" "0"
+check "missing key produces a WARN naming it" "$(grep -c "fs.xfs.xfssyncd_centisecs' not accepted" <<<"$APPLY_OUT")" "1"
+unset -f sysctl
+
 echo "== phase_begin / phase_end =="
 phase_begin 3 "Disk"
 check "current-phase recorded"  "$(state_get current-phase)" "3:Disk"
