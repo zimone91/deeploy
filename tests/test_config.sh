@@ -37,8 +37,7 @@ seed_state() {
     state_set solana_home /root/solana;   state_set ledger_path /root/solana/ledger
     state_set accounts_path /mnt/accounts/solana/accounts; state_set snapshots_path /root/solana/snapshots
     state_set jito_tag v4.0.0-jito
-    state_set fake_identity /root/solana/mvkfake/mainnet-validator-keypair.json
-    state_set unstaked_keypair /root/solana/unstaked-identity.json
+    state_set sync_identity /root/solana/unstaked-identity.json
     state_set staked_keypair /root/solana/mainnet-validator-keypair.json
     state_set vote_account_pubkey "$VOTE"
     state_set mev_mode bam; state_set bam_url http://slc.mainnet.bam.jito.wtf
@@ -56,6 +55,9 @@ check "SSH_PORT"                    "$(grep -c 'SSH_PORT=\"2222\"' "$CONFIG_FILE
 check "POH_CORE"                    "$(grep -c 'POH_CORE=\"10\"' "$CONFIG_FILE")" "1"
 check "JITO_TAG"                    "$(grep -c 'JITO_TAG=\"v4.0.0-jito\"' "$CONFIG_FILE")" "1"
 check "STAKED_KEYPAIR is a PATH"    "$(grep -c 'STAKED_KEYPAIR=\"/root/solana/mainnet-validator-keypair.json\"' "$CONFIG_FILE")" "1"
+# sync_identity (state) exports under the file-based conf key UNSTAKED_KEYPAIR; no FAKE_IDENTITY key anymore.
+check "sync_identity -> UNSTAKED_KEYPAIR conf key" "$(grep -c 'UNSTAKED_KEYPAIR=\"/root/solana/unstaked-identity.json\"' "$CONFIG_FILE")" "1"
+check "no FAKE_IDENTITY_KEYPAIR key (mvkfake gone)" "$(grep -c 'FAKE_IDENTITY' "$CONFIG_FILE")" "0"
 check "VOTE pubkey (public)"        "$(grep -c "VOTE_ACCOUNT_PUBKEY=\"$VOTE\"" "$CONFIG_FILE")" "1"
 check "BAM/region captured"         "$(grep -c 'BAM_URL=\"http://slc.mainnet.bam.jito.wtf\"' "$CONFIG_FILE")" "1"
 check "NO key material (JSON array)" "$(grep -cE '\[[0-9]+,[0-9]+' "$CONFIG_FILE")" "0"
@@ -79,6 +81,7 @@ RESCORE=0 config_import >/dev/null 2>&1
 check "imported poh_core"   "$(state_get poh_core)" "10"
 check "imported vote"       "$(state_get vote_account_pubkey)" "$VOTE"
 check "imported staked path" "$(state_get staked_keypair)" "/root/solana/mainnet-validator-keypair.json"
+check "imported sync_identity (round-trips via UNSTAKED_KEYPAIR)" "$(state_get sync_identity)" "/root/solana/unstaked-identity.json"
 check "imported bam_url"    "$(state_get bam_url)" "http://slc.mainnet.bam.jito.wtf"
 
 echo "== region: --rescore INVOKES region_recommend; plain import does NOT =="

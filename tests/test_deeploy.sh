@@ -58,11 +58,22 @@ echo "== --only runs exactly one phase =="
 reset_state; : >"$RAN"; ONLY_PHASE=4 install_run >/dev/null 2>&1; ONLY_PHASE=""
 check "only phase 4 ran" "$(cat "$RAN")" "toolchain_build"
 
-echo "== DZ phase gated on DZ_ENABLED =="
+echo "== DZ phase: interactive prompt; env/state override; --yes does NOT enable =="
 reset_state; : >"$RAN"; DZ_ENABLED=true install_run >/dev/null 2>&1
-check "DZ on: doublezero_run ran" "$(grep -c '^doublezero_run$' "$RAN")" "1"
+check "DZ on (env=true): doublezero_run ran"   "$(grep -c '^doublezero_run$' "$RAN")" "1"
+check "DZ on: dz_enabled recorded to state"    "$(state_get dz_enabled)" "true"
 reset_state; : >"$RAN"; DZ_ENABLED=false install_run >/dev/null 2>&1
-check "DZ off: doublezero_run skipped" "$(grep -c '^doublezero_run$' "$RAN")" "0"
+check "DZ off (env=false): skipped"            "$(grep -c '^doublezero_run$' "$RAN")" "0"
+# Unset + non-interactive (the suite's mode) -> default N, skip (NEVER hangs/enables).
+reset_state; : >"$RAN"; ( unset DZ_ENABLED; install_run ) >/dev/null 2>&1
+check "DZ unset + non-interactive: skipped"    "$(grep -c '^doublezero_run$' "$RAN")" "0"
+check "DZ unset: recorded false"               "$(state_get dz_enabled)" "false"
+# Unset + --yes -> still skip (per decision: --yes does NOT auto-enable DZ).
+reset_state; : >"$RAN"; ( unset DZ_ENABLED; ASSUME_YES=1 install_run ) >/dev/null 2>&1
+check "DZ unset + --yes: still skipped"         "$(grep -c '^doublezero_run$' "$RAN")" "0"
+# Recorded state honored without re-prompt (resume scenario): dz_enabled=true in state, DZ_ENABLED unset.
+reset_state; : >"$RAN"; state_set dz_enabled true; ( unset DZ_ENABLED; install_run ) >/dev/null 2>&1
+check "DZ from state=true (resume): ran, no prompt" "$(grep -c '^doublezero_run$' "$RAN")" "1"
 
 echo "== REBOOT GATE (pre-reboot): installs oneshot, stops before phase 8 =="
 reset_state; DZ_ENABLED=false
@@ -91,6 +102,26 @@ POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
 check "post-reboot: start_run ran"            "$(grep -c '^start_run$' "$RAN")" "1"
 check "post-reboot: reboot_done set"          "$(state_has reboot_done && echo y || echo n)" "y"
 check "post-reboot: resume service disabled"  "$(grep -c 'systemctl disable deeploy-resume.service' "$CALLS")" "1"
+
+echo "== POST-REBOOT DZ: dz_enabled in state -> dz_resume (verify/restore), NOT re-run, NOT re-prompt =="
+# Mirrors the isolation pattern: DZ was set up + recorded pre-reboot; the boundary
+# verifies/restores it post-reboot without re-running the full flow or prompting.
+dz_resume() { echo 'dz_resume' >>"$RAN"; }            # observe the resume call
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set dz_enabled true                              # DZ was enabled pre-reboot
+: >"$RAN"; : >"$CALLS"
+POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
+check "post-reboot DZ: dz_resume called"      "$(grep -c '^dz_resume$' "$RAN")" "1"
+check "post-reboot DZ: doublezero_run NOT re-run" "$(grep -c '^doublezero_run$' "$RAN")" "0"
+check "post-reboot DZ: still started"         "$(grep -c '^start_run$' "$RAN")" "1"
+# DZ NOT enabled -> no resume call.
+dz_resume() { echo 'dz_resume' >>"$RAN"; }
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set dz_enabled false
+: >"$RAN"
+POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
+check "post-reboot no-DZ: dz_resume NOT called" "$(grep -c '^dz_resume$' "$RAN")" "0"
+unset -f dz_resume
 
 echo "== POST-REBOOT, isolation MISMATCH: FAIL + diagnostics, validator NOT started =="
 reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"

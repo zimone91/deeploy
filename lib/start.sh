@@ -28,7 +28,7 @@ start_resolve_config() {
     VOTE_ACCOUNT_PUBKEY="$(state_get vote_account_pubkey "")"
     SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
     SOLANA_SERVICE="${SOLANA_SERVICE:-$SOLANA_HOME/solana.service}"
-    DZ_ENABLED="$(state_get dz_multicast false)"
+    DZ_ENABLED="$(state_get dz_enabled false)"   # was dz_multicast (latent bug): the finalize pointer keys on ENABLEMENT
     # Resolve the validator bin dir WITHOUT $HOME — Phase 8 runs under the systemd
     # resume service where $HOME is empty (was: "/.local/.../solana" -> not found).
     SOLANA_BIN="$(deeploy_solana_bin)"
@@ -85,7 +85,7 @@ start_pin_poh() {
 
 start_print_summary() {
     step "DEPLOYMENT COMPLETE"
-    ok "Node is synced (catchup 0) on the THROWAWAY fake identity."
+    ok "Node is synced (catchup 0) on the unstaked sync identity."
     info ""
     info "MANUAL staked-key hot-swap (DeePloy never touches the real key):"
     info "  1) Place the real staked keypair at:  ${STAKED_KEYPAIR}   (chmod 600)"

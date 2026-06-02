@@ -39,20 +39,61 @@ _dz_detect_public_ip() {
     ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
 }
 
+# Decide whether to set up DoubleZero. Phase 7 is interactive, so an operator who
+# leaves the config alone is ASKED rather than silently skipped. Precedence:
+#   1. DZ_ENABLED explicitly set (env / sourced config) -> honor it, no prompt
+#   2. a value recorded to state by a prior run -> honor it (resume: no re-prompt)
+#   3. interactive AND not --yes -> ASK (default N)
+#   4. otherwise (non-interactive / --yes / post-reboot) -> N (skip)
+# --yes deliberately does NOT auto-enable DZ: it sets up a tunnel and may need a
+# migrated key, so it is never enabled unattended. The decision is recorded to
+# state so the post-reboot resume neither re-skips nor re-prompts (mirrors
+# isolated_set). Returns 0 if DZ should run.
+dz_should_enable() {
+    local decision
+    if [[ -n "${DZ_ENABLED+x}" ]]; then
+        decision="$DZ_ENABLED"
+    elif [[ -n "$(state_get dz_enabled "")" ]]; then
+        decision="$(state_get dz_enabled)"
+    elif is_interactive && [[ "${ASSUME_YES:-0}" != "1" ]]; then
+        ask "Enable DoubleZero (DZ tunnel)? [y/N]" "N"
+        case "$REPLY" in [Yy]*) decision=true ;; *) decision=false ;; esac
+    else
+        decision=false
+    fi
+    state_set dz_enabled "$decision"
+    [[ "$decision" == "true" ]]
+}
+
 # --- config ------------------------------------------------------------------
 dz_resolve_config() {
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (dz-finalize may run standalone)
     SOLANA_HOME="$(state_get solana_home /root/solana)"
-    DZ_KEYPAIR="${DZ_KEYPAIR:-$SOLANA_HOME/dz-keypair.json}"
+    DZ_KEYPAIR="${DZ_KEYPAIR:-$(state_get dz_keypair "$SOLANA_HOME/dz-keypair.json")}"
     DZ_ENV="${DZ_ENV:-mainnet-beta}"
-    DZ_MULTICAST="${DZ_MULTICAST:-false}"
     STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
+
+    # Public IP: explicit env > recorded state (resume) > prompt (fresh interactive).
+    [[ -z "${DZ_CLIENT_IP:-}" ]] && DZ_CLIENT_IP="$(state_get dz_client_ip "")"
     if [[ -z "${DZ_CLIENT_IP:-}" ]]; then
         local det; det=$(_dz_detect_public_ip)
         ask "Public IP for DoubleZero (connect ibrl --client-ip)" "$det"
         DZ_CLIENT_IP="$REPLY"
     fi
     _dz_valid_ip "$DZ_CLIENT_IP" || fail "Invalid public IP for DoubleZero: '${DZ_CLIENT_IP}'"
+
+    # Multicast: explicit env > recorded state (resume) > prompt (fresh interactive,
+    # --yes-independent: never auto-enabled unattended) > default off.
+    if [[ -z "${DZ_MULTICAST+x}" ]]; then
+        local mc; mc="$(state_get dz_multicast "")"
+        if   [[ -n "$mc" ]]; then DZ_MULTICAST="$mc"
+        elif is_interactive && [[ "${ASSUME_YES:-0}" != "1" ]]; then
+            ask "Enable DZ multicast (edge-solana-shreds; appends the 2nd shred-receiver address)? [y/N]" "N"
+            case "$REPLY" in [Yy]*) DZ_MULTICAST=true ;; *) DZ_MULTICAST=false ;; esac
+        else DZ_MULTICAST=false
+        fi
+    fi
+
     state_set dz_keypair   "$DZ_KEYPAIR"
     state_set dz_client_ip "$DZ_CLIENT_IP"
     state_set dz_multicast "$DZ_MULTICAST"
@@ -161,6 +202,7 @@ ExecStart=
 ExecStart=/usr/bin/doublezerod -sock-file /run/doublezerod/doublezerod.sock -env ${DZ_ENV}
 "
     run systemctl daemon-reload
+    run systemctl enable doublezerod        # start on boot so the tunnel restores after the isolation reboot
     run systemctl restart doublezerod
     run doublezero config set --env "$DZ_ENV"
 }
@@ -193,6 +235,32 @@ dz_print_finalize() {
     info "Passport access needs the REAL staked key to sign (absent at deploy time)."
     info "After the manual set-identity swap, run:  deeploy dz-finalize"
     info "  passport: prepare-validator-access -> sign-offchain-message -> request-validator-access"
+}
+
+# Is the DZ tunnel interface up? (mockable probe)
+_dz_iface_up() { ip link show doublezero0 >/dev/null 2>&1; }
+
+# Post-reboot path. DZ was set up interactively pre-reboot (key placed, connect
+# run, decision persisted to state). After the isolation reboot, doublezerod is
+# enabled so it SHOULD bring the tunnel back automatically. So: VERIFY the
+# interface; if it didn't come up, RESTORE it from persisted state (re-connect —
+# never re-prompt, never re-place the migration key, which is already on disk).
+dz_resume() {
+    require_root
+    dz_resolve_config            # reads client-ip / multicast from state (no prompts on resume)
+    step "DoubleZero post-reboot check (doublezero0)"
+    if _dz_iface_up; then
+        ok "doublezero0 is up — tunnel restored automatically by doublezerod (no re-connect needed)"
+        return 0
+    fi
+    warn "doublezero0 not up after reboot — restoring the tunnel from saved settings (no re-prompt)"
+    run systemctl restart doublezerod
+    dz_ufw_gre
+    dz_connect_ibrl              # uses DZ_CLIENT_IP from state
+    dz_ufw_bgp
+    dz_multicast
+    if _dz_iface_up; then ok "doublezero0 restored"
+    else warn "doublezero0 still not up — check 'doublezero status' / doublezerod logs"; fi
 }
 
 # --- orchestrator (deploy-time) ----------------------------------------------

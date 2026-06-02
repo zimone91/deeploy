@@ -48,8 +48,8 @@ run_phase() {
         4) toolchain_build ;;
         5) keys_run ;;
         6) validatorcfg_run; nic_run ;;
-        7) if [[ "${DZ_ENABLED:-false}" == "true" ]]; then doublezero_run
-           else info "DoubleZero disabled (DZ_ENABLED=false) — skipping"; fi ;;
+        7) if dz_should_enable; then doublezero_run
+           else info "DoubleZero not enabled — skipping (set DZ_ENABLED=true or answer 'y' at the prompt)"; fi ;;
         8) start_run ;;
     esac
     phase_end "$n"
@@ -137,6 +137,11 @@ _install_reboot_boundary() {
     if [[ "$POST_REBOOT" == "1" ]]; then
         # We are the post-reboot resume. Verify isolation BEFORE starting.
         _install_verify_isolation || fail "Isolation verification failed — not starting the validator. Fix GRUB and re-run."
+        # DoubleZero, if it was set up pre-reboot, is verified/restored here (not
+        # re-run as a phase — phases 0-7 are already done). No re-prompt/re-place.
+        if [[ "$(state_get dz_enabled false)" == "true" ]] && declare -F dz_resume >/dev/null 2>&1; then
+            dz_resume || warn "DoubleZero post-reboot restore had issues — check 'doublezero status'"
+        fi
         state_set reboot_done "$(_ts)"
         return 0
     fi

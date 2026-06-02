@@ -47,8 +47,7 @@ SNAPSHOTS_PATH snapshots_path
 @ Build
 JITO_TAG jito_tag
 @ Keys (PATHS ONLY — no key material; vote is a public pubkey)
-FAKE_IDENTITY_KEYPAIR fake_identity
-UNSTAKED_KEYPAIR unstaked_keypair
+UNSTAKED_KEYPAIR sync_identity
 STAKED_KEYPAIR staked_keypair
 VOTE_ACCOUNT_PUBKEY vote_account_pubkey
 @ MEV

@@ -12,6 +12,26 @@ and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
 ### Fixed
+- **DoubleZero is now an interactive prompt, not a silent skip.** Phase 7 gated
+  on a `DZ_ENABLED` default of `false` overridable only via env/config — an
+  interactive operator who left the config alone got no DZ and no question. Phase
+  7 now ASKS ("Enable DoubleZero?", default N) when `DZ_ENABLED` isn't explicitly
+  set; env/config still override; `--yes` deliberately does NOT auto-enable
+  (a tunnel + possible key migration is never set up unattended). The decision is
+  recorded to state so the post-reboot resume neither re-skips nor re-prompts: it
+  verifies `doublezero0` came up and, only if not, restores the tunnel from saved
+  settings (never re-placing the migration key). Multicast is likewise prompted
+  when unset. (Also fixed a latent bug: the dz-finalize summary pointer keyed on
+  `dz_multicast` instead of `dz_enabled`.)
+- **Single throwaway identity (was two).** Phase 5 generated both `mvkfake` (the
+  sync `--identity`) and a separate `unstaked-identity.json`. Collapsed to ONE
+  key — `unstaked-identity.json`, which the node syncs under and which doubles as
+  the failover safe-harbor. State var is `sync_identity` (role-based);
+  `validator.sh --identity` points to it; the `fake != unstaked` check is gone
+  while `vote != identity` and `staked != sync` remain. The `deeploy.conf` key
+  stays `UNSTAKED_KEYPAIR` (matches the file name).
+- **`solana config` prints once.** `keys_config_cli` made two `config set` calls
+  (url, then keypair), each echoing the full config block. Combined into one.
 - **DoubleZero migration no longer silently generates a new key.** `dz_keypair`
   conflated "key file exists" with "is a migration": if the operator hadn't
   pre-placed their production dz-keypair, DeePloy generated a brand-new key

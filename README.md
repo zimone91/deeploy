@@ -74,9 +74,9 @@ for `catchup 0` and prints the manual staked-key swap instructions.
 | 2 | Tuning | **dynamic CPU isolation → GRUB**, performance-tweaks, sysctl, NOFILE → reboot gate |
 | 3 | Disk | detect → confirm → blkdiscard + mkfs.xfs + mount + fstab + symlink |
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
-| 5 | Keys | generate fake + unstaked identities; print where the real key goes |
+| 5 | Keys | generate the unstaked sync identity; print where the real key goes |
 | 6 | Validator config | generate `validator.sh`, `solana.service`, logrotate, PoH-pin, NIC setup |
-| 7 | DoubleZero | (optional) install/keypair/env/ufw/connect ibrl/multicast |
+| 7 | DoubleZero | (optional, prompted) install/keypair/env/ufw/connect ibrl/multicast |
 | 8 | Start | free-disk precheck → start → `catchup 0` → pin PoH → verify → summary |
 
 ## Commands

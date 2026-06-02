@@ -43,7 +43,7 @@ printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$OS_RELEASE_FILE"
 printf 'MemTotal:       395264000 kB\nSwapTotal:       2097152 kB\n' >"$PROC_MEMINFO"
 : >"$WORK/mdstat"   # no software RAID on the simulated box (empty mdstat)
 # mock solana toolchain binaries
-printf '#!/bin/bash\ncase "$1" in new) for a in "$@";do [ "$p" = -o ]&&o="$a";p="$a";done; echo x>"$o";; pubkey) case "$2" in *mvkfake*)echo FakeId11111111111111111111111111111111111;;*unstaked*)echo Unstaked111111111111111111111111111111111;;*)echo Other1111111111111111111111111111111111111;;esac;; esac\n' >"$WORK/bin/solana-keygen"
+printf '#!/bin/bash\ncase "$1" in new) for a in "$@";do [ "$p" = -o ]&&o="$a";p="$a";done; echo x>"$o";; pubkey) case "$2" in *unstaked*)echo Unstaked111111111111111111111111111111111;;*)echo Other1111111111111111111111111111111111111;;esac;; esac\n' >"$WORK/bin/solana-keygen"
 printf '#!/bin/bash\ncase "$1" in catchup) echo "0 slot(s) behind (us:100 them:100)";; *) :;; esac\n' >"$WORK/bin/solana"
 chmod +x "$WORK/bin/solana-keygen" "$WORK/bin/solana"
 
@@ -116,7 +116,7 @@ for p in 0 1 2 3 4 5 6 7; do
         3) printf '    writes: solana_home=%s ledger_path=%s accounts_path=%s snapshots_path=%s\n' \
                "$(sget solana_home)" "$(sget ledger_path)" "$(sget accounts_path)" "$(sget snapshots_path)" ;;
         4) printf '    writes: jito_tag=%s\n' "$(sget jito_tag)" ;;
-        5) printf '    writes: fake_identity=%s vote_account_pubkey=%s\n' "$(sget fake_identity)" "$(sget vote_account_pubkey)" ;;
+        5) printf '    writes: sync_identity=%s vote_account_pubkey=%s\n' "$(sget sync_identity)" "$(sget vote_account_pubkey)" ;;
         6) printf '    reads poh_core/paths -> generated validator.sh + solana.service + mlx5-irq service\n' ;;
         7) printf '    DZ_ENABLED=false -> skipped\n' ;;
     esac

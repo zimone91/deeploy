@@ -40,7 +40,7 @@ state_set accounts_path /mnt/accounts/solana/accounts
 state_set snapshots_path /root/solana/snapshots
 state_set staked_keypair /root/solana/mainnet-validator-keypair.json
 state_set vote_account_pubkey Vote1111111111111111111111111111111111111111
-state_set dz_multicast true
+state_set dz_enabled true     # the dz-finalize summary pointer keys on ENABLEMENT (was dz_multicast: latent bug, fixed)
 start_resolve_config
 
 echo "== disk precheck =="

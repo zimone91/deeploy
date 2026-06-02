@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # ============================================================================
 # DeePloy — lib/keys.sh   (Phase 5: identities)
-# Generate the THROWAWAY fake identity + an unstaked identity, point the CLI at
-# mainnet, take the vote-account pubkey, and PRINT where the REAL staked key
+# Generate ONE throwaway "sync identity" (unstaked-identity.json), point the CLI
+# at mainnet, take the vote-account pubkey, and PRINT where the REAL staked key
 # goes. DeePloy NEVER generates, moves, or reads the real staked key — the node
-# syncs on the fake identity and the operator hot-swaps manually at the end.
+# SYNCS on this unstaked identity, the operator hot-swaps to the real staked key
+# manually after 'catchup 0', and failover later returns to this same key.
 #
-# Safety: keys are never regenerated if they already exist (regenerating a live
-# validator's identity would be catastrophic). The failover script's
-# "staked == unstaked -> FAIL" guard is lifted here and extended.
+# One key, not two: the file is unstaked-identity.json (operator's terminology);
+# the role is the "sync identity" (what the node runs under until the swap), so
+# the state var is sync_identity. (Earlier versions also made a separate mvkfake
+# key — dropped; a single throwaway is both the sync identity and the failover
+# safe-harbor.)
+#
+# Safety: the key is never regenerated if it already exists (regenerating a live
+# validator's identity would be catastrophic). vote != identity and
+# staked != sync-identity are enforced.
 #
 # Requires: common.sh sourced. The solana toolchain (Phase 4) provides
 # solana-keygen/solana under $SOLANA_BIN; tests override the thin wrappers.
@@ -32,8 +39,9 @@ _keys_valid_pubkey() { [[ "$1" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; }
 keys_resolve_config() {
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (consistent across phases)
     local home; home="$(state_get solana_home /root/solana)"
-    FAKE_IDENTITY="${FAKE_IDENTITY:-$home/mvkfake/mainnet-validator-keypair.json}"
-    UNSTAKED_KEYPAIR="${UNSTAKED_KEYPAIR:-$home/unstaked-identity.json}"
+    # One throwaway key: the file keeps the operator's name (unstaked-identity.json),
+    # its ROLE is the sync identity (UNSTAKED_KEYPAIR env/conf still accepted in).
+    SYNC_IDENTITY="${SYNC_IDENTITY:-${UNSTAKED_KEYPAIR:-$home/unstaked-identity.json}}"
     STAKED_KEYPAIR="${STAKED_KEYPAIR:-$home/mainnet-validator-keypair.json}"
     LEDGER_PATH="$(state_get ledger_path "$home/ledger")"
 
@@ -43,19 +51,18 @@ keys_resolve_config() {
     fi
     _keys_valid_pubkey "$VOTE_ACCOUNT_PUBKEY" || fail "Vote account pubkey looks invalid: '${VOTE_ACCOUNT_PUBKEY}'"
 
-    state_set fake_identity      "$FAKE_IDENTITY"
-    state_set unstaked_keypair   "$UNSTAKED_KEYPAIR"
-    state_set staked_keypair     "$STAKED_KEYPAIR"
+    state_set sync_identity       "$SYNC_IDENTITY"
+    state_set staked_keypair      "$STAKED_KEYPAIR"
     state_set vote_account_pubkey "$VOTE_ACCOUNT_PUBKEY"
 }
 
 # --- CLI config --------------------------------------------------------------
 keys_config_cli() {
     step "solana CLI config (mainnet, keypair path)"
-    _keys_solana config set --url "$KEYS_RPC_URL"
-    # Points at the REAL key PATH (placed manually later) for operator CLI use;
-    # this only stores a path string — it does not require the file to exist.
-    _keys_solana config set --keypair "$STAKED_KEYPAIR"
+    # One combined `config set` (url + keypair) so the CLI prints its config block
+    # ONCE, not twice. The keypair points at the REAL key PATH (placed manually
+    # later) for operator CLI use — it only stores a path string, file need not exist.
+    _keys_solana config set --url "$KEYS_RPC_URL" --keypair "$STAKED_KEYPAIR"
 }
 
 # --- generation (idempotent; never regenerate an existing key) ---------------
@@ -71,31 +78,25 @@ _keys_generate_one() {
 }
 
 keys_generate() {
-    step "Generating throwaway identities"
-    _keys_generate_one "$FAKE_IDENTITY"    "Fake validator identity (mvkfake)"
-    _keys_generate_one "$UNSTAKED_KEYPAIR" "Unstaked identity"
+    step "Generating the unstaked sync identity"
+    _keys_generate_one "$SYNC_IDENTITY" "Unstaked sync identity"
 }
 
 # --- validation (the foolproofing) -------------------------------------------
 keys_validate() {
     is_dry_run && return 0
-    local fake unstaked staked
-    fake="$(_keys_pubkey "$FAKE_IDENTITY")"
-    unstaked="$(_keys_pubkey "$UNSTAKED_KEYPAIR")"
-    [[ -n "$fake" ]]     || fail "Could not read fake identity pubkey from $FAKE_IDENTITY"
-    [[ -n "$unstaked" ]] || fail "Could not read unstaked identity pubkey from $UNSTAKED_KEYPAIR"
-    [[ "$fake" == "$unstaked" ]] && fail "Fake identity and unstaked identity are THE SAME key!"
-    [[ "$fake" == "$VOTE_ACCOUNT_PUBKEY" ]] && fail "Vote account equals the identity — they must be different accounts"
+    local sync staked
+    sync="$(_keys_pubkey "$SYNC_IDENTITY")"
+    [[ -n "$sync" ]] || fail "Could not read sync-identity pubkey from $SYNC_IDENTITY"
+    [[ "$sync" == "$VOTE_ACCOUNT_PUBKEY" ]] && fail "Vote account equals the identity — they must be different accounts"
 
     if [[ -f "$STAKED_KEYPAIR" ]]; then
         staked="$(_keys_pubkey "$STAKED_KEYPAIR")"
-        [[ "$staked" == "$fake" ]]     && fail "Real staked key equals the fake identity — defeats the throwaway-sync design"
-        [[ "$staked" == "$unstaked" ]] && fail "Real staked key equals the unstaked identity — wrong key in place"
+        [[ "$staked" == "$sync" ]] && fail "Real staked key equals the sync identity — defeats the throwaway-sync design (wrong key in place)"
         warn "A key already exists at the real-key path ($STAKED_KEYPAIR) — DeePloy left it untouched"
     fi
-    ok "Identity checks passed (fake != unstaked, vote != identity)"
-    info "  fake identity:  $fake"
-    info "  unstaked:       $unstaked"
+    ok "Identity checks passed (vote != identity, staked != sync)"
+    info "  sync identity:  $sync   ($SYNC_IDENTITY)"
     info "  vote account:   $VOTE_ACCOUNT_PUBKEY"
 }
 
@@ -103,7 +104,7 @@ keys_validate() {
 keys_print_manual() {
     step "MANUAL: the real staked key (DeePloy will not touch it)"
     warn "DeePloy never generates, copies, or reads your real staked validator key."
-    info "The node syncs on the throwaway fake identity. After 'catchup 0', you hot-swap manually."
+    info "The node syncs on the unstaked sync identity. After 'catchup 0', you hot-swap manually."
     info ""
     info "1) Place your real staked keypair at:"
     info "     ${STAKED_KEYPAIR}     (chmod 600; never commit; never paste its contents)"

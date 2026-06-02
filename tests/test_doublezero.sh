@@ -190,6 +190,60 @@ check "passport prepare"                   "$(grep -c 'passport prepare-validato
 check "sign chained -> request --signature" "$(grep -c 'passport request-validator-access .* --signature SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567' "$CALLS")" "1"
 check "NO validator-deposit (removed)"     "$(grep -c 'validator-deposit' "$CALLS")" "0"
 
+echo "== dz_should_enable: env > state > prompt; --yes does NOT enable =="
+# env explicitly set -> honored, no prompt, recorded to state
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( DZ_ENABLED=true  dz_should_enable ) >/dev/null 2>&1; check "env=true -> enable (rc0)"  "$?" "0"
+( DZ_ENABLED=false dz_should_enable ) >/dev/null 2>&1; check "env=false -> skip (rc1)"   "$?" "1"
+DZ_ENABLED=true dz_should_enable >/dev/null 2>&1
+check "decision recorded to state" "$(state_get dz_enabled)" "true"
+# recorded state honored when env unset (resume: no re-prompt)
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set dz_enabled true
+( unset DZ_ENABLED; dz_should_enable ) >/dev/null 2>&1; check "state=true honored -> enable" "$?" "0"
+# unset + non-interactive -> skip (NEVER hangs/enables)
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( unset DZ_ENABLED; NONINTERACTIVE=1 dz_should_enable ) >/dev/null 2>&1; check "unset+non-interactive -> skip" "$?" "1"
+# unset + --yes -> skip (per decision: --yes does NOT auto-enable DZ)
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( unset DZ_ENABLED; ASSUME_YES=1 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+--yes -> skip (no auto-enable)" "$?" "1"
+# unset + interactive 'y' -> enable
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+ask() { REPLY=y; }
+( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+interactive 'y' -> enable" "$?" "0"
+ask() { REPLY=N; }
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+interactive 'N' -> skip" "$?" "1"
+unset -f ask
+
+echo "== multicast sub-prompt (resolve_config): preset > state > prompt =="
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set solana_home /root/solana
+ask() { case "$1" in *multicast*) REPLY=y;; *Public\ IP*) REPLY=203.0.113.7;; *) REPLY="";; esac; }
+( unset DZ_MULTICAST; ASSUME_YES=0 NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_resolve_config >/dev/null 2>&1; [[ "$DZ_MULTICAST" == "true" ]] )
+check "multicast prompt 'y' -> true" "$?" "0"
+ask() { REPLY=""; }   # empty -> default N
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set solana_home /root/solana
+( unset DZ_MULTICAST; ASSUME_YES=0 NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_resolve_config >/dev/null 2>&1; [[ "$DZ_MULTICAST" == "false" ]] )
+check "multicast prompt default -> false" "$?" "0"
+unset -f ask
+
+echo "== dz_resume: iface up -> verify only (no connect); iface down -> restore =="
+: >"$CALLS"
+ip() { case "$*" in *"link show doublezero0"*) return 0;; *) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }   # iface UP
+state_set dz_client_ip 203.0.113.7; state_set dz_multicast false; state_set solana_home /root/solana
+DZ_CLIENT_IP=203.0.113.7 dz_resume >/dev/null 2>&1
+check "iface up: no connect ibrl (verify only)" "$(grep -c 'connect ibrl' "$CALLS")" "0"
+: >"$CALLS"
+ip() { case "$*" in *"link show doublezero0"*) return 1;; *) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }   # iface DOWN
+DZ_CLIENT_IP=203.0.113.7 dz_resume >/dev/null 2>&1
+check "iface down: restores via connect ibrl" "$(grep -c 'connect ibrl --client-ip 203.0.113.7' "$CALLS")" "1"
+check "iface down: re-applies GRE"            "$(grep -c 'ufw allow proto gre' "$CALLS")" "1"
+check "resume NEVER regenerates/places a key" "$(grep -c 'solana-keygen new' "$CALLS")" "0"
+
+echo "== doublezerod enabled on boot (so the tunnel auto-restores) =="
+: >"$CALLS"
+DZ_ENV=mainnet-beta dz_env_override >/dev/null 2>&1
+check "doublezerod enabled on boot" "$(grep -c 'systemctl enable doublezerod' "$CALLS")" "1"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

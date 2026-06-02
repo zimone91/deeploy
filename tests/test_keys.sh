@@ -32,12 +32,11 @@ CALLS="$WORK/calls"; KEYGEN="$WORK/keygen"; : >"$CALLS"; : >"$KEYGEN"
 mkpub() { local s=$1; while [[ ${#s} -lt 43 ]]; do s="${s}1"; done; printf '%s' "${s:0:43}"; }
 VOTE=$(mkpub Vote)
 
-# Mocked wrappers
-FAKE_PUB=$(mkpub Fake); UNSTAKED_PUB=$(mkpub Unstaked); STAKED_PUB=$(mkpub Staked)
+# Mocked wrappers. One throwaway now: the unstaked sync identity.
+SYNC_PUB=$(mkpub Sync); STAKED_PUB=$(mkpub Staked)
 _keys_keygen_new() { echo "keygen $1" >>"$KEYGEN"; printf '[1,2,3]' >"$1"; }
 _keys_pubkey() { case "$1" in
-    *mvkfake*)                   printf '%s' "$FAKE_PUB" ;;
-    *unstaked*)                  printf '%s' "$UNSTAKED_PUB" ;;
+    *unstaked*)                  printf '%s' "$SYNC_PUB" ;;
     *mainnet-validator-keypair*) printf '%s' "$STAKED_PUB" ;;
     *)                           printf '%s' "$(mkpub Other)" ;; esac; }
 _keys_solana() { echo "solana $*" >>"$CALLS"; }
@@ -47,55 +46,57 @@ check_true  "valid 43-char base58" "_keys_valid_pubkey $(mkpub Abc)"
 check_false "too short"            "_keys_valid_pubkey abc"
 check_false "contains 0"           "_keys_valid_pubkey 0$(mkpub Abc)"
 
-echo "== resolve_config: paths + vote validation =="
+echo "== resolve_config: single sync identity + vote validation =="
 state_set solana_home "$WORK/home"
-unset FAKE_IDENTITY UNSTAKED_KEYPAIR STAKED_KEYPAIR
+unset SYNC_IDENTITY UNSTAKED_KEYPAIR STAKED_KEYPAIR
 VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
-check "fake path"     "$FAKE_IDENTITY"    "$WORK/home/mvkfake/mainnet-validator-keypair.json"
-check "unstaked path" "$UNSTAKED_KEYPAIR" "$WORK/home/unstaked-identity.json"
+check "sync_identity path (= unstaked file)" "$SYNC_IDENTITY"  "$WORK/home/unstaked-identity.json"
 check "staked path"   "$STAKED_KEYPAIR"   "$WORK/home/mainnet-validator-keypair.json"
+check "sync_identity recorded to state"    "$(state_get sync_identity)" "$WORK/home/unstaked-identity.json"
+check "no fake_identity state (mvkfake gone)" "$(state_get fake_identity '<unset>')" "<unset>"
 check "vote recorded" "$(state_get vote_account_pubkey)" "$VOTE"
+# UNSTAKED_KEYPAIR (conf key) feeds SYNC_IDENTITY when set.
+unset SYNC_IDENTITY
+UNSTAKED_KEYPAIR="$WORK/home/custom-unstaked.json" VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
+check "UNSTAKED_KEYPAIR conf-key -> sync_identity" "$SYNC_IDENTITY" "$WORK/home/custom-unstaked.json"
+unset UNSTAKED_KEYPAIR
 ( VOTE_ACCOUNT_PUBKEY="bad!key" keys_resolve_config ) >/dev/null 2>&1
 check "invalid vote -> fail" "$?" "1"
 
-echo "== generate: fake+unstaked only, real key NEVER generated, idempotent =="
+echo "== generate: ONE key (unstaked sync identity), real key NEVER generated, idempotent =="
 : >"$KEYGEN"; rm -rf "${WORK:?}/home"
-FAKE_IDENTITY="$WORK/home/mvkfake/mainnet-validator-keypair.json" \
-UNSTAKED_KEYPAIR="$WORK/home/unstaked-identity.json" keys_generate >/dev/null 2>&1
-check "exactly 2 keygens (fake+unstaked)" "$(wc -l <"$KEYGEN" | tr -d ' ')" "2"
-check "fake keygen issued"      "$(grep -c 'mvkfake' "$KEYGEN")"   "1"
+SYNC_IDENTITY="$WORK/home/unstaked-identity.json" keys_generate >/dev/null 2>&1
+check "exactly 1 keygen (single identity)" "$(wc -l <"$KEYGEN" | tr -d ' ')" "1"
 check "unstaked keygen issued"  "$(grep -c 'unstaked' "$KEYGEN")"  "1"
-check_true "fake file created"  "[[ -f \"$WORK/home/mvkfake/mainnet-validator-keypair.json\" ]]"
+check "no mvkfake keygen"       "$(grep -c 'mvkfake' "$KEYGEN")"   "0"
+check_true "sync-identity file created" "[[ -f \"$WORK/home/unstaked-identity.json\" ]]"
+check_false "no mvkfake dir created"    "[[ -d \"$WORK/home/mvkfake\" ]]"
 check_false "real key NOT created" "[[ -f \"$WORK/home/mainnet-validator-keypair.json\" ]]"
 : >"$KEYGEN"
-FAKE_IDENTITY="$WORK/home/mvkfake/mainnet-validator-keypair.json" \
-UNSTAKED_KEYPAIR="$WORK/home/unstaked-identity.json" keys_generate >/dev/null 2>&1
+SYNC_IDENTITY="$WORK/home/unstaked-identity.json" keys_generate >/dev/null 2>&1
 check "idempotent: no regen when present" "$(wc -l <"$KEYGEN" | tr -d ' ')" "0"
 
-echo "== validate: foolproofing =="
-FAKE_PUB=$(mkpub Fake); UNSTAKED_PUB=$(mkpub Fake)   # same!
-( FAKE_IDENTITY=/x/mvkfake/k.json UNSTAKED_KEYPAIR=/x/unstaked.json STAKED_KEYPAIR=/x/none \
-  VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate ) >/dev/null 2>&1
-check "fake==unstaked -> FAIL" "$?" "1"
-FAKE_PUB=$(mkpub Vote)                                # identity == vote
-( FAKE_IDENTITY=/x/mvkfake/k.json UNSTAKED_KEYPAIR=/x/unstaked.json STAKED_KEYPAIR=/x/none \
+echo "== validate: foolproofing (vote != identity, staked != sync) =="
+SYNC_PUB=$(mkpub Vote)                                # identity == vote
+( SYNC_IDENTITY=/x/unstaked.json STAKED_KEYPAIR=/x/none \
   VOTE_ACCOUNT_PUBKEY="$(mkpub Vote)" keys_validate ) >/dev/null 2>&1
 check "vote==identity -> FAIL" "$?" "1"
-FAKE_PUB=$(mkpub Fake); UNSTAKED_PUB=$(mkpub Unstaked); STAKED_PUB=$(mkpub Fake)  # staked==fake
+SYNC_PUB=$(mkpub Sync); STAKED_PUB=$(mkpub Sync)      # staked == sync identity
 printf '[9]' >"$WORK/mainnet-validator-keypair.json"
-( FAKE_IDENTITY=/x/mvkfake/k.json UNSTAKED_KEYPAIR=/x/unstaked.json \
+( SYNC_IDENTITY=/x/unstaked.json \
   STAKED_KEYPAIR="$WORK/mainnet-validator-keypair.json" VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate ) >/dev/null 2>&1
-check "real-key==fake -> FAIL" "$?" "1"
-FAKE_PUB=$(mkpub Fake); UNSTAKED_PUB=$(mkpub Unstaked); STAKED_PUB=$(mkpub Staked)  # all distinct
-FAKE_IDENTITY=/x/mvkfake/k.json UNSTAKED_KEYPAIR=/x/unstaked.json STAKED_KEYPAIR=/x/none \
+check "real-key==sync -> FAIL" "$?" "1"
+SYNC_PUB=$(mkpub Sync); STAKED_PUB=$(mkpub Staked)    # distinct
+SYNC_IDENTITY=/x/unstaked.json STAKED_KEYPAIR=/x/none \
   VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate >/dev/null 2>&1
-check "all distinct -> passes" "$?" "0"
+check "vote!=identity, staked!=sync -> passes" "$?" "0"
 
-echo "== config + manual instructions =="
+echo "== config: ONE combined config set (prints once), Fix 3 =="
 : >"$CALLS"
 STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json keys_config_cli >/dev/null 2>&1
-check "config url mainnet"          "$(grep -c 'config set --url https://api.mainnet-beta.solana.com' "$CALLS")" "1"
-check "config keypair = real path"  "$(grep -c 'config set --keypair /root/solana/mainnet-validator-keypair.json' "$CALLS")" "1"
+check "exactly one 'config set' call"  "$(grep -c 'solana config set' "$CALLS")" "1"
+check "combined call has --url"        "$(grep -c 'config set --url https://api.mainnet-beta.solana.com .*--keypair' "$CALLS")" "1"
+check "combined call has real keypair" "$(grep -c -- '--keypair /root/solana/mainnet-validator-keypair.json' "$CALLS")" "1"
 MAN=$(STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json LEDGER_PATH=/root/solana/ledger keys_print_manual 2>&1)
 check_ge "manual shows real-key path"        "$(grep -c '/root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
 check    "set-identity path-form"            "$(grep -c 'set-identity /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"

@@ -31,7 +31,7 @@ systemctl() { :; }; ln() { :; }
 
 seed() {
     state_set solana_home /root/solana
-    state_set fake_identity /root/solana/mvkfake/mainnet-validator-keypair.json
+    state_set sync_identity /root/solana/unstaked-identity.json
     state_set vote_account_pubkey Vote1111111111111111111111111111111111111111
     state_set poh_core 10
     state_set ledger_path /root/solana/ledger
@@ -48,7 +48,7 @@ echo "== validator.sh: arg blocks (BAM, no retransmit, no DZ) =="
 state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
 MEV_MODE=bam; DZ_MULTICAST=false; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "identity = fake"        "$(grep -c -- '--identity /root/solana/mvkfake/mainnet-validator-keypair.json' <<<"$V")" "1"
+check "identity = sync identity" "$(grep -c -- '--identity /root/solana/unstaked-identity.json' <<<"$V")" "1"
 check "vote-account"           "$(grep -c -- '--vote-account Vote1111' <<<"$V")" "1"
 check "genesis hash"           "$(grep -c -- "--expected-genesis-hash $MAINNET_GENESIS_HASH" <<<"$V")" "1"
 check "5 entrypoints"          "$(grep -c -- '--entrypoint entrypoint' <<<"$V")" "5"

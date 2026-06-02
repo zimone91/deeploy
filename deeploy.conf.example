@@ -39,8 +39,7 @@ SNAPSHOTS_PATH="/root/solana/snapshots"   # rides with the LEDGER disk (I/O isol
 JITO_TAG="v4.0.0-jito"                 # see github.com/jito-foundation/jito-solana/releases
 
 # --- Keys: PATHS ONLY (no key material). Vote is a PUBLIC pubkey. ---
-FAKE_IDENTITY_KEYPAIR="/root/solana/mvkfake/mainnet-validator-keypair.json"
-UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"
+UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"   # the unstaked SYNC identity the node runs under until the swap
 STAKED_KEYPAIR="/root/solana/mainnet-validator-keypair.json"   # PATH only; placed by YOU, manually
 VOTE_ACCOUNT_PUBKEY="YourVoteAccountPubkey22222222222222222222222"   # REQUIRED: replace with yours
 
