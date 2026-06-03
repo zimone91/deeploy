@@ -76,7 +76,7 @@ for `catchup 0` and prints the manual staked-key swap instructions.
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
 | 5 | Keys | generate the unstaked sync identity; print where the real key goes |
 | 6 | Validator config | generate `validator.sh`, `solana.service`, logrotate, PoH-pin, NIC setup |
-| 7 | DoubleZero | (optional, prompted) install/keypair/env/ufw/connect ibrl/multicast |
+| 7 | DoubleZero | (optional, prompted) PREPARE only: install/env/ufw(GRE,BGP,44880)/ID-migration/disconnect — connect is a separate post-swap step (`dz-connect`) |
 | 8 | Start | free-disk precheck → start → `catchup 0` → pin PoH → verify → summary |
 
 ## Commands
@@ -88,7 +88,7 @@ deeploy.sh upgrade --rollback   # flip active_release back to the previous relea
 deeploy.sh verify         # run the post-install verification block on demand
 deeploy.sh export         # write deeploy.conf (paths/pubkeys/settings only)
 deeploy.sh import         # load deeploy.conf into state (import --rescore re-pings region)
-deeploy.sh dz-finalize    # DoubleZero passport access (run AFTER the manual key swap)
+deeploy.sh dz-connect     # DoubleZero connect: passport + ibrl + multicast (run AFTER the manual staked-key swap)
 ```
 
 Flags: `--dry-run`, `--resume`, `--only <phase>`, `--force`, `--yes`,

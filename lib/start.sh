@@ -94,7 +94,7 @@ start_print_summary() {
     info "       ${SOLANA_BIN}/agave-validator --ledger ${LEDGER_PATH} authorized-voter add ${STAKED_KEYPAIR}"
     info "     No tower transfer needed: a fresh node rebuilds its vote floor from the cluster."
     info ""
-    [[ "$DZ_ENABLED" == "true" ]] && info "DoubleZero: after the swap, run  deeploy dz-finalize  (passport access)."
+    [[ "$DZ_ENABLED" == "true" ]] && info "DoubleZero: after the swap, run  deeploy dz-connect  (passport + ibrl + multicast)."
     info ""
     info "Failover is a SEPARATE tool (not bundled): install it later via its own one-line"
     info "installer; DeePloy's exported config (deeploy export) is reusable by it."

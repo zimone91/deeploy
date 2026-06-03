@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # DeePloy — entrypoint / dispatcher
-# Subcommands: install | upgrade | verify | export | import | dz-finalize
+# Subcommands: install | upgrade | verify | export | import | dz-connect
 # The load-bearing part is the phased install with a reboot-resume across the
 # CPU-isolation reboot. See install_run() and _install_reboot_boundary().
 #
@@ -48,8 +48,10 @@ run_phase() {
         4) toolchain_build ;;
         5) keys_run ;;
         6) validatorcfg_run; nic_run ;;
-        7) if dz_should_enable; then doublezero_run
-           else info "DoubleZero not enabled — skipping (set DZ_ENABLED=true or answer 'y' at the prompt)"; fi ;;
+        7) # The enable decision was already made in Phase 6 (validatorcfg, which
+           # gates the 2nd shred address on it). Read it from state here.
+           if [[ "$(state_get dz_enabled false)" == "true" ]]; then doublezero_run
+           else info "DoubleZero not enabled — skipping (answer 'y' at the Phase 6 prompt or set DZ_ENABLED=true)"; fi ;;
         8) start_run ;;
     esac
     phase_end "$n"
@@ -137,9 +139,10 @@ _install_reboot_boundary() {
     if [[ "$POST_REBOOT" == "1" ]]; then
         # We are the post-reboot resume. Verify isolation BEFORE starting.
         _install_verify_isolation || fail "Isolation verification failed — not starting the validator. Fix GRUB and re-run."
-        # DoubleZero, if it was set up pre-reboot, is verified/restored here (not
-        # re-run as a phase — phases 0-7 are already done). No re-prompt/re-place.
-        if [[ "$(state_get dz_enabled false)" == "true" ]] && declare -F dz_resume >/dev/null 2>&1; then
+        # DoubleZero: only the CONNECTED tunnel needs verify/restore here. If DZ was
+        # prepared but dz-connect hasn't run yet (the normal case — connect is
+        # post-swap), dz_resume no-ops. Gated on dz_connected, not dz_enabled.
+        if [[ "$(state_get dz_connected "")" != "" ]] && declare -F dz_resume >/dev/null 2>&1; then
             dz_resume || warn "DoubleZero post-reboot restore had issues — check 'doublezero status'"
         fi
         state_set reboot_done "$(_ts)"
@@ -193,7 +196,7 @@ install_run() {
 
 # --- other subcommands -------------------------------------------------------
 verify_cmd()      { require_root; verify_run; }
-dz_finalize_cmd() { require_root; dz_finalize_run; }
+dz_connect_cmd()  { require_root; dz_connect_run; }
 upgrade_cmd()     { require_root; debug "upgrade (rollback=${ROLLBACK:-0})"; upgrade_run; }
 export_cmd()      { require_root; config_export; }
 import_cmd()      { require_root; debug "import (rescore=${RESCORE:-0})"; config_import; }
@@ -219,7 +222,7 @@ Commands:
   upgrade        Rebuild to a new jito-solana tag (keeps previous for rollback)
   verify         Run the post-install verification block
   export|import  Write/read deeploy.conf (paths/pubkeys only)
-  dz-finalize    DoubleZero passport access (run AFTER the manual key swap)
+  dz-connect     DoubleZero connect: passport + ibrl + multicast (run AFTER the manual staked-key swap)
 
 Flags:
   --dry-run            Print the plan; change nothing
@@ -268,7 +271,7 @@ main() {
         verify)      verify_cmd ;;
         export)      export_cmd ;;
         import)      import_cmd ;;
-        dz-finalize) dz_finalize_cmd ;;
+        dz-connect|dz-finalize) dz_connect_cmd ;;   # dz-finalize: back-compat alias
         ""|-h|--help) usage; exit 0 ;;
         *)           usage; fail "Unknown command: $SUBCMD" ;;
     esac

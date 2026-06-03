@@ -11,6 +11,34 @@ First tagged version: an interactive, idempotent installer that deploys, tunes,
 and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
+### Changed
+- **DoubleZero split into prepare (Phase 7) + connect (`dz-connect`).** Passport
+  requires the validator visible in Solana gossip AND the leader schedule, which
+  is only true AFTER the manual swap to the staked identity — so the old design
+  (connect during Phase 7, on the unstaked sync identity) could never have
+  worked. Now Phase 7 does PREPARE only (install with testnet→mainnet repo swap;
+  `-env mainnet-beta` + metrics; ufw GRE/BGP/**44880**; place the migrated
+  DoubleZero ID at `~/.config/doublezero/id.json`; `doublezero latency`;
+  `doublezero disconnect`; enable on boot) — no active networking, never touches
+  the staked key. The new `deeploy dz-connect` (run post-swap) polls
+  `passport find-validator` until the node is in the leader schedule, runs
+  passport prepare/sign/request (Path 1, primary only — this DOES read the staked
+  key, the one intentional exception), `connect ibrl`, polls `doublezero status`
+  until up, then `connect multicast`. No validator restart (the multicast shred
+  address is baked into `validator.sh` at generation and picked up live). The
+  2nd shred-receiver address (`233.84.178.1:7733`) is added to `validator.sh` in
+  Phase 6 iff `dz_enabled` — the single "Enable DoubleZero?" decision drives both
+  the prepare and the shred address; there is no separate multicast prompt.
+  `dz-finalize` remains as a back-compat alias for `dz-connect`. Post-reboot
+  `dz_resume` now no-ops until `dz_connected` (nothing to restore before connect).
+  Old-server reminders (the same DZ ID can't be live on two machines): an
+  informational heads-up at prepare (place-the-ID step — plan to disconnect the
+  old server) and a BLOCKING gate in `dz-connect` right before `connect ibrl`
+  (acknowledge the old server is disconnected; ignores `--yes`; fails clearly
+  non-interactively). No local `doublezero disconnect` on the new box (a no-op on
+  a fresh box; the disconnect that matters is on the old server, which DeePloy
+  can only remind about).
+
 ### Fixed
 - **DoubleZero is now an interactive prompt, not a silent skip.** Phase 7 gated
   on a `DZ_ENABLED` default of `false` overridable only via env/config — an

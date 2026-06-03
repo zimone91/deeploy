@@ -61,7 +61,15 @@ validatorcfg_resolve_config() {
         ask "Validator MEV commission in bps (0 is required by many pools)" "$commission_default"
         COMMISSION_BPS="$REPLY"
     fi
-    DZ_MULTICAST="${DZ_MULTICAST:-false}"
+    # The 2nd shred-receiver address (DZ multicast) is gated on the SINGLE
+    # "Enable DoubleZero?" decision — the same one that gates Phase 7 prepare.
+    # dz_should_enable (from doublezero.sh) asks once / honors env+state, and
+    # records dz_enabled. Phase 6 runs before Phase 7, so the decision is made here.
+    if declare -F dz_should_enable >/dev/null 2>&1; then
+        dz_should_enable >/dev/null 2>&1 && DZ_ENABLED_RESOLVED=true || DZ_ENABLED_RESOLVED=false
+    else
+        DZ_ENABLED_RESOLVED="$(state_get dz_enabled false)"   # standalone --only validatorcfg
+    fi
 
     # Record the MEV/region selections to state so `deeploy export` can capture them.
     state_set mev_mode "$MEV_MODE"
@@ -69,7 +77,6 @@ validatorcfg_resolve_config() {
     state_set block_engine_url "$BLOCK_ENGINE_URL"
     state_set shred_receiver "$SHRED_RECEIVER_ADDRESS"
     state_set commission_bps "$COMMISSION_BPS"
-    state_set dz_multicast "$DZ_MULTICAST"
 
     # Metrics (BAM community endpoint by default).
     SOLANA_METRICS_CONFIG="${SOLANA_METRICS_CONFIG:-$SOLANA_METRICS_BAM}"
@@ -93,7 +100,9 @@ _vcfg_render_validator_sh() {
     for k in "${MAINNET_KNOWN_VALIDATORS[@]}"; do known_lines+="  --known-validator ${k}"$'\n'; done
     known_lines="${known_lines%$'\n'}"   # strip trailing newline HERE (ANSI-C quoting isn't honored inside a heredoc)
 
-    if [[ "$DZ_MULTICAST" == "true" ]]; then
+    if [[ "${DZ_ENABLED_RESOLVED:-false}" == "true" ]]; then
+        # DZ enabled -> append the DZ multicast shred address (harmless before the
+        # tunnel is up: no route to it until 'connect multicast', so it just drops).
         shred_line="  --shred-receiver-address ${SHRED_RECEIVER_ADDRESS} ${DZ_MULTICAST_SHRED}"
     else
         shred_line="  --shred-receiver-address ${SHRED_RECEIVER_ADDRESS}"

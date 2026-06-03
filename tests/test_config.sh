@@ -43,7 +43,7 @@ seed_state() {
     state_set mev_mode bam; state_set bam_url http://slc.mainnet.bam.jito.wtf
     state_set block_engine_url https://slc.mainnet.block-engine.jito.wtf
     state_set shred_receiver 64.130.53.8:1002; state_set commission_bps 0
-    state_set dz_enabled true; state_set dz_env mainnet-beta; state_set dz_multicast true
+    state_set dz_enabled true; state_set dz_env mainnet-beta
     state_set dz_client_ip 203.0.113.7; state_set dz_keypair /root/solana/dz-keypair.json
 }
 

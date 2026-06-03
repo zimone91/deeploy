@@ -46,7 +46,7 @@ seed
 
 echo "== validator.sh: arg blocks (BAM, no retransmit, no DZ) =="
 state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
-MEV_MODE=bam; DZ_MULTICAST=false; validatorcfg_resolve_config
+MEV_MODE=bam; state_set dz_enabled false; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
 check "identity = sync identity" "$(grep -c -- '--identity /root/solana/unstaked-identity.json' <<<"$V")" "1"
 check "vote-account"           "$(grep -c -- '--vote-account Vote1111' <<<"$V")" "1"
@@ -91,14 +91,21 @@ validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
 check "no RETRANSMIT block"     "$(grep -c 'RETRANSMIT' <<<"$V")" "0"
 
-echo "== validator.sh: DZ multicast appends 2nd shred =="
+echo "== validator.sh: 2nd shred address GATED on dz_enabled (the single DZ decision) =="
 state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
-DZ_MULTICAST=true; validatorcfg_resolve_config
+# dz_should_enable isn't sourced here (validatorcfg-only test) -> resolve falls back
+# to state_get dz_enabled. dz_enabled=true -> both shred addresses.
+state_set dz_enabled true; unset DZ_ENABLED DZ_MULTICAST; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "shred has DZ multicast 2nd addr" "$(grep -c -- "--shred-receiver-address 74.118.140.240:1002 $DZ_MULTICAST_SHRED" <<<"$V")" "1"
+check "dz_enabled=true: BOTH shred addrs (jito + DZ multicast)" "$(grep -c -- "--shred-receiver-address 74.118.140.240:1002 $DZ_MULTICAST_SHRED" <<<"$V")" "1"
+# dz_enabled=false -> ONLY the Jito primary, no DZ multicast address.
+state_set dz_enabled false; validatorcfg_resolve_config
+V=$(_vcfg_render_validator_sh)
+check "dz_enabled=false: only Jito primary"  "$(grep -c -- "--shred-receiver-address 74.118.140.240:1002\$" <<<"$V")" "1"
+check "dz_enabled=false: NO DZ multicast addr" "$(grep -c -- "$DZ_MULTICAST_SHRED" <<<"$V")" "0"
 
 echo "== validator.sh: relayer mode flips url + commission =="
-MEV_MODE=relayer; DZ_MULTICAST=false; unset COMMISSION_BPS; validatorcfg_resolve_config
+MEV_MODE=relayer; state_set dz_enabled false; unset COMMISSION_BPS; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
 check "relayer-url present"     "$(grep -c -- '--relayer-url ' <<<"$V")" "1"
 check "bam-url absent"          "$(grep -c -- '--bam-url' <<<"$V")" "0"

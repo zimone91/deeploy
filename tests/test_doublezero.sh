@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Self-contained tests for lib/doublezero.sh — no network, no DZ daemon.
-# doublezero/doublezero-solana/ufw/systemctl/apt-get/curl/ip and a mock
-# solana(-keygen) under $SOLANA_BIN are used. Focus: GRE-before / BGP-after
-# ordering, official UFW form, multicast conditional, deferred finalize, and the
-# dz-finalize staked-key gate.
+# DoubleZero is now TWO parts:
+#   PART A (Phase 7 prepare): install (repo-swap) / env+metrics / ufw(GRE,BGP,44880)
+#     / ID-migration / latency / disconnect / enabled-on-boot — NO connect/passport/
+#     multicast/restart.
+#   PART B (dz-connect, post-swap): find-validator poll -> passport (staked key) ->
+#     connect ibrl -> status poll -> multicast. Guarded on dz_prepared; records
+#     dz_connected.
+# Plus dz_should_enable precedence and dz_resume (no-op until dz_connected).
 #
 # Mocks shadow real commands and are invoked indirectly.
 # shellcheck disable=SC2329
@@ -16,19 +20,14 @@ trap 'rm -rf "$WORK"' EXIT
 export DEEPLOY_STATE_DIR="$WORK/state" DEEPLOY_BACKUP_DIR="$WORK/backups" DEEPLOY_LOG_DIR="$WORK/logs"
 export NONINTERACTIVE=1 DEEPLOY_COLOR=never
 
-# Mock solana toolchain under SOLANA_BIN.
 mkdir -p "$WORK/bin"
 export KEYGENLOG="$WORK/keygen.log"; : >"$KEYGENLOG"
 cat >"$WORK/bin/solana-keygen" <<'EOF'
 #!/bin/bash
 case "$1" in
-  new) prev=""; out=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; echo "[1,2,3]" >"$out"; echo "new $out" >>"$KEYGENLOG" ;;
-  pubkey) case "$2" in *dz-keypair*) echo "DZaddr1111111111111111111111111111111111111";;
-                       *mainnet-validator-keypair*) echo "Stakedid111111111111111111111111111111111";;
-                       *) echo "Other11111111111111111111111111111111111111";; esac ;;
+  pubkey) case "$2" in *mainnet-validator-keypair*) echo "Stakedid111111111111111111111111111111111";; *) echo "Other11111111111111111111111111111111111111";; esac ;;
 esac
 EOF
-# sign-offchain-message prints the signature as the last line (a lone base58 string)
 cat >"$WORK/bin/solana" <<'EOF'
 #!/bin/bash
 case "$1" in sign-offchain-message) echo "SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567";; esac
@@ -38,6 +37,8 @@ export SOLANA_BIN="$WORK/bin"
 export DZ_KEYPAIR="$WORK/dz-keypair.json"
 export DZ_CONFIG_DIR="$WORK/dzconfig"
 export DZ_OVERRIDE_CONF="$WORK/override.conf"
+# Fast polls in tests.
+export DZ_FIND_RETRIES=5 DZ_FIND_INTERVAL=0 DZ_STATUS_RETRIES=5 DZ_STATUS_INTERVAL=0 DZ_LATENCY_RETRIES=2 DZ_LATENCY_INTERVAL=0
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
@@ -53,196 +54,172 @@ check_false() { if eval "$2"; then FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; 
 DRY_RUN=0 common_init
 CALLS="$WORK/calls"; : >"$CALLS"
 require_root()    { :; }
-doublezero()      { echo "doublezero $*" >>"$CALLS"; }
-doublezero-solana(){ echo "doublezero-solana $*" >>"$CALLS"; }
+sleep()           { :; }
+doublezero()      { echo "doublezero $*" >>"$CALLS"
+    case "$*" in address) echo "DZid11111111111111111111111111111111111111";;
+                 latency) echo "device-a 1.23ms";;
+                 status)  echo "Tunnel: up";; esac; }
+doublezero-solana(){ echo "doublezero-solana $*" >>"$CALLS"
+    case "$*" in *find-validator*) echo "validator gossip: yes; In Leader scheduler: yes";; esac; }
 ufw()             { echo "ufw $*" >>"$CALLS"; }
 systemctl()       { echo "systemctl $*" >>"$CALLS"; }
 apt-get()         { echo "apt-get $*" >>"$CALLS"; }
-ip()              { echo "1.1.1.1 via 10.0.0.1 dev eth0 src 203.0.113.7"; }
-cp()              { echo "cp $*" >>"$CALLS"; command cp "$@" 2>/dev/null || true; }
+install()         { echo "install $*" >>"$CALLS"; command install "$@" 2>/dev/null || true; }
+ip()              { case "$*" in *"route get"*) echo "1.1.1.1 dev eth0 src 203.0.113.7";; *"link show"*) return 0;; *) echo x;; esac; }
 curl()            { local i j o=""; for ((i=1;i<=$#;i++)); do [[ "${!i}" == "-o" ]] && { j=$((i+1)); o="${!j}"; }; done; [[ -n "$o" ]] && : >"$o"; echo "curl $*" >>"$CALLS"; }
+find()            { command find "$@" 2>/dev/null; }
 
 state_set solana_home /root/solana
 state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
 
-echo "== _dz_valid_ip / public-ip detection =="
-check_true  "valid ip"        "_dz_valid_ip 203.0.113.7"
-check_false "octet > 255"     "_dz_valid_ip 1.2.3.999"
-check_false "not an ip"       "_dz_valid_ip nope"
-check "detect from ip route src" "$(_dz_detect_public_ip)" "203.0.113.7"
+echo "== dz_should_enable: env > state > prompt; --yes does NOT enable =="
+( DZ_ENABLED=true  dz_should_enable ) >/dev/null 2>&1; check "env=true -> enable (rc0)" "$?" "0"
+( DZ_ENABLED=false dz_should_enable ) >/dev/null 2>&1; check "env=false -> skip (rc1)"  "$?" "1"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set dz_enabled true
+( unset DZ_ENABLED; dz_should_enable ) >/dev/null 2>&1; check "state=true honored" "$?" "0"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+# clear recorded state so the prompt path (not the state path) is exercised
+clrdz() { rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; }
+clrdz; ( unset DZ_ENABLED; NONINTERACTIVE=1 dz_should_enable ) >/dev/null 2>&1; check "unset+non-interactive -> skip" "$?" "1"
+clrdz; ( unset DZ_ENABLED; ASSUME_YES=1 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+--yes -> skip (no auto-enable)" "$?" "1"
+ask() { REPLY=y; }; clrdz; ( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "interactive 'y' -> enable" "$?" "0"
+ask() { REPLY=N; }; clrdz; ( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "interactive 'N' -> skip" "$?" "1"
+unset -f ask
+state_set solana_home /root/solana; state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
 
-echo "== full deploy flow: ORDER (GRE before connect, BGP after) =="
-: >"$CALLS"; rm -f "$DZ_KEYPAIR"
-# This block exercises ordering/UFW/multicast, not the migration gate -> fresh key.
-DZ_KEY_MODE=fresh DZ_CLIENT_IP=203.0.113.7 DZ_MULTICAST=true ASSUME_YES=1 doublezero_run >/dev/null 2>&1
-GRELN=$(grep -n 'ufw allow proto gre' "$CALLS" | head -1 | cut -d: -f1)
-CONLN=$(grep -n 'doublezero connect ibrl' "$CALLS" | head -1 | cut -d: -f1)
-BGPLN=$(grep -n 'ufw allow in on doublezero0' "$CALLS" | head -1 | cut -d: -f1)
-check_true "GRE rule BEFORE connect ibrl"  "[[ ${GRELN:-0} -lt ${CONLN:-0} ]]"
-check_true "BGP rules AFTER connect ibrl"  "[[ ${BGPLN:-0} -gt ${CONLN:-0} ]]"
+echo "== PART A (Phase 7 prepare): no connect/passport/multicast/restart/local-disconnect =="
+: >"$CALLS"; printf '[1,2,3]' >"$DZ_KEYPAIR"   # operator pre-placed the DZ ID
+POUT=$(DZ_ENABLED=true doublezero_run 2>&1)
+check "prepare: package installed"        "$(grep -c 'apt-get install -y doublezero doublezero-solana' "$CALLS")" "1"
+check "prepare: env override -> restart"  "$(grep -c 'systemctl restart doublezerod' "$CALLS")" "1"
+check "prepare: doublezerod enabled boot" "$(grep -c 'systemctl enable doublezerod' "$CALLS")" "1"
+check "prepare: env mainnet-beta + metrics" "$(grep -c 'env mainnet-beta -metrics-enable' "$DZ_OVERRIDE_CONF")" "1"
+check "prepare: ufw GRE"                   "$(grep -c 'ufw allow proto gre' "$CALLS")" "1"
+check "prepare: ufw BGP 179 (in+out)"      "$(grep -c 'on doublezero0 from 169.254.0.0/16 to 169.254.0.0/16 port 179 proto tcp' "$CALLS")" "2"
+check "prepare: ufw 44880 udp (in+out)"    "$(grep -c 'on doublezero0 to any port 44880 proto udp' "$CALLS")" "2"
+check "prepare: ID -> ~/.config id.json"   "$(grep -c "install -m 600 $DZ_KEYPAIR $WORK/dzconfig/id.json" "$CALLS")" "1"
+check "prepare: dz_prepared recorded"      "$(state_has dz_prepared && echo y || echo n)" "y"
+check "prepare: dz_id recorded"            "$(state_get dz_id)" "DZid11111111111111111111111111111111111111"
+# NO local 'doublezero disconnect' on the new box (no-op/error on fresh; the one
+# that matters is on the OLD server, which DeePloy can't reach).
+check "prepare: NO local doublezero disconnect" "$(grep -c 'doublezero disconnect' "$CALLS")" "0"
+# Early heads-up (informational, NOT a gate): plan to disconnect the OLD server.
+check "prepare: heads-up names OLD server"   "$(grep -c 'SAME one currently active on your OLD server' <<<"$POUT")" "1"
+check "prepare: heads-up shows the commands"  "$(grep -c 'doublezero disconnect' <<<"$POUT")" "1"
+check "prepare: heads-up does NOT block (rc0)" "$([[ -n "$POUT" ]] && state_has dz_prepared && echo ok || echo no)" "ok"
+# the load-bearing assertion: prepare does NONE of the connect-side work
+check "prepare: NO connect ibrl"           "$(grep -c 'connect ibrl' "$CALLS")" "0"
+check "prepare: NO passport"               "$(grep -c 'passport' "$CALLS")" "0"
+check "prepare: NO multicast"              "$(grep -c 'connect multicast' "$CALLS")" "0"
+check "prepare: NO validator restart"      "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
 
-echo "== official UFW form (not before.rules, not global 179/tcp) =="
-check "GRE allow proto gre"          "$(grep -c 'ufw allow proto gre from any to any' "$CALLS")" "1"
-check "BGP in/out on doublezero0"    "$(grep -c 'on doublezero0 from 169.254.0.0/16 to 169.254.0.0/16 port 179 proto tcp' "$CALLS")" "2"
-check "NO global allow 179/tcp"      "$(grep -c 'ufw allow 179/tcp' "$CALLS")" "0"
+echo "== PART A: repo-swap removes an old DZ apt source before install =="
+: >"$CALLS"; printf '[1,2,3]' >"$DZ_KEYPAIR"
+OLDSRC="$WORK/old-doublezero.list"; : >"$OLDSRC"
+# dz_install runs: find /etc/apt /usr/share/keyrings -name '*doublezero*' -print0.
+# Shadow find to return our temp file (NUL-terminated) for that query.
+find() { case "$*" in *-name*doublezero*-print0*) printf '%s\0' "$OLDSRC";; *) command find "$@" 2>/dev/null;; esac; }
+RM_LOG="$WORK/rmlog"; : >"$RM_LOG"
+rm() { echo "rm $*" >>"$RM_LOG"; command rm "$@" 2>/dev/null || true; }
+DZ_APT_OK=$( DZ_ENABLED=true doublezero_run 2>&1 | grep -c 'Removing existing DZ apt source' )
+check "repo-swap: warns removing old source" "$DZ_APT_OK" "1"
+check "repo-swap: rm'd the old source file"  "$(grep -c "$OLDSRC" "$RM_LOG")" "1"
+unset -f find rm
+find() { command find "$@" 2>/dev/null; }
 
-echo "== env override + connect + multicast =="
-check "override env mainnet-beta"    "$(grep -c 'env mainnet-beta' "$DZ_OVERRIDE_CONF")" "1"
-check "config set env"               "$(grep -c 'doublezero config set --env mainnet-beta' "$CALLS")" "1"
-check "connect ibrl --client-ip"     "$(grep -c 'doublezero connect ibrl --client-ip 203.0.113.7' "$CALLS")" "1"
-check "multicast publish (on)"       "$(grep -c 'doublezero connect multicast --publish edge-solana-shreds' "$CALLS")" "1"
-check "id.json copied to config dir" "$(grep -c "cp $WORK/dz-keypair.json $WORK/dzconfig/id.json" "$CALLS")" "1"
+echo "== PART A: ID migration — absent key, interactive path entry =="
+: >"$CALLS"; rm -f "$DZ_KEYPAIR" "$WORK/dzconfig/id.json"
+PLACED="$WORK/elsewhere/dzid.json"; mkdir -p "$WORK/elsewhere"; printf '[4,5,6]' >"$PLACED"
+ask() { REPLY="$PLACED"; }   # operator gives the path to the key
+( NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_keypair_migrate ) >/dev/null 2>&1
+check "migrate: id.json installed from given path" "$(state_get dz_id)" "DZid11111111111111111111111111111111111111"
+check_true "migrate: id.json present" "[[ -f \"$WORK/dzconfig/id.json\" ]]"
+unset -f ask
 
-echo "== deploy DEFERS staked-key steps =="
-check "no passport at deploy"          "$(grep -c 'passport' "$CALLS")" "0"
-check "no validator-deposit at deploy" "$(grep -c 'validator-deposit' "$CALLS")" "0"
+echo "== PART A: ID migration — absent key + non-interactive -> FAIL (no hang) =="
+rm -f "$DZ_KEYPAIR" "$WORK/dzconfig/id.json"
+( NONINTERACTIVE=1 dz_keypair_migrate ) >/dev/null 2>&1
+check "migrate non-interactive absent -> fail" "$?" "1"
 
-echo "== multicast OFF -> no publish =="
-: >"$CALLS"
-# key already present from the prior flow -> migration auto-passes (valid + ASSUME_YES); fresh would refuse to clobber
-DZ_KEY_MODE=migration DZ_CLIENT_IP=203.0.113.7 DZ_MULTICAST=false ASSUME_YES=1 doublezero_run >/dev/null 2>&1
-check "no multicast publish when off" "$(grep -c 'connect multicast' "$CALLS")" "0"
-
-echo "== dz_keypair: FRESH mode generates (no key present) =="
-: >"$CALLS"; rm -f "$DZ_KEYPAIR"; : >"$KEYGENLOG"
-DZ_CLIENT_IP=203.0.113.7 dz_resolve_config >/dev/null 2>&1
-DZ_KEY_MODE=fresh dz_keypair >/dev/null 2>&1
-check_true "fresh: dz-keypair generated" "[[ -f \"$DZ_KEYPAIR\" ]]"
-check "fresh: keygen invoked once"       "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "1"
-
-echo "== dz_keypair: FRESH refuses to clobber an existing key =="
-: >"$KEYGENLOG"   # key now exists from the previous block
-( DZ_KEY_MODE=fresh dz_keypair ) >/dev/null 2>&1
-check "fresh + existing key -> fail (no clobber)" "$?" "1"
-check "fresh refusal: keygen NOT invoked"         "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
-
-echo "== dz_keypair: MIGRATION with key already present -> warns + gates, never regenerates =="
-: >"$KEYGENLOG"
-MOUT=$(DZ_KEY_MODE=migration ASSUME_YES=1 dz_keypair 2>&1)
-check "migration: disconnect shown"     "$(grep -c 'doublezero disconnect' <<<"$MOUT")" "1"
-check "migration: stop doublezerod"     "$(grep -c 'systemctl stop doublezerod' <<<"$MOUT")" "1"
-check "migration: disable doublezerod"  "$(grep -c 'systemctl disable doublezerod' <<<"$MOUT")" "1"
-check "migration: NOT regenerated"      "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
-( DZ_KEY_MODE=migration dz_keypair ) >/dev/null 2>&1   # ASSUME_YES=0, non-interactive -> confirm N -> fail
-check "migration decline old-server -> fail" "$?" "1"
-
-echo "== dz_keypair: MIGRATION key-absent-then-placed (interactive wait loop) =="
-rm -f "$DZ_KEYPAIR"; : >"$KEYGENLOG"
-# Simulate the operator: first 'ask' fires while the key is missing; our stubbed
-# ask PLACES the key (as if done in another shell) then returns, so the loop's
-# re-check finds it. confirm() returns 0 (old server stopped). Force interactive.
-ask()     { printf '[7,7,7]' >"$DZ_KEYPAIR"; REPLY=""; }   # places key on the blocking prompt
-confirm() { return 0; }
-WAITOUT=$( NONINTERACTIVE=0 DZ_KEY_MODE=migration dz_keypair 2>&1 ); WRC=$?
-check "migration wait: succeeds once key placed" "$WRC" "0"
-check "migration wait: 'Place your existing' shown" "$(grep -c 'Place your existing dz-keypair' <<<"$WAITOUT")" "1"
-check "migration wait: key NOT regenerated"      "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
-check_true "migration wait: key now present"     "[[ -f \"$DZ_KEYPAIR\" ]]"
-unset -f ask confirm
-
-echo "== dz_keypair: MIGRATION rejects an INVALID placed key, then accepts a valid one =="
-: >"$KEYGENLOG"
-printf 'not-a-keypair' >"$DZ_KEYPAIR"     # invalid: solana-keygen pubkey fails on it
-# Mock keygen pubkey to fail for THIS garbage file but succeed once it's replaced.
-cat >"$WORK/bin/solana-keygen" <<'EOF'
-#!/bin/bash
-case "$1" in
-  pubkey) if grep -q 'not-a-keypair' "$2" 2>/dev/null; then exit 1; fi
-          echo "DZaddr1111111111111111111111111111111111111" ;;
-  new) prev=""; out=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; echo "[1,2,3]" >"$out"; echo "new $out" >>"$KEYGENLOG" ;;
-esac
-EOF
-chmod +x "$WORK/bin/solana-keygen"
-ask()     { printf '[8,8,8]' >"$DZ_KEYPAIR"; REPLY=""; }   # replaces garbage with a valid key
-confirm() { return 0; }
-IOUT=$( NONINTERACTIVE=0 DZ_KEY_MODE=migration dz_keypair 2>&1 ); IRC=$?
-check "migration: invalid key rejected then valid accepted" "$IRC" "0"
-check "migration: 'not a readable Solana keypair' warned"   "$(grep -c 'not a readable Solana keypair' <<<"$IOUT")" "1"
-unset -f ask confirm
-# restore the standard keygen mock for any later use
-cat >"$WORK/bin/solana-keygen" <<'EOF'
-#!/bin/bash
-case "$1" in
-  new) prev=""; out=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; echo "[1,2,3]" >"$out"; echo "new $out" >>"$KEYGENLOG" ;;
-  pubkey) case "$2" in *dz-keypair*) echo "DZaddr1111111111111111111111111111111111111";;
-                       *mainnet-validator-keypair*) echo "Stakedid111111111111111111111111111111111";;
-                       *) echo "Other11111111111111111111111111111111111111";; esac ;;
-esac
-EOF
-chmod +x "$WORK/bin/solana-keygen"
-
-echo "== dz_keypair: MIGRATION non-interactive + key absent -> FAIL (no hang, no generate) =="
-rm -f "$DZ_KEYPAIR"; : >"$KEYGENLOG"
-( NONINTERACTIVE=1 DZ_KEY_MODE=migration dz_keypair ) >/dev/null 2>&1
-check "migration non-interactive absent-key -> fail" "$?" "1"
-check "migration non-interactive: did NOT generate"  "$(wc -l <"$KEYGENLOG" | tr -d ' ')" "0"
-check_false "migration non-interactive: no key created" "[[ -f \"$DZ_KEYPAIR\" ]]"
-
-echo "== dz-finalize: gated on staked key; passport ONLY (no deposit) =="
-: >"$CALLS"
-( state_set staked_keypair /nonexistent; DZ_CLIENT_IP=203.0.113.7 dz_finalize_run ) >/dev/null 2>&1
-check "finalize fails without staked key" "$?" "1"
-state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
+echo "== PART B (dz-connect): guarded on dz_prepared; full flow; records dz_connected =="
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+state_set solana_home /root/solana; state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
+# not prepared yet -> fail
+( dz_connect_run ) >/dev/null 2>&1; check "connect without prepare -> fail" "$?" "1"
+# prepared, but staked key absent -> fail
+state_set dz_prepared "$(date +%s 2>/dev/null || echo t)"; state_set dz_id "DZid11111111111111111111111111111111111111"
+( dz_connect_run ) >/dev/null 2>&1; check "connect without staked key -> fail" "$?" "1"
+# prepared + staked key present -> full flow. The old-server gate reads with
+# `read -r reply`; shadow read to set that variable (its name arrives as $2 after -r).
 printf '[9]' >"$WORK/mainnet-validator-keypair.json"
 : >"$CALLS"
-DZ_CLIENT_IP=203.0.113.7 dz_finalize_run >/dev/null 2>&1
-check "passport prepare"                   "$(grep -c 'passport prepare-validator-access' "$CALLS")" "1"
-check "sign chained -> request --signature" "$(grep -c 'passport request-validator-access .* --signature SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567' "$CALLS")" "1"
-check "NO validator-deposit (removed)"     "$(grep -c 'validator-deposit' "$CALLS")" "0"
+read() { local v="${!#}"; eval "$v=y"; }   # answer 'y' into whatever var read targets
+( NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_connect_run ) >/dev/null 2>&1; RC=$?
+unset -f read
+check "connect: full flow rc0"             "$RC" "0"
+check "connect: find-validator polled"     "$(grep -c 'passport find-validator -u mainnet-beta' "$CALLS")" "1"
+check "connect: passport prepare (staked)"  "$(grep -c 'prepare-validator-access .* --primary-validator-id Stakedid' "$CALLS")" "1"
+check "connect: passport request +signature" "$(grep -c 'request-validator-access .* --signature SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567' "$CALLS")" "1"
+check "connect: NO --backup-validator-ids (Path 1)" "$(grep -c 'backup-validator-ids' "$CALLS")" "0"
+check "connect: connect ibrl --client-ip"  "$(grep -c 'connect ibrl --client-ip 203.0.113.7' "$CALLS")" "1"
+check "connect: status polled"             "$(grep -c 'doublezero status' "$CALLS")" "1"
+check "connect: multicast publish"         "$(grep -c 'connect multicast --publish edge-solana-shreds' "$CALLS")" "1"
+check "connect: NO validator restart"      "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
+check "connect: dz_connected recorded"     "$(state_has dz_connected && echo y || echo n)" "y"
 
-echo "== dz_should_enable: env > state > prompt; --yes does NOT enable =="
-# env explicitly set -> honored, no prompt, recorded to state
+echo "== PART B gate: OLD-server-disconnected confirmation (Option C, blocking) =="
+# yes -> proceed (rc0); the gate prints the exact old-server commands
+read() { local v="${!#}"; eval "$v=y"; }
+GOUT=$( NONINTERACTIVE=0 dz_confirm_old_server_disconnected 2>&1 ); check "gate 'y' -> proceed (rc0)" "$?" "0"
+check "gate shows 'doublezero disconnect'"   "$(grep -c 'doublezero disconnect' <<<"$GOUT")" "1"
+check "gate shows stop doublezerod"          "$(grep -c 'systemctl stop doublezerod' <<<"$GOUT")" "1"
+# no -> fail (does NOT connect)
+read() { local v="${!#}"; eval "$v=N"; }
+( NONINTERACTIVE=0 dz_confirm_old_server_disconnected ) >/dev/null 2>&1; check "gate 'N' -> fail" "$?" "1"
+# --yes does NOT bypass the gate (it's a conflict guard, not a normal confirm):
+# answer N even with ASSUME_YES=1 -> still fails.
+( NONINTERACTIVE=0 ASSUME_YES=1 dz_confirm_old_server_disconnected ) >/dev/null 2>&1; check "gate ignores --yes (still needs ack)" "$?" "1"
+unset -f read
+# non-interactive -> FAIL with the instruction (never silently connects)
+NIOUT=$( NONINTERACTIVE=1 dz_confirm_old_server_disconnected 2>&1 ); check "gate non-interactive -> fail" "$?" "1"
+# grep -c is >=1 (command list + fail message); assert "at least one" by emptiness of an inverse match
+check "gate non-interactive: names the OLD-server command" "$(grep -q 'doublezero disconnect' <<<"$NIOUT" && echo yes || echo no)" "yes"
+# whole connect aborts non-interactively at the gate (after passport, before connect ibrl)
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
-( DZ_ENABLED=true  dz_should_enable ) >/dev/null 2>&1; check "env=true -> enable (rc0)"  "$?" "0"
-( DZ_ENABLED=false dz_should_enable ) >/dev/null 2>&1; check "env=false -> skip (rc1)"   "$?" "1"
-DZ_ENABLED=true dz_should_enable >/dev/null 2>&1
-check "decision recorded to state" "$(state_get dz_enabled)" "true"
-# recorded state honored when env unset (resume: no re-prompt)
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set dz_enabled true
-( unset DZ_ENABLED; dz_should_enable ) >/dev/null 2>&1; check "state=true honored -> enable" "$?" "0"
-# unset + non-interactive -> skip (NEVER hangs/enables)
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
-( unset DZ_ENABLED; NONINTERACTIVE=1 dz_should_enable ) >/dev/null 2>&1; check "unset+non-interactive -> skip" "$?" "1"
-# unset + --yes -> skip (per decision: --yes does NOT auto-enable DZ)
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
-( unset DZ_ENABLED; ASSUME_YES=1 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+--yes -> skip (no auto-enable)" "$?" "1"
-# unset + interactive 'y' -> enable
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
-ask() { REPLY=y; }
-( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+interactive 'y' -> enable" "$?" "0"
-ask() { REPLY=N; }
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
-( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 dz_should_enable ) >/dev/null 2>&1; check "unset+interactive 'N' -> skip" "$?" "1"
-unset -f ask
+state_set solana_home /root/solana; state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
+state_set dz_prepared t; state_set dz_id "DZid11111111111111111111111111111111111111"
+printf '[9]' >"$WORK/mainnet-validator-keypair.json"; : >"$CALLS"
+( NONINTERACTIVE=1 DZ_CLIENT_IP=203.0.113.7 dz_connect_run ) >/dev/null 2>&1; check "connect non-interactive: aborts at gate" "$?" "1"
+check "connect non-interactive: did NOT connect ibrl" "$(grep -c 'connect ibrl' "$CALLS")" "0"
+check "connect non-interactive: did NOT record dz_connected" "$(state_has dz_connected && echo y || echo n)" "n"
 
-echo "== multicast sub-prompt (resolve_config): preset > state > prompt =="
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set solana_home /root/solana
-ask() { case "$1" in *multicast*) REPLY=y;; *Public\ IP*) REPLY=203.0.113.7;; *) REPLY="";; esac; }
-( unset DZ_MULTICAST; ASSUME_YES=0 NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_resolve_config >/dev/null 2>&1; [[ "$DZ_MULTICAST" == "true" ]] )
-check "multicast prompt 'y' -> true" "$?" "0"
-ask() { REPLY=""; }   # empty -> default N
-rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; state_set solana_home /root/solana
-( unset DZ_MULTICAST; ASSUME_YES=0 NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_resolve_config >/dev/null 2>&1; [[ "$DZ_MULTICAST" == "false" ]] )
-check "multicast prompt default -> false" "$?" "0"
-unset -f ask
+echo "== PART B: find-validator POLLS (not-in-schedule then in-schedule) =="
+ATT="$WORK/findatt"; : >"$ATT"
+doublezero-solana() { echo "doublezero-solana $*" >>"$CALLS"
+    case "$*" in *find-validator*) echo x >>"$ATT"; if [[ "$(wc -l <"$ATT")" -lt 3 ]]; then echo "gossip: no; not yet";
+                 else echo "In Leader scheduler: yes"; fi;; esac; }
+_dz_await_in_leader_schedule >/dev/null 2>&1
+check "find-validator polled until in-schedule (3 tries)" "$(wc -l <"$ATT" | tr -d ' ')" "3"
+# restore the simple mock
+doublezero-solana(){ echo "doublezero-solana $*" >>"$CALLS"; case "$*" in *find-validator*) echo "In Leader scheduler: yes";; esac; }
 
-echo "== dz_resume: iface up -> verify only (no connect); iface down -> restore =="
+echo "== dz_resume: no-op until dz_connected; verify/restore once connected =="
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+state_set solana_home /root/solana; state_set dz_prepared t   # prepared but NOT connected
 : >"$CALLS"
-ip() { case "$*" in *"link show doublezero0"*) return 0;; *) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }   # iface UP
-state_set dz_client_ip 203.0.113.7; state_set dz_multicast false; state_set solana_home /root/solana
-DZ_CLIENT_IP=203.0.113.7 dz_resume >/dev/null 2>&1
-check "iface up: no connect ibrl (verify only)" "$(grep -c 'connect ibrl' "$CALLS")" "0"
-: >"$CALLS"
-ip() { case "$*" in *"link show doublezero0"*) return 1;; *) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }   # iface DOWN
-DZ_CLIENT_IP=203.0.113.7 dz_resume >/dev/null 2>&1
-check "iface down: restores via connect ibrl" "$(grep -c 'connect ibrl --client-ip 203.0.113.7' "$CALLS")" "1"
-check "iface down: re-applies GRE"            "$(grep -c 'ufw allow proto gre' "$CALLS")" "1"
-check "resume NEVER regenerates/places a key" "$(grep -c 'solana-keygen new' "$CALLS")" "0"
-
-echo "== doublezerod enabled on boot (so the tunnel auto-restores) =="
-: >"$CALLS"
-DZ_ENV=mainnet-beta dz_env_override >/dev/null 2>&1
-check "doublezerod enabled on boot" "$(grep -c 'systemctl enable doublezerod' "$CALLS")" "1"
+RES=$(dz_resume 2>&1); check "resume no-op when not connected -> rc0" "$?" "0"
+check "resume no-op: nothing connected"   "$(grep -c 'connect ibrl' "$CALLS")" "0"
+check "resume no-op: says nothing to restore" "$(grep -c 'nothing to restore' <<<"$RES")" "1"
+# connected + iface up -> verify only
+state_set dz_connected t; state_set dz_client_ip 203.0.113.7
+: >"$CALLS"; ip() { case "$*" in *"link show"*) return 0;; *"route get"*) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }
+dz_resume >/dev/null 2>&1
+check "resume connected+up: no reconnect" "$(grep -c 'connect ibrl' "$CALLS")" "0"
+# connected + iface down -> restore
+: >"$CALLS"; ip() { case "$*" in *"link show"*) return 1;; *"route get"*) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }
+dz_resume >/dev/null 2>&1
+check "resume connected+down: reconnects" "$(grep -c 'connect ibrl' "$CALLS")" "1"
+check "resume NEVER re-places a key"      "$(grep -c 'install -m 600' "$CALLS")" "0"
 
 echo ""
 echo "==================================="

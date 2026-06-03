@@ -101,7 +101,7 @@ check    "set-identity path form"      "$(grep -c 'set-identity /root/solana/mai
 check    "authorized-voter add path"   "$(grep -c 'authorized-voter add /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
 check    "NO stdin redirect form"      "$(grep -c 'set-identity <' <<<"$SUM")" "0"
 check_ge "tower-rebuild note"          "$(grep -ci 'tower' <<<"$SUM")" "1"
-check_ge "dz-finalize mentioned (DZ on)" "$(grep -c 'dz-finalize' <<<"$SUM")" "1"
+check_ge "dz-connect mentioned (DZ on)" "$(grep -c 'dz-connect' <<<"$SUM")" "1"
 check_ge "failover pointer"            "$(grep -ci 'failover' <<<"$SUM")" "1"
 check_ge "vote account shown"          "$(grep -c 'Vote1111' <<<"$SUM")" "1"
 

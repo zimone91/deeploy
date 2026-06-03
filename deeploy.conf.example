@@ -51,8 +51,8 @@ SHRED_RECEIVER_ADDRESS="<shred-ip>:1002"   # for your block-engine region — se
 COMMISSION_BPS="0"                     # 0 is required by many pools (you are prompted at install)
 
 # --- DoubleZero (optional) ---
-DZ_ENABLED="false"                     # true to set up the DoubleZero tunnel
+DZ_ENABLED="false"                     # true = prepare DZ in Phase 7 AND add the DZ multicast shred address to validator.sh
 DZ_ENV="mainnet-beta"
-DZ_MULTICAST="false"                   # true appends the DZ multicast shred receiver
 DZ_CLIENT_IP="203.0.113.7"             # EXAMPLE (RFC 5737 doc IP); your server's public IP (auto-detected)
-DZ_KEYPAIR="/root/solana/dz-keypair.json"   # PATH only (often carried over on a migration)
+DZ_KEYPAIR="/root/solana/dz-keypair.json"   # PATH only — your DoubleZero ID, placed manually (migration)
+# NOTE: DZ connect (passport + ibrl + multicast) is a SEPARATE step after the staked-key swap:  deeploy dz-connect
