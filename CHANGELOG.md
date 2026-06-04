@@ -12,45 +12,54 @@ and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
 ### Changed
-- **DoubleZero split into prepare (Phase 7) + connect (`dz-connect`).** Passport
-  requires the validator visible in Solana gossip AND the leader schedule, which
-  is only true AFTER the manual swap to the staked identity — so the old design
-  (connect during Phase 7, on the unstaked sync identity) could never have
-  worked. Now Phase 7 does PREPARE only (install with testnet→mainnet repo swap;
-  `-env mainnet-beta` + metrics; ufw GRE/BGP/**44880**; place the migrated
-  DoubleZero ID at `~/.config/doublezero/id.json`; `doublezero latency`;
-  `doublezero disconnect`; enable on boot) — no active networking, never touches
-  the staked key. The new `deeploy dz-connect` (run post-swap) polls
-  `passport find-validator` until the node is in the leader schedule, runs
-  passport prepare/sign/request (Path 1, primary only — this DOES read the staked
-  key, the one intentional exception), `connect ibrl`, polls `doublezero status`
-  until up, then `connect multicast`. No validator restart (the multicast shred
-  address is baked into `validator.sh` at generation and picked up live). The
-  2nd shred-receiver address (`233.84.178.1:7733`) is added to `validator.sh` in
-  Phase 6 iff `dz_enabled` — the single "Enable DoubleZero?" decision drives both
-  the prepare and the shred address; there is no separate multicast prompt.
-  `dz-finalize` remains as a back-compat alias for `dz-connect`. Post-reboot
-  `dz_resume` now no-ops until `dz_connected` (nothing to restore before connect).
-  Old-server reminders (the same DZ ID can't be live on two machines): an
-  informational heads-up at prepare (place-the-ID step — plan to disconnect the
-  old server) and a BLOCKING gate in `dz-connect` right before `connect ibrl`
-  (acknowledge the old server is disconnected; ignores `--yes`; fails clearly
-  non-interactively). No local `doublezero disconnect` on the new box (a no-op on
-  a fresh box; the disconnect that matters is on the old server, which DeePloy
-  can only remind about).
+- **DoubleZero work is placed by what it needs.** Principle: the post-swap step
+  (`dz-connect`) is MINIMAL — only what genuinely requires the staked key + a
+  running node. Everything staked-key-independent happens early, gated on a single
+  `dz_enabled` decision:
+  - **Phase 1** (with the base system): the single VISIBLE "Enable DoubleZero?"
+    prompt (records `dz_enabled` — fixes the earlier invisible redirected prompt),
+    package install (`doublezero`+`doublezero-solana`, testnet→mainnet repo swap),
+    `-env mainnet-beta` (+metrics, enabled on boot), and ALL firewall in one place
+    (core ufw + DZ GRE/BGP/**44880**).
+  - **Phase 5** (Keys): a SOFT DZ-ID presence check/reminder — NON-blocking (a
+    reboot + staked-key swap come before connect, so there's a window to place it).
+  - **Phase 6**: the 2nd shred-receiver address (`233.84.178.1:7733`) is added to
+    `validator.sh` iff `dz_enabled` — read from state, no prompt.
+  - **Reboot gate**: an early, informational old-server-disconnect reminder.
+  - **Phase 7** (install): a no-op pointer to `dz-connect` (prepare already done).
+  - **`dz-connect`** (manual, post-swap): HARD DZ-ID migration (mkdir + install to
+    `~/.config/doublezero/id.json` + validate) → poll `passport find-validator`
+    until in the leader schedule → BLOCKING old-server gate → passport
+    prepare/sign/request (Path 1, primary only; the one intentional staked-key
+    read) → `connect ibrl` → `connect multicast` (no validator restart — the shred
+    address is already in `validator.sh`, live) → two verification displays:
+    `doublezero latency` (highlights the nearest device by lowest Avg) and
+    `doublezero status` (parses both tunnels, IBRL `doublezero0` + Multicast
+    `doublezero1`, and confirms "BGP Session Up" + `P:edge-solana-shreds`).
+  `dz-connect`'s guard is `dz_enabled` + binaries actually installed
+  (`command -v doublezero`/`doublezero-solana`) + staked-key present — the direct
+  binaries-check replaces the retired `dz_prepared` flag (which used to imply
+  installation). `dz_resume` is gated on `dz_connected` (no-op until connect ran).
+  `dz-finalize` remains a back-compat alias for `dz-connect`. Passport requires
+  the validator in gossip + the leader schedule — only true after the manual
+  staked-key swap, which is why connect is a separate manual step. Old-server
+  reminders (the same DZ ID can't be live on two machines): the informational
+  heads-up (reboot gate) + the BLOCKING gate in `dz-connect` before connect
+  (ignores `--yes`; fails clearly non-interactively). DeePloy runs no local
+  `doublezero disconnect` (a no-op on a fresh box; the disconnect that matters is
+  on the old server, which DeePloy can only remind about).
 
 ### Fixed
-- **DoubleZero is now an interactive prompt, not a silent skip.** Phase 7 gated
-  on a `DZ_ENABLED` default of `false` overridable only via env/config — an
-  interactive operator who left the config alone got no DZ and no question. Phase
-  7 now ASKS ("Enable DoubleZero?", default N) when `DZ_ENABLED` isn't explicitly
-  set; env/config still override; `--yes` deliberately does NOT auto-enable
-  (a tunnel + possible key migration is never set up unattended). The decision is
-  recorded to state so the post-reboot resume neither re-skips nor re-prompts: it
-  verifies `doublezero0` came up and, only if not, restores the tunnel from saved
-  settings (never re-placing the migration key). Multicast is likewise prompted
-  when unset. (Also fixed a latent bug: the dz-finalize summary pointer keyed on
-  `dz_multicast` instead of `dz_enabled`.)
+- **DoubleZero is now an interactive prompt, not a silent skip.** It was gated on
+  a `DZ_ENABLED` default of `false` overridable only via env/config — an
+  interactive operator who left the config alone got no DZ and no question. The
+  single "Enable DoubleZero?" prompt (Phase 1, default N) now asks when
+  `DZ_ENABLED` isn't explicitly set; env/config still override; `--yes` does NOT
+  auto-enable (a tunnel + possible key migration is never set up unattended). The
+  decision is recorded to state so later phases read it and the post-reboot resume
+  never re-prompts. The single `dz_enabled` decision drives multicast too (no
+  separate multicast prompt). (Also fixed a latent bug: the summary pointer keyed
+  on `dz_multicast` instead of `dz_enabled`.)
 - **Single throwaway identity (was two).** Phase 5 generated both `mvkfake` (the
   sync `--identity`) and a separate `unstaked-identity.json`. Collapsed to ONE
   key — `unstaked-identity.json`, which the node syncs under and which doubles as
@@ -60,18 +69,16 @@ and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
   stays `UNSTAKED_KEYPAIR` (matches the file name).
 - **`solana config` prints once.** `keys_config_cli` made two `config set` calls
   (url, then keypair), each echoing the full config block. Combined into one.
-- **DoubleZero migration no longer silently generates a new key.** `dz_keypair`
-  conflated "key file exists" with "is a migration": if the operator hadn't
-  pre-placed their production dz-keypair, DeePloy generated a brand-new key
-  (breaking the migration), with no pause to place the real key or to shut
-  DoubleZero down on the old server. Now the mode is asked explicitly (default
-  *migration*). Migration **blocks** until the existing key is placed at
-  `$DZ_KEYPAIR` and validates as a readable Solana keypair (re-prompts in a loop
-  if absent/invalid), then gates on confirming the old server is
-  disconnected/stopped. *Fresh* refuses to overwrite an existing key. A
-  non-interactive run that needs a manually-placed key fails with a clear pointer
-  instead of hanging or generating the wrong key. (`DZ_KEY_MODE=migration|fresh`
-  overrides the prompt for automation/tests.)
+- **DoubleZero ID is always migrated, never generated.** The DZ ID is shared
+  across the operator's cluster, so DeePloy never creates one — the operator
+  places their existing key. Phase 5 does a SOFT presence check (place it at
+  `/root/solana/dz-keypair.json`, or give a path to copy; warns but does NOT block
+  — there's a reboot + staked-key swap before connect). `dz-connect` does the HARD
+  migration: it installs the key to `~/.config/doublezero/id.json` and validates
+  it with `doublezero address`, re-prompting in a loop until a valid key is
+  present; a non-interactive run with no key fails with a clear pointer instead of
+  hanging. (Earlier drafts had a `DZ_KEY_MODE=migration|fresh` prompt with a
+  generate-fresh branch — removed; there is no fresh-generate path.)
 - **Environment under systemd is now resolved explicitly (cargo PATH + `$HOME`).**
   Two bugs of one class — env vars present interactively but absent under systemd:
   - *cargo PATH:* `rustup` installs `cargo`/`rustc` to `~/.cargo/bin`; Phase 4

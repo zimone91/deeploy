@@ -122,4 +122,7 @@ keys_run() {
     keys_generate
     keys_validate
     keys_print_manual
+    # SOFT DoubleZero ID presence check (non-blocking) — reminds the operator to
+    # place the DZ ID; the HARD check is in dz-connect. Gated on dz_enabled inside.
+    declare -F dz_keypair_check_soft >/dev/null 2>&1 && dz_keypair_check_soft
 }

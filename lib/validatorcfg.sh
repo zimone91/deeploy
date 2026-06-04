@@ -62,14 +62,11 @@ validatorcfg_resolve_config() {
         COMMISSION_BPS="$REPLY"
     fi
     # The 2nd shred-receiver address (DZ multicast) is gated on the SINGLE
-    # "Enable DoubleZero?" decision — the same one that gates Phase 7 prepare.
-    # dz_should_enable (from doublezero.sh) asks once / honors env+state, and
-    # records dz_enabled. Phase 6 runs before Phase 7, so the decision is made here.
-    if declare -F dz_should_enable >/dev/null 2>&1; then
-        dz_should_enable >/dev/null 2>&1 && DZ_ENABLED_RESOLVED=true || DZ_ENABLED_RESOLVED=false
-    else
-        DZ_ENABLED_RESOLVED="$(state_get dz_enabled false)"   # standalone --only validatorcfg
-    fi
+    # "Enable DoubleZero?" decision made EARLY in Phase 1 (dz_should_enable) and
+    # recorded to state. Phase 6 only READS it — no prompt here (the old in-phase
+    # prompt was buried in a redirect and invisible; the decision now lives in
+    # Phase 1's visible prompt).
+    DZ_ENABLED_RESOLVED="$(state_get dz_enabled false)"
 
     # Record the MEV/region selections to state so `deeploy export` can capture them.
     state_set mev_mode "$MEV_MODE"

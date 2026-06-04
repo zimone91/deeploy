@@ -4,9 +4,16 @@
 # Packages, SSH-port change (with verify-or-rollback so a bad change can never
 # lock the operator out), and the core validator firewall.
 #
-# Firewall scope: this module owns ONLY the core validator rules. DoubleZero
-# (GRE proto 47 + BGP 179) lives in doublezero.sh; relayer/shred ports live in
-# relayer.sh — each feature owns its own firewall rules.
+# Firewall scope: this module owns the core validator rules and, when DoubleZero
+# is enabled, calls doublezero.sh's dz_firewall (GRE/BGP/44880) so ALL firewall
+# rules are configured in one place. The DZ rule bodies live in doublezero.sh;
+# relayer/shred ports live in relayer.sh.
+#
+# DoubleZero in Phase 1: the single "Enable DoubleZero?" prompt (dz_should_enable),
+# package install (dz_install_packages + dz_env_override), and firewall
+# (dz_firewall) all happen here — everything that does NOT need the staked key.
+# Connect is the post-swap 'deeploy dz-connect'. All DZ calls are declare-F
+# guarded + dz_enabled gated, so base.sh stays sourceable/testable on its own.
 #
 # Requires: common.sh sourced. All mutations go through run()/ensure_*/backup_*,
 # so --dry-run prints the plan and changes nothing.
@@ -58,6 +65,11 @@ _base_resolve_config() {
     _valid_port "$SSH_PORT" || fail "Invalid SSH_PORT '$SSH_PORT' (must be 1-65535)"
     [[ "$SSH_PORT" == "22" ]] && warn "SSH_PORT is 22 (default) — a non-default port reduces noise/attack surface"
     state_set ssh_port "$SSH_PORT"
+
+    # The single early DoubleZero decision, alongside the SSH-port prompt. Records
+    # dz_enabled to state; every later phase reads it (no re-prompt). Guarded so
+    # base.sh sources/tests standalone even if doublezero.sh isn't loaded.
+    if declare -F dz_should_enable >/dev/null 2>&1; then dz_should_enable || true; fi
 }
 
 # --- packages ----------------------------------------------------------------
@@ -78,6 +90,12 @@ base_packages() {
     fi
     run apt-get install -y "${BASE_PACKAGES[@]}"
     ok "Base packages installed"
+    # DoubleZero packages + env (no staked key needed) — done here with the base
+    # packages. Gated on the Phase 1 enable decision.
+    if [[ "$(state_get dz_enabled false)" == "true" ]]; then
+        declare -F dz_install_packages >/dev/null 2>&1 && dz_install_packages
+        declare -F dz_env_override     >/dev/null 2>&1 && dz_env_override
+    fi
 }
 
 # --- SSH port (verify-or-rollback) -------------------------------------------
@@ -148,6 +166,12 @@ base_firewall() {
     # NOTE: public 8899/tcp (RPC) and 8900/tcp (pubsub) are deliberately NOT
     # opened — RPC is --private-rpc on 127.0.0.1. DoubleZero/relayer rules are
     # added by their own modules.
+    # DoubleZero firewall (GRE/BGP/44880) BEFORE enabling, so the rules are in
+    # place atomically. doublezero0-bound rules are accepted before the interface
+    # exists (it appears at connect, post-swap). Gated on the Phase 1 decision.
+    if [[ "$(state_get dz_enabled false)" == "true" ]] && declare -F dz_firewall >/dev/null 2>&1; then
+        dz_firewall
+    fi
     run ufw --force enable
     ok "ufw enabled (SSH limited on ${port}, gossip 8001, dynamic 8900:9000/udp; RPC kept private)"
 }

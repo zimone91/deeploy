@@ -58,12 +58,12 @@ echo "== --only runs exactly one phase =="
 reset_state; : >"$RAN"; ONLY_PHASE=4 install_run >/dev/null 2>&1; ONLY_PHASE=""
 check "only phase 4 ran" "$(cat "$RAN")" "toolchain_build"
 
-echo "== DZ Phase 7 dispatch: runs prepare iff state dz_enabled=true (decision made in Phase 6) =="
-# The enable DECISION is made in Phase 6 (validatorcfg -> dz_should_enable), which
-# is stubbed here; Phase 7 dispatch reads state dz_enabled. So simulate Phase 6's
+echo "== DZ Phase 7 dispatch: runs doublezero_run (pointer) iff state dz_enabled=true =="
+# The enable DECISION is made EARLY in Phase 1 (base -> dz_should_enable), which
+# is stubbed here; Phase 7 dispatch reads state dz_enabled. So simulate Phase 1's
 # recorded decision and assert Phase 7 honors it.
 reset_state; : >"$RAN"; state_set dz_enabled true;  install_run >/dev/null 2>&1
-check "state dz_enabled=true: doublezero_run (prepare) ran" "$(grep -c '^doublezero_run$' "$RAN")" "1"
+check "state dz_enabled=true: doublezero_run (pointer) ran" "$(grep -c '^doublezero_run$' "$RAN")" "1"
 reset_state; : >"$RAN"; state_set dz_enabled false; install_run >/dev/null 2>&1
 check "state dz_enabled=false: skipped"          "$(grep -c '^doublezero_run$' "$RAN")" "0"
 reset_state; : >"$RAN"; install_run >/dev/null 2>&1   # unset -> default skip
@@ -86,6 +86,18 @@ check "resume sets PATH incl /root/.cargo/bin" "$(grep -c 'Environment=\"PATH=.*
 check "resume service enabled"                 "$(grep -c 'systemctl enable deeploy-resume.service' "$CALLS")" "1"
 check "reboot_pending recorded"                "$(state_has reboot_pending && echo y || echo n)" "y"
 check "systemctl reboot issued (confirm Y)"    "$(grep -c 'systemctl reboot' "$CALLS")" "1"
+
+echo "== old-server reminder before the reboot gate (dz_enabled only) =="
+# Pre-reboot branch calls dz_print_old_server_reminder when dz_enabled. Stub it
+# to observe; gated on state so DZ-off runs never see it.
+dz_print_old_server_reminder() { echo 'dz_old_server_reminder' >>"$RAN"; }
+reset_state; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"; state_set dz_enabled true
+: >"$RAN"; : >"$CALLS"; install_run >/dev/null 2>&1
+check "DZ on: old-server reminder before gate" "$(grep -c '^dz_old_server_reminder$' "$RAN")" "1"
+reset_state; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"; state_set dz_enabled false
+: >"$RAN"; install_run >/dev/null 2>&1
+check "DZ off: no old-server reminder"          "$(grep -c '^dz_old_server_reminder$' "$RAN")" "0"
+unset -f dz_print_old_server_reminder
 
 echo "== POST-REBOOT, isolation MATCHES: verify -> start -> self-disable =="
 reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"

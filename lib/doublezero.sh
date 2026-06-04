@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
 # ============================================================================
-# DeePloy — lib/doublezero.sh   (DoubleZero, optional — TWO parts)
+# DeePloy — lib/doublezero.sh   (DoubleZero, optional)
 #
-# DoubleZero passport requires the validator to be visible in Solana gossip AND
-# in the leader schedule — which is only true AFTER the manual swap to the
-# STAKED identity. The unstaked sync identity the node deploys on is NOT in
-# gossip, so passport/connect cannot run during the main install. DZ therefore
-# splits in two:
+# PRINCIPLE: the post-swap step (dz-connect) is MINIMAL — only what genuinely
+# needs the staked key + a running node (keypair migration, passport, connect,
+# multicast, verify). Everything that does NOT need the staked key is done early,
+# in Phase 1, alongside the base system:
 #
-#   PART A — Phase 7 "prepare" (this runs in the main install; SAFE, no active
-#     networking, never touches the staked key): install the package, set the
-#     mainnet-beta env, open the firewall (GRE/BGP/44880), place the migrated
-#     DoubleZero ID (with a heads-up to disconnect the OLD server later), discover
-#     devices, enable on boot. Records dz_prepared=true. Does NOT connect,
-#     passport, multicast, or run a local `doublezero disconnect`.
+#   Phase 1 (base.sh, all gated on dz_enabled):
+#     * dz_should_enable      — the single early "Enable DoubleZero?" prompt
+#     * dz_install_packages   — doublezero + doublezero-solana (mainnet repo)
+#     * dz_env_override       — -env mainnet-beta (+metrics), enabled on boot
+#     * dz_firewall           — GRE + BGP(179) + 44880/udp
+#   Phase 5 (keys.sh):
+#     * dz_keypair_check_soft — presence check / reminder (NON-blocking)
+#   Phase 6 (validatorcfg.sh):
+#     * 2nd shred-receiver-address (233.84.178.1:7733) iff dz_enabled
+#   Reboot gate (deeploy.sh):
+#     * dz_print_old_server_reminder — early heads-up to free the OLD server
+#   dz-connect (this module, the MANUAL post-swap step):
+#     * dz_keypair_migrate (HARD) -> find-validator poll -> old-server GATE ->
+#       passport -> connect ibrl -> multicast -> latency + status displays
 #
-#   PART B — `deeploy dz-connect` (the operator runs this AFTER the manual
-#     staked-key swap, Path 1): poll `passport find-validator` until the node is
-#     in gossip + leader schedule, run passport (prepare/sign/request — this DOES
-#     read the staked key, the one intentional exception, only here), connect
-#     ibrl, poll `doublezero status` until up, then connect multicast. No
-#     validator restart: the multicast shred-address is already baked into
-#     validator.sh (Phase 6, gated on dz_enabled) and picked up live.
-#
-# The 2nd shred-receiver-address (DZ multicast, 233.84.178.1:7733) is added to
-# validator.sh in Phase 6 iff dz_enabled — the SAME single "Enable DoubleZero?"
-# decision that gates Part A. There is no separate multicast prompt.
+# passport requires the validator in Solana gossip AND the leader schedule, which
+# is only true AFTER the manual swap to the staked identity — hence connect is a
+# separate manual step, never part of the install phase chain.
 #
 # Requires: common.sh sourced. doublezero/doublezero-solana/solana(-keygen)/ufw/
 # systemctl/curl/apt-get are mockable; paths overridable for tests.
@@ -59,19 +58,25 @@ _dz_detect_public_ip() {
 }
 
 # run_capture — like run(), but returns the command's stdout (for probes whose
-# OUTPUT we need: doublezero address/status/find-validator). Honors dry-run by
-# echoing nothing and returning 0. Defined here (not common) to keep the patch
-# localized; mockable in tests by shadowing the underlying command.
+# OUTPUT we need: doublezero address/status/latency/find-validator). Honors
+# dry-run by echoing nothing; mockable by shadowing the underlying command.
 run_capture() {
     if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} $*" >&2; return 0; fi
     "$@"
 }
 
-# Single DZ decision (also called from Phase 6 validatorcfg so the 2nd shred
-# address and Phase 7 prepare track the SAME answer). Precedence:
+# The DZ keypair path (state > home default). Shared by the soft check + migrate.
+_dz_keypair_path() {
+    local home; home="$(state_get solana_home /root/solana)"
+    printf '%s' "${DZ_KEYPAIR:-$(state_get dz_keypair "$home/dz-keypair.json")}"
+}
+
+# Single DZ decision — the EARLY, VISIBLE prompt (called from Phase 1 base.sh,
+# alongside the SSH-port prompt). Precedence:
 #   env DZ_ENABLED > recorded state > interactive ask (default N) > skip.
 # --yes does NOT auto-enable (a tunnel + key migration is never unattended).
-# Idempotent: records dz_enabled to state; safe to call from both phases.
+# Records dz_enabled to state immediately; every later phase READS that state and
+# never re-prompts. Returns 0 if DZ should be set up.
 dz_should_enable() {
     local decision
     if [[ -n "${DZ_ENABLED+x}" ]]; then
@@ -79,20 +84,24 @@ dz_should_enable() {
     elif [[ -n "$(state_get dz_enabled "")" ]]; then
         decision="$(state_get dz_enabled)"
     elif is_interactive && [[ "${ASSUME_YES:-0}" != "1" ]]; then
-        ask "Enable DoubleZero (DZ)? Sets up the tunnel; connect happens after the staked-key swap. [y/N]" "N"
+        ask "Enable DoubleZero (DZ)? Set up now; connect runs after the staked-key swap. [y/N]" "N"
         case "$REPLY" in [Yy]*) decision=true ;; *) decision=false ;; esac
     else
         decision=false
     fi
     state_set dz_enabled "$decision"
-    [[ "$decision" == "true" ]]
+    if [[ "$decision" == "true" ]]; then
+        info "DoubleZero ENABLED — have your DoubleZero ID (dz-keypair.json) handy; you'll place it in Phase 5 (Keys)."
+        return 0
+    fi
+    return 1
 }
 
-# --- config ------------------------------------------------------------------
+# --- config (used by dz-connect / dz_resume) ---------------------------------
 dz_resolve_config() {
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (dz-connect/resume run standalone)
     SOLANA_HOME="$(state_get solana_home /root/solana)"
-    DZ_KEYPAIR="${DZ_KEYPAIR:-$(state_get dz_keypair "$SOLANA_HOME/dz-keypair.json")}"
+    DZ_KEYPAIR="$(_dz_keypair_path)"
     STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
     # client-ip for `connect ibrl`: explicit env > recorded state > auto-detect.
     [[ -z "${DZ_CLIENT_IP:-}" ]] && DZ_CLIENT_IP="$(state_get dz_client_ip "")"
@@ -102,18 +111,17 @@ dz_resolve_config() {
 }
 
 # ============================================================================
-# PART A — Phase 7 prepare
+# Phase 1 pieces (called from base.sh; gated there on dz_enabled)
 # ============================================================================
 
 # Install doublezero + doublezero-solana. Repo-swap aware: an old (e.g. testnet)
 # cloudsmith repo is removed first so the mainnet-beta repo/key take over (docs).
-dz_install() {
+dz_install_packages() {
     step "Installing DoubleZero (mainnet-beta cloudsmith repo + apt)"
     if is_dry_run; then
         info "${C_DIM}[dry-run]${C_NC} would remove any old DZ repo, add ${DZ_SETUP_URL}, then apt-get install doublezero doublezero-solana"
         return 0
     fi
-    # Swap any pre-existing DZ apt repo (testnet -> mainnet-beta).
     local f
     while IFS= read -r -d '' f; do
         warn "Removing existing DZ apt source: $f"; run rm -f "$f"
@@ -141,9 +149,11 @@ ExecStart=/usr/bin/doublezerod -sock-file /run/doublezerod/doublezerod.sock -env
     run doublezero config set --env "$DZ_ENV"
 }
 
-# Firewall (official UFW form): GRE + BGP (doublezero0 link-local 179) + 44880/udp
-# (route-liveness, per docs). Idempotent (ufw allow dedups).
-dz_ufw() {
+# Firewall (official UFW form): GRE + BGP (doublezero0 link-local 179) + 44880/udp.
+# The doublezero0-bound rules are added BEFORE the interface exists (it appears at
+# connect, post-swap) — ufw accepts interface-bound rules for a not-yet-present
+# interface; they activate when doublezero0 comes up.
+dz_firewall() {
     step "ufw: GRE + BGP + 44880 for DoubleZero"
     run ufw allow proto gre from any to any
     run ufw allow in  on doublezero0 from 169.254.0.0/16 to 169.254.0.0/16 port 179 proto tcp
@@ -152,11 +162,38 @@ dz_ufw() {
     run ufw allow out on doublezero0 to any port 44880 proto udp
 }
 
-# The exact commands the operator runs ON THE OLD SERVER to free the DZ ID. The
-# same DoubleZero ID active on two machines at once conflicts — and only the OLD
-# server can disconnect itself (DeePloy can't reach it). So DeePloy REMINDS: an
-# informational heads-up at prepare (plan ahead) + a blocking gate at connect
-# (the moment the ID goes live on THIS machine). Shared so both print identically.
+# ============================================================================
+# Phase 5 piece — SOFT presence check (called from keys.sh; NON-blocking)
+# ============================================================================
+# Just confirm the DZ ID is on disk (or copy a given path to the standard path)
+# and remind. Never blocks Phase 5 — there's a reboot + staked-key swap before
+# dz-connect, so the operator has a window to place it. The HARD check is in
+# dz-connect (dz_keypair_migrate).
+dz_keypair_check_soft() {
+    [[ "$(state_get dz_enabled false)" == "true" ]] || return 0
+    step "DoubleZero ID presence check (soft)"
+    local kp; kp="$(_dz_keypair_path)"
+    state_set dz_keypair "$kp"
+    if [[ -f "$kp" ]]; then ok "DoubleZero ID present at ${kp}"; return 0; fi
+    if is_interactive; then
+        warn "No DoubleZero ID at ${kp} yet."
+        info "Place your DoubleZero ID at ${kp}, or give a path to it now (it'll be copied there)."
+        ask "DoubleZero ID path (or place it at ${kp} then press Enter; blank to defer)" "$kp"
+        local src="$REPLY"
+        if [[ -n "$src" && -f "$src" && "$src" != "$kp" ]]; then
+            run install -m 600 "$src" "$kp" && ok "Copied DoubleZero ID to ${kp}"
+        fi
+    fi
+    [[ -f "$kp" ]] || warn "DoubleZero ID still not at ${kp} — place it before 'deeploy dz-connect' (dz-connect REQUIRES it). Continuing for now."
+    return 0
+}
+
+# ============================================================================
+# Reboot-gate piece — early old-server reminder (called from deeploy.sh)
+# ============================================================================
+# The exact commands the operator runs ON THE OLD SERVER to free the DZ ID. Only
+# the OLD server can disconnect itself (DeePloy can't reach it). Shared by the
+# early reminder + the blocking gate so both print identically.
 _dz_old_server_commands() {
     info "    On the OLD server, run:"
     info "        doublezero disconnect"
@@ -164,12 +201,36 @@ _dz_old_server_commands() {
     info "        sudo systemctl disable doublezerod"
 }
 
-# Place the migrated DoubleZero ID. The DZ ID is shared across the operator's
-# cluster (per docs) — DeePloy never generates it; the operator places it at
-# $DZ_KEYPAIR, or gives a path. Loop until a valid key is installed at
-# ~/.config/doublezero/id.json; validate with `doublezero address`.
+dz_print_old_server_reminder() {
+    step "DoubleZero: disconnect the OLD server before the swap"
+    warn "Your DoubleZero ID is the SAME one currently active on your OLD server."
+    info "Before you swap the staked key and run 'deeploy dz-connect', disconnect DoubleZero"
+    info "on the OLD server — the same DZ ID can't be active on two machines at once:"
+    _dz_old_server_commands
+}
+
+# ============================================================================
+# Phase 7 (install) — no-op pointer (prepare already happened in Phase 1)
+# ============================================================================
+doublezero_run() {
+    require_root
+    step "DoubleZero (prepared in Phase 1)"
+    info "Package, env, and firewall were set up in Phase 1. Connect is a manual"
+    info "post-swap step. After the node reaches 'catchup 0' and you swap to the"
+    info "staked identity, run:"
+    info "    deeploy dz-connect"
+    info "  (migrates the DZ ID, polls gossip/leader-schedule, then passport + connect ibrl + multicast)"
+}
+
+# ============================================================================
+# dz-connect — the MANUAL post-swap step (Path 1, primary only)
+# ============================================================================
+
+# HARD keypair migration: install the DZ ID to ~/.config/doublezero/id.json and
+# validate with `doublezero address`. Blocks/loops until a valid key is present
+# (passport cannot proceed without it); non-interactive absent -> fail.
 dz_keypair_migrate() {
-    step "DoubleZero ID (migration)"
+    step "DoubleZero ID migration -> ${DZ_CONFIG_DIR}/id.json"
     run mkdir -p "$DZ_CONFIG_DIR"
     if is_dry_run; then
         info "${C_DIM}[dry-run]${C_NC} would install the DoubleZero ID to ${DZ_CONFIG_DIR}/id.json and validate with 'doublezero address'"
@@ -187,7 +248,7 @@ dz_keypair_migrate() {
             ask "DoubleZero ID path (or place it at ${DZ_KEYPAIR} then press Enter)" "$DZ_KEYPAIR"
             src="$REPLY"
         else
-            fail "DoubleZero ID absent at ${DZ_KEYPAIR} and run is non-interactive. Place it (chmod 600) and re-run 'deeploy.sh install --only 7'."
+            fail "DoubleZero ID absent at ${DZ_KEYPAIR} and run is non-interactive. Place it (chmod 600) and re-run 'deeploy dz-connect'."
         fi
         if [[ -n "$src" && -f "$src" ]]; then
             run install -m 600 "$src" "$DZ_CONFIG_DIR/id.json"
@@ -196,14 +257,6 @@ dz_keypair_migrate() {
             if [[ -n "$addr" ]]; then
                 ok "DoubleZero ID installed (${addr})"
                 state_set dz_id "$addr"
-                # Early heads-up (informational; NOT a gate — this box isn't
-                # connecting yet). The same DZ ID is live on the OLD server; plan
-                # to disconnect it there before running 'deeploy dz-connect' here.
-                warn "This DoubleZero ID is the SAME one currently active on your OLD server."
-                info "Before you run 'deeploy dz-connect' on THIS machine, DoubleZero must be"
-                info "disconnected on the OLD server (the same DZ ID can't be active on two"
-                info "machines at once). Plan for it now:"
-                _dz_old_server_commands
                 return 0
             fi
             warn "Installed key at ${DZ_CONFIG_DIR}/id.json but 'doublezero address' returned nothing — not a valid DZ ID?"
@@ -214,55 +267,8 @@ dz_keypair_migrate() {
     done
 }
 
-# Confirm DZ devices are reachable (docs: wait 10-20s, retry).
-dz_latency() {
-    step "DoubleZero device discovery (latency)"
-    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would run 'doublezero latency' (retry until devices appear)"; return 0; fi
-    local i out
-    for ((i=1; i<=DZ_LATENCY_RETRIES; i++)); do
-        out="$(run_capture doublezero latency 2>/dev/null || true)"
-        if [[ -n "$out" && "$out" =~ [0-9] ]]; then ok "DZ devices discovered"; return 0; fi
-        info "No DZ devices yet (attempt ${i}/${DZ_LATENCY_RETRIES}) — waiting ${DZ_LATENCY_INTERVAL}s…"
-        sleep "$DZ_LATENCY_INTERVAL"
-    done
-    warn "No DZ devices discovered after ${DZ_LATENCY_RETRIES} tries — continuing (connect happens later in dz-connect)"
-    return 0
-}
-
-dz_print_connect() {
-    step "MANUAL after the staked-key swap: deeploy dz-connect"
-    info "DoubleZero is PREPARED (package, env, firewall, ID, devices) but NOT connected."
-    info "Connection needs the validator in gossip + the leader schedule, which only"
-    info "happens AFTER you swap to the real staked identity. So, in order:"
-    info "  1) reboot completes -> node syncs -> 'catchup 0' on the unstaked identity"
-    info "  2) you manually set-identity to the real staked key (see the Start summary)"
-    info "  3) run:  deeploy dz-connect    (polls gossip/leader-schedule, then passport + connect + multicast)"
-}
-
-# Phase 7 orchestrator — PREPARE ONLY.
-doublezero_run() {
-    require_root
-    dz_resolve_config
-    dz_install
-    dz_env_override
-    dz_ufw
-    dz_keypair_migrate
-    dz_latency
-    # NB: no local 'doublezero disconnect' here. On a fresh box there is no tunnel
-    # to drop (it'd be a no-op/error), and the disconnect that actually matters is
-    # on the OLD server — which DeePloy can't reach. The operator was reminded in
-    # dz_keypair_migrate (heads-up) and is gated in dz-connect (before connect).
-    state_set dz_prepared "$(_ts)"
-    dz_print_connect
-    ok "DoubleZero prepared — run 'deeploy dz-connect' after the staked-key swap"
-}
-
-# ============================================================================
-# PART B — deeploy dz-connect  (post-swap; Path 1, primary only)
-# ============================================================================
-
 # Poll passport find-validator until the validator is in gossip AND the leader
-# schedule (the 5-10 min post-swap window). Returns 0 once visible.
+# schedule (the 5-10 min post-swap window).
 _dz_await_in_leader_schedule() {
     local i out
     for ((i=1; i<=DZ_FIND_RETRIES; i++)); do
@@ -275,6 +281,24 @@ _dz_await_in_leader_schedule() {
         sleep "$DZ_FIND_INTERVAL"
     done
     fail "Validator never appeared in the leader schedule after $((DZ_FIND_RETRIES * DZ_FIND_INTERVAL))s. Confirm the staked-key swap completed and the node is voting, then re-run 'deeploy dz-connect'."
+}
+
+# Blocking gate, before this machine connects (the moment the DZ ID goes live).
+# The same ID active on two machines conflicts; only the OLD server can
+# disconnect itself. Explicit acknowledgment; does NOT honor --yes (a conflict
+# guard, like require_yes); fails clearly non-interactively.
+dz_confirm_old_server_disconnected() {
+    step "Before connecting: the OLD server must be disconnected"
+    warn "The same DoubleZero ID active on two machines at once WILL conflict."
+    info "Confirm DoubleZero is disconnected on your OLD server first."
+    _dz_old_server_commands
+    if ! is_interactive; then
+        fail "Cannot confirm the OLD server is disconnected in a non-interactive run. On the OLD server run 'doublezero disconnect' (then stop/disable doublezerod), then re-run 'deeploy dz-connect'."
+    fi
+    printf '%s  Has the OLD server been disconnected (doublezerod stopped)?%s [y/N]: ' "$C_BOLD" "$C_NC"
+    local reply; read -r reply || reply=""
+    case "$reply" in [Yy]*) ok "Acknowledged — proceeding to connect this machine." ;;
+        *) fail "Disconnect DoubleZero on the OLD server first, then re-run 'deeploy dz-connect'." ;; esac
 }
 
 # Passport: prepare -> sign (with the STAKED key) -> request. Path 1 = primary
@@ -303,21 +327,6 @@ dz_connect_ibrl() {
     else run doublezero connect ibrl; fi
 }
 
-# Poll `doublezero status` until the tunnel is up (docs: ~1 min for GRE init).
-dz_status_wait() {
-    step "Waiting for the DoubleZero tunnel (doublezero status)"
-    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would poll 'doublezero status' until up"; return 0; fi
-    local i out
-    for ((i=1; i<=DZ_STATUS_RETRIES; i++)); do
-        out="$(run_capture doublezero status 2>&1 || true)"
-        if grep -qiE '\bup\b|connected' <<<"$out"; then ok "DoubleZero tunnel up"; return 0; fi
-        info "Tunnel not up yet (attempt ${i}/${DZ_STATUS_RETRIES}, ~${DZ_STATUS_INTERVAL}s)…"
-        sleep "$DZ_STATUS_INTERVAL"
-    done
-    warn "Tunnel not 'up' after $((DZ_STATUS_RETRIES * DZ_STATUS_INTERVAL))s — check 'doublezero status' / doublezerod logs"
-    return 0
-}
-
 dz_multicast_publish() {
     step "DoubleZero multicast publish (edge-solana-shreds)"
     # No validator restart: the multicast shred-address is already in validator.sh
@@ -325,55 +334,121 @@ dz_multicast_publish() {
     run doublezero connect multicast --publish edge-solana-shreds
 }
 
-# Blocking gate, run right before this machine connects (the moment the DZ ID
-# goes live here). The same ID active on two machines conflicts; only the OLD
-# server can disconnect itself. Requires explicit acknowledgment; does NOT honor
-# --yes (a conflict guard, like require_yes); fails clearly non-interactively.
-dz_confirm_old_server_disconnected() {
-    step "Before connecting: the OLD server must be disconnected"
-    warn "The same DoubleZero ID active on two machines at once WILL conflict."
-    info "Confirm DoubleZero is disconnected on your OLD server first."
-    _dz_old_server_commands
-    if ! is_interactive; then
-        fail "Cannot confirm the OLD server is disconnected in a non-interactive run. On the OLD server run 'doublezero disconnect' (then stop/disable doublezerod), then re-run 'deeploy dz-connect'."
+# --- verification displays (end of dz-connect) -------------------------------
+
+# Parse `doublezero latency` (Pubkey|Code|IP|Min|Max|Avg|reachable): emit the
+# nearest device "CODE AVG" (lowest Avg). Columns found by header name so extra/
+# elided columns don't matter.
+_dz_parse_latency_nearest() {
+    awk -F'|' '
+        function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+        /[Cc]ode/ && /[Aa]vg/ { for(i=1;i<=NF;i++){h=trim($i); if(h=="Code")cc=i; if(h=="Avg")ac=i} hdr=1; next }
+        hdr && cc && ac {
+            code=trim($cc); avg=trim($ac); sub(/ *ms$/,"",avg)
+            if(code=="" || avg !~ /^[0-9.]+$/) next
+            if(best=="" || avg+0 < best+0){ best=avg; bc=code }
+        }
+        END { if(bc!="") printf "%s %s", bc, best }
+    '
+}
+
+dz_show_latency() {
+    step "DoubleZero device latency (nearest device)"
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would run 'doublezero latency' and highlight the nearest device"; return 0; fi
+    local out i nearest
+    for ((i=1; i<=DZ_LATENCY_RETRIES; i++)); do
+        out="$(run_capture doublezero latency 2>/dev/null || true)"
+        [[ -n "$out" && "$out" =~ [0-9] ]] && break
+        info "No DZ devices yet (attempt ${i}/${DZ_LATENCY_RETRIES}) — waiting ${DZ_LATENCY_INTERVAL}s…"
+        sleep "$DZ_LATENCY_INTERVAL"
+    done
+    printf '%s\n' "$out" | sed 's/^/    /'
+    nearest="$(printf '%s\n' "$out" | _dz_parse_latency_nearest)"
+    if [[ -n "$nearest" ]]; then ok "Nearest DZ device: ${nearest%% *} (avg ${nearest##* }ms)"
+    else warn "Could not determine the nearest DZ device from 'doublezero latency'"; fi
+}
+
+# Extract one field from the `doublezero status` table: the value of column
+# <header> in the row whose "Tunnel Name" == <tunnel>. Pipe-delimited; columns
+# found by header name (robust to elided/extra columns).
+_dz_status_field() {
+    local wt=$1 wc=$2
+    awk -F'|' -v wt="$wt" -v wc="$wc" '
+        function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+        /Tunnel Name/ && /Tunnel Status/ { for(i=1;i<=NF;i++) c[trim($i)]=i; tn=c["Tunnel Name"]; tc=c[wc]; hdr=1; next }
+        hdr && tn && tc { if(trim($tn)==wt){ print trim($tc); exit } }
+    '
+}
+
+# Poll `doublezero status` until the IBRL tunnel is up (docs: ~1 min GRE), then
+# display BOTH tunnels (doublezero0/IBRL + doublezero1/Multicast) and verdict.
+dz_show_status() {
+    step "DoubleZero status (tunnels)"
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would poll 'doublezero status' and report both tunnels"; return 0; fi
+    local out i
+    for ((i=1; i<=DZ_STATUS_RETRIES; i++)); do
+        out="$(run_capture doublezero status 2>&1 || true)"
+        if printf '%s\n' "$out" | _dz_status_field doublezero0 "Tunnel Status" | grep -qi 'BGP Session Up'; then break; fi
+        info "Tunnel not up yet (attempt ${i}/${DZ_STATUS_RETRIES}, ~${DZ_STATUS_INTERVAL}s)…"
+        sleep "$DZ_STATUS_INTERVAL"
+    done
+    printf '%s\n' "$out" | sed 's/^/    /'
+    local ibrl mcast device metro mgroup
+    ibrl="$(printf '%s\n' "$out"   | _dz_status_field doublezero0 'Tunnel Status')"
+    mcast="$(printf '%s\n' "$out"  | _dz_status_field doublezero1 'Tunnel Status')"
+    device="$(printf '%s\n' "$out" | _dz_status_field doublezero0 'Current Device')"
+    metro="$(printf '%s\n' "$out"  | _dz_status_field doublezero0 'Metro')"
+    mgroup="$(printf '%s\n' "$out" | _dz_status_field doublezero1 'Multicast Groups')"
+    info "  IBRL (doublezero0):      ${ibrl:-?}   device=${device:-?}  metro=${metro:-?}"
+    info "  Multicast (doublezero1): ${mcast:-?}   groups=${mgroup:-?}"
+    if [[ "$ibrl" == *"BGP Session Up"* && "$mcast" == *"BGP Session Up"* && "$mgroup" == *edge-solana-shreds* ]]; then
+        ok "DZ connected — IBRL via ${device} (${metro}), publishing shreds to edge-solana-shreds."
+    else
+        warn "DZ not fully up — IBRL='${ibrl:-?}' Multicast='${mcast:-?}' groups='${mgroup:-?}'. Inspect 'doublezero status'."
     fi
-    printf '%s  Has the OLD server been disconnected (doublezerod stopped)?%s [y/N]: ' "$C_BOLD" "$C_NC"
-    local reply; read -r reply || reply=""
-    case "$reply" in [Yy]*) ok "Acknowledged — proceeding to connect this machine." ;;
-        *) fail "Disconnect DoubleZero on the OLD server first, then re-run 'deeploy dz-connect'." ;; esac
 }
 
 dz_connect_run() {
     require_root
     dz_resolve_config
-    [[ "$(state_get dz_prepared "")" != "" ]] || fail "DoubleZero was not prepared — run the install Phase 7 prepare first ('deeploy.sh install --only 7')."
+    # Guard: enabled + the binaries are actually installed (Phase 1) + the staked
+    # key is in place (post-swap). The binaries check replaces what dz_prepared
+    # used to guarantee implicitly — a direct command-present check is reliable.
+    [[ "$(state_get dz_enabled false)" == "true" ]] || fail "DoubleZero is not enabled (dz_enabled != true) — nothing to connect."
+    have doublezero        || fail "DoubleZero was enabled but 'doublezero' is not installed — re-run install (Phase 1 installs it) or check Phase 1."
+    have doublezero-solana || fail "DoubleZero was enabled but 'doublezero-solana' is not installed — re-run install (Phase 1) or check Phase 1."
     [[ -f "$STAKED_KEYPAIR" ]] || fail "Staked key not at ${STAKED_KEYPAIR}. Complete the manual set-identity swap before 'deeploy dz-connect'."
+
+    dz_keypair_migrate                         # HARD: mkdir + move + validate (blocks/loops if absent)
     local dz_id staked_id
     dz_id="$(state_get dz_id "")"; [[ -z "$dz_id" ]] && dz_id="$(_dz_address)"
-    [[ -n "$dz_id" ]] || fail "Could not determine the DoubleZero ID (doublezero address). Re-run Phase 7 prepare."
+    [[ -n "$dz_id" ]] || fail "Could not determine the DoubleZero ID (doublezero address)."
     staked_id="$(_dz_staked_pubkey "$STAKED_KEYPAIR")"   # intentional staked-key read (passport needs it) — ONLY here
     [[ -n "$staked_id" ]] || fail "Could not read the staked validator pubkey from ${STAKED_KEYPAIR}"
 
-    _dz_await_in_leader_schedule              # the 5-10 min gossip/leader-schedule window
+    _dz_await_in_leader_schedule               # the 5-10 min gossip/leader-schedule window
+    dz_confirm_old_server_disconnected         # blocking gate BEFORE passport/connect
     dz_passport "$dz_id" "$staked_id"
-    dz_confirm_old_server_disconnected        # blocking gate BEFORE connect (the ID goes live here)
     dz_connect_ibrl
-    dz_status_wait
     dz_multicast_publish
+    dz_show_latency                            # verification display: nearest device
+    dz_show_status                             # verification display: both tunnels + verdict
     state_set dz_connected "$(_ts)"
-    ok "DoubleZero connected (passport + ibrl + multicast). 'doublezero status' to inspect."
+    ok "DoubleZero connect complete."
 }
 
 # ============================================================================
-# Post-reboot resume — only meaningful AFTER dz-connect has run (a tunnel exists
-# to verify/restore). Before connect, there is nothing to restore -> no-op.
+# Post-reboot resume — gated on dz_connected (NOT dz_enabled): only a tunnel that
+# was actually connected (dz-connect ran) can be verified/restored. On the
+# isolation reboot — which happens BEFORE dz-connect (connect is post-swap, after
+# catchup) — dz_connected is unset, so this correctly no-ops.
 # ============================================================================
 _dz_iface_up() { ip link show doublezero0 >/dev/null 2>&1; }
 
 dz_resume() {
     require_root
     if [[ "$(state_get dz_connected "")" == "" ]]; then
-        info "DoubleZero prepared but not yet connected (run 'deeploy dz-connect' after the swap) — nothing to restore."
+        info "DoubleZero not yet connected (run 'deeploy dz-connect' after the swap) — nothing to restore."
         return 0
     fi
     dz_resolve_config

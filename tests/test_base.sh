@@ -83,6 +83,52 @@ check "dynamic 8900:9000/udp" "$(grep -c 'ufw allow 8900:9000/udp' "$CALLS")"   
 check "public 8899 NOT opened"   "$(grep -c '8899' "$CALLS")" "0"
 check "public 8900/tcp NOT opened" "$(grep -c '8900/tcp' "$CALLS")" "0"
 
+echo "== DoubleZero in Phase 1: early prompt + packages/env + firewall (gated on dz_enabled) =="
+# Source doublezero.sh so base's declare-F-guarded DZ calls resolve. Mock the DZ
+# commands the prepare path shells out to.
+# shellcheck source-path=SCRIPTDIR source=../lib/doublezero.sh
+source "$ROOT/lib/doublezero.sh"
+curl() { local i j o=""; for ((i=1;i<=$#;i++)); do [[ "${!i}" == "-o" ]] && { j=$((i+1)); o="${!j}"; }; done; [[ -n "$o" ]] && : >"$o"; echo "curl $*" >>"$CALLS"; }
+bash() { echo "bash $*" >>"$CALLS"; }            # the DZ setup.deb.sh
+doublezero() { echo "doublezero $*" >>"$CALLS"; }
+find() { command find "$@" 2>/dev/null; }
+export DZ_OVERRIDE_CONF="$WORK/dz-override.conf"
+
+# (a) early enable prompt — env preset honored, recorded to state, VISIBLE (not redirected)
+state_clear dz_enabled
+EOUT=$( DZ_ENABLED=true _base_resolve_config 2>&1 )
+check "early prompt: dz_enabled recorded true" "$(state_get dz_enabled)" "true"
+check "early prompt: prints the 'have your ID handy' line (visible)" "$(grep -c 'place it in Phase 5' <<<"$EOUT")" "1"
+state_clear dz_enabled
+( unset DZ_ENABLED; NONINTERACTIVE=1 _base_resolve_config ) >/dev/null 2>&1
+check "early prompt: unset+non-interactive -> false" "$(state_get dz_enabled)" "false"
+ask() { REPLY=y; }
+state_clear dz_enabled
+( unset DZ_ENABLED; ASSUME_YES=0 NONINTERACTIVE=0 SSH_PORT=2222 _base_resolve_config ) >/dev/null 2>&1
+check "early prompt: interactive 'y' -> true" "$(state_get dz_enabled)" "true"
+unset -f ask
+
+# (b) base_packages installs DZ packages + env when dz_enabled
+state_set dz_enabled true; : >"$CALLS"; BASE_APT_UPGRADE=false base_packages >/dev/null 2>&1
+check "DZ enabled: doublezero pkgs installed" "$(grep -c 'apt-get install -y doublezero doublezero-solana' "$CALLS")" "1"
+check "DZ enabled: doublezerod enabled boot"  "$(grep -c 'systemctl enable doublezerod' "$CALLS")" "1"
+check "DZ enabled: env mainnet-beta+metrics"  "$(grep -c 'env mainnet-beta -metrics-enable' "$DZ_OVERRIDE_CONF")" "1"
+state_set dz_enabled false; : >"$CALLS"; BASE_APT_UPGRADE=false base_packages >/dev/null 2>&1
+check "DZ disabled: no doublezero pkg install" "$(grep -c 'doublezero doublezero-solana' "$CALLS")" "0"
+
+# (c) base_firewall adds DZ rules when dz_enabled, none when not
+state_set dz_enabled true; : >"$CALLS"; SSH_PORT=2222 base_firewall >/dev/null 2>&1
+check "DZ fw: GRE rule"        "$(grep -c 'ufw allow proto gre' "$CALLS")" "1"
+check "DZ fw: BGP 179 in+out"  "$(grep -c 'on doublezero0 from 169.254.0.0/16 to 169.254.0.0/16 port 179 proto tcp' "$CALLS")" "2"
+check "DZ fw: 44880 udp in+out" "$(grep -c 'on doublezero0 to any port 44880 proto udp' "$CALLS")" "2"
+DZ_GRELN=$(grep -n 'ufw allow proto gre' "$CALLS" | cut -d: -f1); DZ_ENLN=$(grep -n 'ufw --force enable' "$CALLS" | cut -d: -f1)
+check_true "DZ fw rules BEFORE ufw enable" "[[ ${DZ_GRELN:-0} -lt ${DZ_ENLN:-0} ]]"
+state_set dz_enabled false; : >"$CALLS"; SSH_PORT=2222 base_firewall >/dev/null 2>&1
+check "DZ disabled: no GRE rule" "$(grep -c 'proto gre' "$CALLS")" "0"
+check "DZ disabled: no doublezero0 rules" "$(grep -c 'doublezero0' "$CALLS")" "0"
+unset -f curl bash doublezero find
+state_clear dz_enabled
+
 echo "== base_ssh_port success path =="
 F=$(fresh_sshd_full); : >"$CALLS"
 SS_PORT_LISTENING=2222 SOCKET_RC=1 ASSUME_YES=1 SSH_PORT=2222 SSHD_CONFIG="$F" base_ssh_port >/dev/null 2>&1

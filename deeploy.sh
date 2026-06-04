@@ -48,10 +48,11 @@ run_phase() {
         4) toolchain_build ;;
         5) keys_run ;;
         6) validatorcfg_run; nic_run ;;
-        7) # The enable decision was already made in Phase 6 (validatorcfg, which
-           # gates the 2nd shred address on it). Read it from state here.
+        7) # DZ prepare (install/env/ufw) already happened in Phase 1. Phase 7 is
+           # just a pointer to the manual post-swap 'deeploy dz-connect'. Enable
+           # decision was made/recorded in Phase 1.
            if [[ "$(state_get dz_enabled false)" == "true" ]]; then doublezero_run
-           else info "DoubleZero not enabled — skipping (answer 'y' at the Phase 6 prompt or set DZ_ENABLED=true)"; fi ;;
+           else info "DoubleZero not enabled — skipping (answer 'y' at the Phase 1 prompt or set DZ_ENABLED=true)"; fi ;;
         8) start_run ;;
     esac
     phase_end "$n"
@@ -151,6 +152,12 @@ _install_reboot_boundary() {
     # Pre-reboot: install the auto-resume oneshot, then reboot.
     _install_setup_resume_service
     state_set reboot_pending "$(_ts)"
+    # Early DoubleZero old-server reminder (informational) — gives the operator
+    # time to disconnect DZ on the OLD server before the reboot + staked-key swap.
+    # The blocking gate is later, in dz-connect.
+    if [[ "$(state_get dz_enabled false)" == "true" ]] && declare -F dz_print_old_server_reminder >/dev/null 2>&1; then
+        dz_print_old_server_reminder
+    fi
     step "Reboot required to apply CPU isolation"
     info "All interactive setup (phases 0-7) is complete."
     info "After reboot, ${RESUME_SERVICE_NAME} auto-runs: it verifies isolation, then phase 8 (start -> catchup -> verify)."
