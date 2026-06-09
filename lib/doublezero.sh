@@ -41,10 +41,14 @@ DZ_ENV="${DZ_ENV:-mainnet-beta}"
 # Tunables (overridable for tests; real defaults match the docs' timings).
 DZ_FIND_RETRIES="${DZ_FIND_RETRIES:-60}"      # find-validator poll: ~15 min at 15s
 DZ_FIND_INTERVAL="${DZ_FIND_INTERVAL:-15}"
-DZ_STATUS_RETRIES="${DZ_STATUS_RETRIES:-12}"  # status poll: ~2 min at 10s (docs: ~1 min for GRE)
-DZ_STATUS_INTERVAL="${DZ_STATUS_INTERVAL:-10}"
 DZ_LATENCY_RETRIES="${DZ_LATENCY_RETRIES:-3}" # device discovery: docs say wait 10-20s + retry
 DZ_LATENCY_INTERVAL="${DZ_LATENCY_INTERVAL:-15}"
+DZ_LATENCY_TOPN="${DZ_LATENCY_TOPN:-8}"       # show only the N nearest devices (not the ~150-row dump)
+# The status display POLLS until BOTH tunnels are "BGP Session Up" — the Multicast
+# (doublezero1) BGP session can lag IBRL's (doublezero0) ~1min, so we wait for the
+# slower of the two, then warn. (These supersede the old DZ_STATUS_* status-poll vars.)
+DZ_MCAST_RETRIES="${DZ_MCAST_RETRIES:-18}"    # ~3 min at 10s for both BGP sessions
+DZ_MCAST_INTERVAL="${DZ_MCAST_INTERVAL:-10}"
 
 # --- helpers -----------------------------------------------------------------
 _dz_address()  { run_capture doublezero address 2>/dev/null || true; }   # the DoubleZero ID (from id.json)
@@ -184,7 +188,7 @@ dz_keypair_check_soft() {
             run install -m 600 "$src" "$kp" && ok "Copied DoubleZero ID to ${kp}"
         fi
     fi
-    [[ -f "$kp" ]] || warn "DoubleZero ID still not at ${kp} — place it before 'deeploy dz-connect' (dz-connect REQUIRES it). Continuing for now."
+    [[ -f "$kp" ]] || warn "DoubleZero ID still not at ${kp} — place it before '${DEEPLOY_CMD} dz-connect' (dz-connect REQUIRES it). Continuing for now."
     return 0
 }
 
@@ -204,7 +208,7 @@ _dz_old_server_commands() {
 dz_print_old_server_reminder() {
     step "DoubleZero: disconnect the OLD server before the swap"
     warn "Your DoubleZero ID is the SAME one currently active on your OLD server."
-    info "Before you swap the staked key and run 'deeploy dz-connect', disconnect DoubleZero"
+    info "Before you swap the staked key and run '${DEEPLOY_CMD} dz-connect', disconnect DoubleZero"
     info "on the OLD server — the same DZ ID can't be active on two machines at once:"
     _dz_old_server_commands
 }
@@ -218,7 +222,7 @@ doublezero_run() {
     info "Package, env, and firewall were set up in Phase 1. Connect is a manual"
     info "post-swap step. After the node reaches 'catchup 0' and you swap to the"
     info "staked identity, run:"
-    info "    deeploy dz-connect"
+    info "    ${DEEPLOY_CMD} dz-connect"
     info "  (migrates the DZ ID, polls gossip/leader-schedule, then passport + connect ibrl + multicast)"
 }
 
@@ -248,7 +252,7 @@ dz_keypair_migrate() {
             ask "DoubleZero ID path (or place it at ${DZ_KEYPAIR} then press Enter)" "$DZ_KEYPAIR"
             src="$REPLY"
         else
-            fail "DoubleZero ID absent at ${DZ_KEYPAIR} and run is non-interactive. Place it (chmod 600) and re-run 'deeploy dz-connect'."
+            fail "DoubleZero ID absent at ${DZ_KEYPAIR} and run is non-interactive. Place it (chmod 600) and re-run '${DEEPLOY_CMD} dz-connect'."
         fi
         if [[ -n "$src" && -f "$src" ]]; then
             run install -m 600 "$src" "$DZ_CONFIG_DIR/id.json"
@@ -280,7 +284,7 @@ _dz_await_in_leader_schedule() {
         info "Waiting for the validator to appear in gossip + leader schedule (attempt ${i}/${DZ_FIND_RETRIES}, ~${DZ_FIND_INTERVAL}s)…"
         sleep "$DZ_FIND_INTERVAL"
     done
-    fail "Validator never appeared in the leader schedule after $((DZ_FIND_RETRIES * DZ_FIND_INTERVAL))s. Confirm the staked-key swap completed and the node is voting, then re-run 'deeploy dz-connect'."
+    fail "Validator never appeared in the leader schedule after $((DZ_FIND_RETRIES * DZ_FIND_INTERVAL))s. Confirm the staked-key swap completed and the node is voting, then re-run '${DEEPLOY_CMD} dz-connect'."
 }
 
 # Blocking gate, before this machine connects (the moment the DZ ID goes live).
@@ -293,12 +297,30 @@ dz_confirm_old_server_disconnected() {
     info "Confirm DoubleZero is disconnected on your OLD server first."
     _dz_old_server_commands
     if ! is_interactive; then
-        fail "Cannot confirm the OLD server is disconnected in a non-interactive run. On the OLD server run 'doublezero disconnect' (then stop/disable doublezerod), then re-run 'deeploy dz-connect'."
+        fail "Cannot confirm the OLD server is disconnected in a non-interactive run. On the OLD server run 'doublezero disconnect' (then stop/disable doublezerod), then re-run '${DEEPLOY_CMD} dz-connect'."
     fi
-    printf '%s  Has the OLD server been disconnected (doublezerod stopped)?%s [y/N]: ' "$C_BOLD" "$C_NC"
-    local reply; read -r reply || reply=""
-    case "$reply" in [Yy]*) ok "Acknowledged — proceeding to connect this machine." ;;
-        *) fail "Disconnect DoubleZero on the OLD server first, then re-run 'deeploy dz-connect'." ;; esac
+    # Robust interactive read: trim whitespace, take the LAST token (so backspace
+    # artifacts / a stray char-then-correction don't poison the answer), match
+    # strictly y/n. RE-PROMPT on anything else — a typo must not abort dz-connect.
+    # Still ignores --yes (this is a safety gate, like require_yes). An explicit
+    # 'n'/'no' fails (operator says the old server is NOT yet disconnected).
+    # Match the WHOLE trimmed reply strictly (NOT the last token of a phrase — a
+    # safety gate must never auto-proceed on an ambiguous multi-word answer like
+    # "maybe y"). Trim surrounding whitespace, then: y/yes -> proceed; n/no ->
+    # fail; empty -> fail (closed); anything else (typo, phrase) -> RE-PROMPT so a
+    # mistype doesn't abort dz-connect. Terminates on EOF (read fails -> "" -> fail).
+    local reply ans
+    while true; do
+        printf '%s  Has the OLD server been disconnected (doublezerod stopped)?%s [y/N]: ' "$C_BOLD" "$C_NC"
+        read -r reply || reply=""
+        ans="${reply#"${reply%%[![:space:]]*}"}"   # ltrim leading whitespace
+        ans="${ans%"${ans##*[![:space:]]}"}"        # rtrim trailing whitespace
+        case "$ans" in
+            [Yy]|[Yy][Ee][Ss]) ok "Acknowledged — proceeding to connect this machine."; return 0 ;;
+            [Nn]|[Nn][Oo]|"")  fail "Disconnect DoubleZero on the OLD server first, then re-run '${DEEPLOY_CMD} dz-connect'." ;;
+            *) warn "Please answer y or n." ;;     # typo/phrase -> re-prompt, don't abort, never auto-proceed
+        esac
+    done
 }
 
 # Passport: prepare -> sign (with the STAKED key) -> request. Path 1 = primary
@@ -345,24 +367,59 @@ _dz_parse_latency_nearest() {
         /[Cc]ode/ && /[Aa]vg/ { for(i=1;i<=NF;i++){h=trim($i); if(h=="Code")cc=i; if(h=="Avg")ac=i} hdr=1; next }
         hdr && cc && ac {
             code=trim($cc); avg=trim($ac); sub(/ *ms$/,"",avg)
-            if(code=="" || avg !~ /^[0-9.]+$/) next
+            if(code=="" || avg !~ /^[0-9]+(\.[0-9]+)?$/) next   # require a real number (not "." / "...")
             if(best=="" || avg+0 < best+0){ best=avg; bc=code }
         }
         END { if(bc!="") printf "%s %s", bc, best }
     '
 }
 
+# Emit the N nearest "CODE  AVGms" lines (lowest Avg first) — the table can be
+# ~150 rows; we only want the closest few. N defaults to DZ_LATENCY_TOPN.
+_dz_parse_latency_topn() {
+    local n=${1:-8}
+    [[ "$n" =~ ^[0-9]+$ ]] || n=8     # non-numeric N (misconfig) -> default, not a whole-table dump
+    awk -F'|' -v n="$n" '
+        function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
+        BEGIN { n=n+0 }                # force numeric so the k<=n guard is numeric, not lexicographic
+        /[Cc]ode/ && /[Aa]vg/ { for(i=1;i<=NF;i++){h=trim($i); if(h=="Code")cc=i; if(h=="Avg")ac=i} hdr=1; next }
+        hdr && cc && ac {
+            code=trim($cc); avg=trim($ac); sub(/ *ms$/,"",avg)
+            if(code=="" || avg !~ /^[0-9]+(\.[0-9]+)?$/) next   # require a real number
+            codes[++m]=code; avgs[m]=avg+0
+        }
+        END {
+            # simple selection of the n smallest by avg
+            for(k=1;k<=n && k<=m;k++){
+                mi=0
+                for(j=1;j<=m;j++) if(!used[j] && (mi==0 || avgs[j]<avgs[mi])) mi=j
+                if(mi==0) break
+                used[mi]=1
+                printf "    %-14s %sms\n", codes[mi], avgs[mi]
+            }
+        }
+    '
+}
+
 dz_show_latency() {
-    step "DoubleZero device latency (nearest device)"
-    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would run 'doublezero latency' and highlight the nearest device"; return 0; fi
-    local out i nearest
+    step "DoubleZero device latency (nearest devices)"
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would run 'doublezero latency' and show the ${DZ_LATENCY_TOPN} nearest devices"; return 0; fi
+    local out i nearest topn
     for ((i=1; i<=DZ_LATENCY_RETRIES; i++)); do
         out="$(run_capture doublezero latency 2>/dev/null || true)"
         [[ -n "$out" && "$out" =~ [0-9] ]] && break
         info "No DZ devices yet (attempt ${i}/${DZ_LATENCY_RETRIES}) — waiting ${DZ_LATENCY_INTERVAL}s…"
         sleep "$DZ_LATENCY_INTERVAL"
     done
-    printf '%s\n' "$out" | sed 's/^/    /'
+    # Show ONLY the nearest N (the full table is ~150 rows of noise).
+    topn="$(printf '%s\n' "$out" | _dz_parse_latency_topn "$DZ_LATENCY_TOPN")"
+    if [[ -n "$topn" ]]; then
+        info "Nearest ${DZ_LATENCY_TOPN} DZ devices (by avg latency):"
+        printf '%s\n' "$topn"
+    else
+        warn "Could not parse the 'doublezero latency' table — raw output:"
+        printf '%s\n' "$out" | head -20 | sed 's/^/    /'
+    fi
     nearest="$(printf '%s\n' "$out" | _dz_parse_latency_nearest)"
     if [[ -n "$nearest" ]]; then ok "Nearest DZ device: ${nearest%% *} (avg ${nearest##* }ms)"
     else warn "Could not determine the nearest DZ device from 'doublezero latency'"; fi
@@ -380,20 +437,27 @@ _dz_status_field() {
     '
 }
 
-# Poll `doublezero status` until the IBRL tunnel is up (docs: ~1 min GRE), then
-# display BOTH tunnels (doublezero0/IBRL + doublezero1/Multicast) and verdict.
+# Poll `doublezero status` until BOTH tunnels reach "BGP Session Up". IBRL
+# (doublezero0) comes up in ~1min; the Multicast (doublezero1) BGP session can
+# lag a bit longer (the operator saw it "Pending BGP Session" right after connect
+# while IBRL was already up). So we keep polling up to DZ_MCAST_RETRIES×INTERVAL
+# (~3 min) for the SECOND session, and only warn if it's still pending after that
+# — rather than snapshotting once immediately after connect. Then display both.
 dz_show_status() {
     step "DoubleZero status (tunnels)"
-    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would poll 'doublezero status' and report both tunnels"; return 0; fi
-    local out i
-    for ((i=1; i<=DZ_STATUS_RETRIES; i++)); do
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would poll 'doublezero status' until both tunnels are BGP Session Up"; return 0; fi
+    local out i ibrl mcast
+    for ((i=1; i<=DZ_MCAST_RETRIES; i++)); do
         out="$(run_capture doublezero status 2>&1 || true)"
-        if printf '%s\n' "$out" | _dz_status_field doublezero0 "Tunnel Status" | grep -qi 'BGP Session Up'; then break; fi
-        info "Tunnel not up yet (attempt ${i}/${DZ_STATUS_RETRIES}, ~${DZ_STATUS_INTERVAL}s)…"
-        sleep "$DZ_STATUS_INTERVAL"
+        ibrl="$(printf '%s\n' "$out"  | _dz_status_field doublezero0 'Tunnel Status')"
+        mcast="$(printf '%s\n' "$out" | _dz_status_field doublezero1 'Tunnel Status')"
+        # Both up -> done. (Multicast row may be absent until it initializes.)
+        if [[ "$ibrl" == *"BGP Session Up"* && "$mcast" == *"BGP Session Up"* ]]; then break; fi
+        info "Waiting for both tunnels up (attempt ${i}/${DZ_MCAST_RETRIES}, ~${DZ_MCAST_INTERVAL}s) — IBRL='${ibrl:-?}' Multicast='${mcast:-pending}'…"
+        sleep "$DZ_MCAST_INTERVAL"
     done
     printf '%s\n' "$out" | sed 's/^/    /'
-    local ibrl mcast device metro mgroup
+    local device metro mgroup
     ibrl="$(printf '%s\n' "$out"   | _dz_status_field doublezero0 'Tunnel Status')"
     mcast="$(printf '%s\n' "$out"  | _dz_status_field doublezero1 'Tunnel Status')"
     device="$(printf '%s\n' "$out" | _dz_status_field doublezero0 'Current Device')"
@@ -403,6 +467,8 @@ dz_show_status() {
     info "  Multicast (doublezero1): ${mcast:-?}   groups=${mgroup:-?}"
     if [[ "$ibrl" == *"BGP Session Up"* && "$mcast" == *"BGP Session Up"* && "$mgroup" == *edge-solana-shreds* ]]; then
         ok "DZ connected — IBRL via ${device} (${metro}), publishing shreds to edge-solana-shreds."
+    elif [[ "$ibrl" == *"BGP Session Up"* && "$mcast" != *"BGP Session Up"* ]]; then
+        warn "IBRL is up (via ${device:-?}/${metro:-?}) but the Multicast BGP session is still '${mcast:-pending}' after ~$((DZ_MCAST_RETRIES * DZ_MCAST_INTERVAL))s. It often comes up shortly after — re-check with 'doublezero status'; if it stays pending, re-run '${DEEPLOY_CMD} dz-connect'."
     else
         warn "DZ not fully up — IBRL='${ibrl:-?}' Multicast='${mcast:-?}' groups='${mgroup:-?}'. Inspect 'doublezero status'."
     fi
@@ -417,7 +483,7 @@ dz_connect_run() {
     [[ "$(state_get dz_enabled false)" == "true" ]] || fail "DoubleZero is not enabled (dz_enabled != true) — nothing to connect."
     have doublezero        || fail "DoubleZero was enabled but 'doublezero' is not installed — re-run install (Phase 1 installs it) or check Phase 1."
     have doublezero-solana || fail "DoubleZero was enabled but 'doublezero-solana' is not installed — re-run install (Phase 1) or check Phase 1."
-    [[ -f "$STAKED_KEYPAIR" ]] || fail "Staked key not at ${STAKED_KEYPAIR}. Complete the manual set-identity swap before 'deeploy dz-connect'."
+    [[ -f "$STAKED_KEYPAIR" ]] || fail "Staked key not at ${STAKED_KEYPAIR}. Complete the manual set-identity swap before '${DEEPLOY_CMD} dz-connect'."
 
     dz_keypair_migrate                         # HARD: mkdir + move + validate (blocks/loops if absent)
     local dz_id staked_id
@@ -448,7 +514,7 @@ _dz_iface_up() { ip link show doublezero0 >/dev/null 2>&1; }
 dz_resume() {
     require_root
     if [[ "$(state_get dz_connected "")" == "" ]]; then
-        info "DoubleZero not yet connected (run 'deeploy dz-connect' after the swap) — nothing to restore."
+        info "DoubleZero not yet connected (run '${DEEPLOY_CMD} dz-connect' after the swap) — nothing to restore."
         return 0
     fi
     dz_resolve_config

@@ -11,6 +11,33 @@ First tagged version: an interactive, idempotent installer that deploys, tunes,
 and upgrades an Agave + Jito-BAM Solana mainnet validator on a fresh EPYC box to
 `catchup 0`, ready for a manual staked-key swap.
 
+### Fixed (real-box, final-run round)
+- **Phase 8 start is idempotent — never restarts a running node.** Two paths
+  reach Phase 8 (the post-reboot resume service AND a manual `install --resume`);
+  the old unconditional `systemctl restart solana` restarted an already-running
+  node mid-snapshot-download, throwing away progress (the operator lost ~20%).
+  Now `start_enable_service` ADOPTS an already-running validator (systemd active
+  + a live `agave-validator` process) and only `systemctl start`s if it isn't
+  running — "ensure running", not "restart".
+- **Printed commands are runnable.** Summaries/pointers said `deeploy dz-connect`
+  / `deeploy export` (incl. the generated `deeploy.conf` header), but there is no
+  `deeploy` in PATH. New `DEEPLOY_CMD` (= the absolute `$DEEPLOY_SELF` on a real
+  run, else `./deeploy.sh`) is used in all operator-facing text.
+- **The old-server gate tolerates dirty input.** Surrounding whitespace no longer
+  aborts `dz-connect`: the gate trims, matches the WHOLE trimmed reply strictly
+  (y/yes → proceed, n/no/empty → fail), and RE-PROMPTS on anything else
+  ("Please answer y or n") instead of failing. It deliberately does NOT take "the
+  last token of a phrase" — a conflict-safety gate must never auto-proceed on an
+  ambiguous multi-word answer like "maybe y". Still ignores `--yes` (safety
+  gate) and still fails non-interactively.
+- **`doublezero latency` shows only the nearest devices.** The full table is
+  ~150 rows; the display now prints the top `DZ_LATENCY_TOPN` (default 8) by
+  lowest avg latency, then the nearest-device line.
+- **`doublezero status` polls until BOTH tunnels are up.** The Multicast BGP
+  session (`doublezero1`) can lag IBRL's (`doublezero0`); the status display now
+  polls up to ~3 min for both to reach "BGP Session Up" instead of snapshotting
+  once right after connect, and warns specifically if multicast is still pending.
+
 ### Changed
 - **DoubleZero work is placed by what it needs.** Principle: the post-swap step
   (`dz-connect`) is MINIMAL — only what genuinely requires the staked key + a

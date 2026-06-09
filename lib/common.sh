@@ -28,6 +28,12 @@ _DEEPLOY_COMMON_SOURCED=1
 # ----------------------------------------------------------------------------
 DEEPLOY_VERSION="${DEEPLOY_VERSION:-0.1.0}"
 
+# How to invoke DeePloy in printed instructions. There is no `deeploy` in PATH —
+# the operator runs the script by path. deeploy.sh sets DEEPLOY_SELF (its own
+# absolute path); prefer that, else fall back to the relative invocation. Used in
+# all operator-facing "run: <cmd> dz-connect/export/…" text.
+DEEPLOY_CMD="${DEEPLOY_CMD:-${DEEPLOY_SELF:-./deeploy.sh}}"
+
 : "${DRY_RUN:=0}"          # 1 = print plan, change nothing
 : "${ASSUME_YES:=0}"       # 1 = auto-confirm normal prompts (never disk wipes)
 : "${POST_REBOOT:=0}"      # 1 = unattended resume after reboot (forces non-interactive)

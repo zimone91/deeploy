@@ -27,6 +27,8 @@ PASS=0; FAIL=0
 check()       { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"
     else FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: [%s]\n     actual:   [%s]\n' "$1" "$3" "$2"; fi; }
 check_ge()    { if (( $2 >= $3 )); then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL+1)); printf '  FAIL %s (%s<%s)\n' "$1" "$2" "$3"; fi; }
+check_true()  { if eval "$2"; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; fi; }
+check_false() { if eval "$2"; then FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; else PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; fi; }
 
 DRY_RUN=0 common_init
 CALLS="$WORK/calls"; : >"$CALLS"
@@ -50,12 +52,35 @@ _start_free_gb() { echo 50; }     # low
 WARNS=$(start_precheck_disk 2>&1); check_ge "low free -> warns" "$(grep -c '\[WARN\]' <<<"$WARNS")" "1"
 _start_free_gb() { echo 1800; }
 
-echo "== enable + start =="
+echo "== enable + start: IDEMPOTENT (adopt a running node; never restart mid-snapshot) =="
+# Not running -> enable + START (not restart). _start_solana_running false.
+_start_solana_running() { return 1; }
 : >"$CALLS"; start_enable_service >/dev/null 2>&1
-check "daemon-reload"  "$(grep -c 'systemctl daemon-reload' "$CALLS")" "1"
-check "enable solana"  "$(grep -c 'systemctl enable solana' "$CALLS")" "1"
-check "restart solana" "$(grep -c 'systemctl restart solana' "$CALLS")" "1"
-check "symlink unit"   "$(grep -c 'ln -sfn /root/solana/solana.service /etc/systemd/system/solana.service' "$CALLS")" "1"
+check "daemon-reload"        "$(grep -c 'systemctl daemon-reload' "$CALLS")" "1"
+check "enable solana"        "$(grep -c 'systemctl enable solana' "$CALLS")" "1"
+check "not-running -> start"      "$(grep -c 'systemctl start solana' "$CALLS")" "1"
+check "NEVER restart (would reset snapshot)" "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
+check "symlink unit"         "$(grep -c 'ln -sfn /root/solana/solana.service /etc/systemd/system/solana.service' "$CALLS")" "1"
+# Already running -> ADOPT: enable (idempotent) but neither start NOR restart.
+_start_solana_running() { return 0; }
+: >"$CALLS"; ADOUT=$(start_enable_service 2>&1)
+check "running -> enable still issued" "$(grep -c 'systemctl enable solana' "$CALLS")" "1"
+check "running -> NO start"            "$(grep -c 'systemctl start solana' "$CALLS")" "0"
+check "running -> NO restart"          "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
+check "running -> says 'adopting'"     "$(grep -c -i 'adopting it' <<<"$ADOUT")" "1"
+# The REAL probe (restore it — the branch tests above overrode it): active
+# service + live agave-validator process.
+unset -f _start_solana_running
+# shellcheck source-path=SCRIPTDIR source=../lib/start.sh
+_DEEPLOY_START_SOURCED="" source "$ROOT/lib/start.sh"   # re-source to recover the real _start_solana_running
+systemctl() { case "$*" in "is-active --quiet solana") return 0;; *) echo "systemctl $*" >>"$CALLS"; return 0;; esac; }
+# Mock matches the ANCHORED convention pattern the probe must pass
+# ('^agave-validator --identity') — would fail if the anchor were dropped.
+pgrep()     { case "$*" in *"^agave-validator --identity"*) return 0;; *) return 1;; esac; }
+check_true "_start_solana_running: active+proc -> true" "_start_solana_running"
+systemctl() { case "$*" in "is-active --quiet solana") return 1;; *) echo "systemctl $*" >>"$CALLS"; return 0;; esac; }
+check_false "_start_solana_running: inactive -> false" "_start_solana_running"
+systemctl() { echo "systemctl $*" >>"$CALLS"; return 0; }; unset -f pgrep
 
 echo "== catchup wait (mock 'caught up' immediately) =="
 start_wait_catchup >/dev/null 2>&1; check "catchup returns 0 when caught up" "$?" "0"
@@ -102,6 +127,11 @@ check    "authorized-voter add path"   "$(grep -c 'authorized-voter add /root/so
 check    "NO stdin redirect form"      "$(grep -c 'set-identity <' <<<"$SUM")" "0"
 check_ge "tower-rebuild note"          "$(grep -ci 'tower' <<<"$SUM")" "1"
 check_ge "dz-connect mentioned (DZ on)" "$(grep -c 'dz-connect' <<<"$SUM")" "1"
+# Fix #2: the printed command must be runnable — './deeploy.sh dz-connect' (or an
+# absolute path via DEEPLOY_SELF), never bare 'deeploy dz-connect' (no PATH entry).
+check "summary uses ./deeploy.sh dz-connect (not bare deeploy)" "$(grep -c './deeploy.sh dz-connect' <<<"$SUM")" "1"
+check "summary: NO bare 'deeploy dz-connect'" "$(grep -cE '(^|[^.[:alnum:]/])deeploy dz-connect' <<<"$SUM")" "0"
+check "summary: export shown as ./deeploy.sh export" "$(grep -c './deeploy.sh export' <<<"$SUM")" "1"
 check_ge "failover pointer"            "$(grep -ci 'failover' <<<"$SUM")" "1"
 check_ge "vote account shown"          "$(grep -c 'Vote1111' <<<"$SUM")" "1"
 

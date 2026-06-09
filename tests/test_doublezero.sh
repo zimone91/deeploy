@@ -38,7 +38,7 @@ export DZ_KEYPAIR="$WORK/dz-keypair.json"
 export DZ_CONFIG_DIR="$WORK/dzconfig"
 export DZ_OVERRIDE_CONF="$WORK/override.conf"
 # Fast polls in tests.
-export DZ_FIND_RETRIES=5 DZ_FIND_INTERVAL=0 DZ_STATUS_RETRIES=5 DZ_STATUS_INTERVAL=0 DZ_LATENCY_RETRIES=2 DZ_LATENCY_INTERVAL=0
+export DZ_FIND_RETRIES=5 DZ_FIND_INTERVAL=0 DZ_LATENCY_RETRIES=2 DZ_LATENCY_INTERVAL=0 DZ_MCAST_RETRIES=5 DZ_MCAST_INTERVAL=0
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
@@ -93,7 +93,8 @@ state_set solana_home /root/solana; state_set staked_keypair "$WORK/mainnet-vali
 echo "== Phase 7 (install) = no-op pointer (prepare moved to Phase 1) =="
 : >"$CALLS"
 POUT=$(doublezero_run 2>&1)
-check "phase7: points to dz-connect"   "$(grep -c 'deeploy dz-connect' <<<"$POUT")" "1"
+check "phase7: points to ./deeploy.sh dz-connect (runnable cmd, Fix #2)" "$(grep -c './deeploy.sh dz-connect' <<<"$POUT")" "1"
+check "phase7: NO bare 'deeploy dz-connect'" "$(grep -cE '(^|[^.[:alnum:]/])deeploy dz-connect' <<<"$POUT")" "0"
 check "phase7: NO install/connect/passport here" "$(grep -cE 'apt-get|connect ibrl|passport' "$CALLS")" "0"
 
 echo "== Phase 5 SOFT keypair check: found / path-given-copies / absent-warns-not-blocks =="
@@ -169,12 +170,64 @@ unset -f read
 NIOUT=$( NONINTERACTIVE=1 dz_confirm_old_server_disconnected 2>&1 ); check "gate non-interactive -> fail" "$?" "1"
 check "gate non-interactive: names old-server cmd" "$(grep -q 'doublezero disconnect' <<<"$NIOUT" && echo yes || echo no)" "yes"
 
+echo "== dz-connect GATE: robust to dirty input (Fix #3 — typo-then-correct must not abort) =="
+# plain 'y' -> proceed
+read() { local v="${!#}"; eval "$v=y"; }
+( NONINTERACTIVE=0 dz_confirm_old_server_disconnected ) >/dev/null 2>&1; check "gate plain 'y' -> proceed" "$?" "0"
+# 'yes' (word) -> proceed
+read() { local v="${!#}"; eval "$v=yes"; }
+( NONINTERACTIVE=0 dz_confirm_old_server_disconnected ) >/dev/null 2>&1; check "gate 'yes' -> proceed" "$?" "0"
+# leading/trailing whitespace around y -> proceed (trim)
+read() { local v="${!#}"; eval "$v='  y  '"; }
+( NONINTERACTIVE=0 dz_confirm_old_server_disconnected ) >/dev/null 2>&1; check "gate '  y  ' (whitespace) -> proceed" "$?" "0"
+# SAFETY (adversarial-review finding): a multi-word phrase ending in y/yes must
+# NOT auto-proceed past this conflict gate. It re-prompts; here we feed the phrase
+# ONCE then EOF (read fails -> "" -> abort), proving it never PROCEEDED.
+# gate_blocked <phrase> -> "blocked" if the gate did NOT proceed (rc!=0), else "PROCEEDED".
+gate_blocked() {
+    # shellcheck disable=SC2034  # GPHRASE is read inside the nested read() via eval
+    GPHRASE="$1"; GPN=0
+    read() { local v="${!#}"; GPN=$((GPN+1)); if (( GPN == 1 )); then eval "$v=\"\$GPHRASE\""; else return 1; fi; }
+    if ( NONINTERACTIVE=0 dz_confirm_old_server_disconnected ) >/dev/null 2>&1; then echo PROCEEDED; else echo blocked; fi
+}
+check "gate 'maybe y' -> does NOT proceed"     "$(gate_blocked 'maybe y')"     "blocked"
+check "gate 'i think yes' -> does NOT proceed" "$(gate_blocked 'i think yes')" "blocked"
+check "gate 'no way' -> does NOT proceed"      "$(gate_blocked 'no way')"      "blocked"
+unset -f read gate_blocked
+# a typo that is NEITHER y nor n must RE-PROMPT, not abort. Feed: garbage, then y.
+GATE_TRIES="$WORK/gatetries"; : >"$GATE_TRIES"
+read() { local v="${!#}"; echo t >>"$GATE_TRIES"; if [[ "$(wc -l <"$GATE_TRIES")" -lt 2 ]]; then eval "$v=zzz"; else eval "$v=y"; fi; }
+TYPO=$( NONINTERACTIVE=0 dz_confirm_old_server_disconnected 2>&1 ); check "gate typo-then-'y' -> proceed (re-prompted)" "$?" "0"
+check "gate re-prompted on typo (2 reads)" "$(wc -l <"$GATE_TRIES" | tr -d ' ')" "2"
+check "gate typo -> 'Please answer y or n'" "$(grep -c 'Please answer y or n' <<<"$TYPO")" "1"
+unset -f read
+
 echo "== display parsers: latency nearest device + status two-tunnel verdict (synthetic fixture, real shape) =="
 LAT=$(printf '%s\n' \
   ' Pubkey | Code        | IP        | Min  | Max  | Avg    | reachable ' \
   ' pk1    | dz-syn2-sw01 | 1.2.3.4  | 9.1  | 9.9  | 9.40 ms| true ' \
   ' pk2    | dz-syn1-sw01 | 5.6.7.8  | 0.2  | 0.3  | 0.24 ms| true ')
 check "latency: nearest = lowest Avg (syn1 0.24)" "$(printf '%s\n' "$LAT" | _dz_parse_latency_nearest)" "dz-syn1-sw01 0.24"
+
+echo "== latency TOP-N (Fix #4 — show only the nearest few, not the ~150-row dump) =="
+# Build a 10-device table; top-N must return the N lowest-Avg, sorted ascending.
+LATBIG=' Pubkey | Code | IP | Min | Max | Avg | reachable'
+for i in 1 2 3 4 5 6 7 8 9 10; do LATBIG+=$'\n'" pk$i | dz-dev$i | 1.1.1.$i | 0 | 0 | $i.00 ms | true"; done
+TOP3=$(printf '%s\n' "$LATBIG" | _dz_parse_latency_topn 3)
+check "top-N: returns exactly N rows"        "$(printf '%s\n' "$TOP3" | grep -c 'dz-dev')" "3"
+check "top-N: nearest first (dev1 1.00)"     "$(printf '%s\n' "$TOP3" | head -1 | grep -c 'dz-dev1 ')" "1"
+check "top-N: 3rd is dev3 (ascending)"       "$(printf '%s\n' "$TOP3" | sed -n 3p | grep -c 'dz-dev3 ')" "1"
+check "top-N: does NOT include the far dev10" "$(printf '%s\n' "$TOP3" | grep -c 'dz-dev10')" "0"
+check "top-N caps at available rows (ask 99 of 10)" "$(printf '%s\n' "$LATBIG" | _dz_parse_latency_topn 99 | grep -c 'dz-dev')" "10"
+# adversarial-review finding #1: a NON-NUMERIC N must NOT dump the whole table
+# (awk lexicographic-compare gotcha). Falls back to the default (8), not all 10.
+check "top-N: non-numeric N -> default 8 (NOT whole table)" "$(printf '%s\n' "$LATBIG" | _dz_parse_latency_topn abc | grep -c 'dz-dev')" "8"
+check "top-N: empty N -> default 8"          "$(printf '%s\n' "$LATBIG" | _dz_parse_latency_topn '' | grep -c 'dz-dev')" "8"
+# adversarial-review finding #2: a pathological all-dot Avg ('...') must be
+# REJECTED (else avg+0=0 sorts it to the top as a bogus 0ms 'nearest').
+LATDOT=$(printf '%s\n' ' Code | Avg | reachable' ' dz-bogus | ... ms | true' ' dz-real | 3.5 ms | true')
+check "latency: all-dot Avg rejected, real row chosen" "$(printf '%s\n' "$LATDOT" | _dz_parse_latency_nearest)" "dz-real 3.5"
+check "top-N: all-dot Avg row excluded"      "$(printf '%s\n' "$LATDOT" | _dz_parse_latency_topn 5 | grep -c 'dz-bogus')" "0"
 STATUS=$(printf '%s\n' \
   ' Tunnel Status  | Tunnel Name | User Type | Current Device | Metro   | Network      | Multicast Groups ' \
   ' BGP Session Up | doublezero0 | IBRL      | dz-syn1-sw01   | metro-a | mainnet-beta | ' \
@@ -193,6 +246,37 @@ STATUS_BAD=$(printf '%s\n' \
   ' Tunnel Status | Tunnel Name | Current Device | Metro | Multicast Groups ' \
   ' Down          | doublezero0 | dz-syn1-sw01   | metro-a | ')
 check "status: down tunnel not 'BGP Session Up'" "$(printf '%s\n' "$STATUS_BAD" | _dz_status_field doublezero0 'Tunnel Status')" "Down"
+
+echo "== dz_show_status POLLS until BOTH tunnels up (multicast lags — the real-box case) =="
+# IBRL up immediately; multicast 'Pending BGP Session' for the first 2 polls, then up.
+SPOLL="$WORK/spoll"; : >"$SPOLL"
+doublezero() { case "$*" in status)
+    echo s >>"$SPOLL"; local mc='Pending BGP Session'; [[ "$(wc -l <"$SPOLL")" -ge 3 ]] && mc='BGP Session Up'
+    printf '%s\n' \
+      ' Tunnel Status | Tunnel Name | Current Device | Metro | Multicast Groups' \
+      ' BGP Session Up | doublezero0 | dz-syn1-sw01 | metro-a |' \
+      " ${mc} | doublezero1 | dz-syn1-sw01 | metro-a | P:edge-solana-shreds";;
+  *) echo "doublezero $*" >>"$CALLS";; esac; }
+SOUT=$( DZ_MCAST_RETRIES=5 DZ_MCAST_INTERVAL=0 dz_show_status 2>&1 ); SRC=$?
+check "status-poll: rc0"                       "$SRC" "0"
+check "status-poll: polled until mcast up (3x)" "$(wc -l <"$SPOLL" | tr -d ' ')" "3"
+check "status-poll: success verdict reached"   "$(grep -c 'publishing shreds to edge-solana-shreds' <<<"$SOUT")" "1"
+# multicast NEVER comes up -> warn (IBRL up, multicast still pending after timeout)
+: >"$SPOLL"
+doublezero() { case "$*" in status)
+    echo s >>"$SPOLL"
+    printf '%s\n' \
+      ' Tunnel Status | Tunnel Name | Current Device | Metro | Multicast Groups' \
+      ' BGP Session Up | doublezero0 | dz-syn1-sw01 | metro-a |' \
+      ' Pending BGP Session | doublezero1 | dz-syn1-sw01 | metro-a | P:edge-solana-shreds';;
+  *) :;; esac; }
+WOUT=$( DZ_MCAST_RETRIES=3 DZ_MCAST_INTERVAL=0 dz_show_status 2>&1 )
+check "status-poll: mcast-stuck -> warns IBRL up but multicast pending" "$(grep -c 'Multicast BGP session is still' <<<"$WOUT")" "1"
+check "status-poll: mcast-stuck polled the full timeout (3x)" "$(wc -l <"$SPOLL" | tr -d ' ')" "3"
+# restore the simple status mock for any later use
+doublezero() { echo "doublezero $*" >>"$CALLS"; case "$*" in address) echo "DZid11111111111111111111111111111111111111";;
+                 latency) printf '%s\n' ' Code | Avg | reachable ' ' dz-syn1-sw01 | 0.24 ms | true ';;
+                 status)  printf '%s\n' ' Tunnel Status | Tunnel Name | Current Device | Metro | Multicast Groups ' ' BGP Session Up | doublezero0 | dz-syn1-sw01 | metro-a | ' ' BGP Session Up | doublezero1 | dz-syn1-sw01 | metro-a | P:edge-solana-shreds ';; esac; }
 
 echo "== dz_resume: gated on dz_connected (NOT dz_enabled); no-op until connected =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"

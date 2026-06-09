@@ -52,12 +52,35 @@ start_precheck_disk() {
 # Warn (don't hard-abort) on low disk unless the operator insists on stopping.
 vf_or_fail() { warn "$1"; }
 
+# Is solana.service already up with a live validator process? (mockable probe)
+# Uses pgrep (not `solana catchup`) because during a snapshot download the RPC
+# isn't serving yet, but the agave-validator process IS running and downloading —
+# restarting it there throws away snapshot progress. systemd `active` + a live
+# process is the right "healthy/making-progress" signal at this stage.
+# The pattern is ANCHORED ('^agave-validator --identity') to match the codebase
+# convention (validatorcfg/verify/upgrade) — that is exactly the real validator's
+# argv (validator.sh execs `agave-validator --identity …`), so it still matches a
+# node mid-snapshot, while not adopting on an unrelated substring match.
+_start_solana_running() {
+    systemctl is-active --quiet solana 2>/dev/null || return 1
+    pgrep -f '^agave-validator --identity' >/dev/null 2>&1
+}
+
 start_enable_service() {
-    step "Enabling + starting solana.service"
+    step "Enabling solana.service"
     run ln -sfn "$SOLANA_SERVICE" /etc/systemd/system/solana.service
     run systemctl daemon-reload
     run systemctl enable solana
-    run systemctl restart solana
+    # IDEMPOTENT start — "ensure running", NOT "restart". Two paths reach Phase 8
+    # (the post-reboot resume service AND a manual `install --resume`); an
+    # unconditional restart of an already-running node mid-snapshot-download
+    # restarts the download from 0%. So adopt an already-running node instead.
+    if _start_solana_running; then
+        ok "solana.service already running (adopting it — NOT restarting; snapshot/catchup progress preserved)"
+        return 0
+    fi
+    step "Starting solana.service"
+    run systemctl start solana
 }
 
 # Wait for catchup 0 (the operator's wait loop). Blocks up to CATCHUP_TIMEOUT.
@@ -94,10 +117,10 @@ start_print_summary() {
     info "       ${SOLANA_BIN}/agave-validator --ledger ${LEDGER_PATH} authorized-voter add ${STAKED_KEYPAIR}"
     info "     No tower transfer needed: a fresh node rebuilds its vote floor from the cluster."
     info ""
-    [[ "$DZ_ENABLED" == "true" ]] && info "DoubleZero: after the swap, run  deeploy dz-connect  (passport + ibrl + multicast)."
+    [[ "$DZ_ENABLED" == "true" ]] && info "DoubleZero: after the swap, run  ${DEEPLOY_CMD} dz-connect  (passport + ibrl + multicast)."
     info ""
     info "Failover is a SEPARATE tool (not bundled): install it later via its own one-line"
-    info "installer; DeePloy's exported config (deeploy export) is reusable by it."
+    info "installer; DeePloy's exported config (${DEEPLOY_CMD} export) is reusable by it."
     info ""
     info "Vote account: ${VOTE_ACCOUNT_PUBKEY:-<unset>}"
 }
