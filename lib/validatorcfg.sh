@@ -80,7 +80,11 @@ validatorcfg_resolve_config() {
 
     # Output paths.
     VALIDATOR_SH="${VALIDATOR_SH:-$SOLANA_HOME/validator.sh}"
-    SOLANA_SERVICE="${SOLANA_SERVICE:-$SOLANA_HOME/solana.service}"
+    # Install the unit as a REAL file under /etc (root fs), NOT on $SOLANA_HOME (a
+    # ledger-mount symlink): systemd loads enabled units at early boot, before
+    # local-fs mounts, so an on-mount unit is unreadable then and silently dropped
+    # from the boot transaction — the validator would not auto-start (H1).
+    SOLANA_SERVICE="${SOLANA_SERVICE:-/etc/systemd/system/solana.service}"
     SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
     WAIT_PIN_SCRIPT="${WAIT_PIN_SCRIPT:-$SOLANA_HOME/wait_and_pin_poh.sh}"
     LOGROTATE_FILE="${LOGROTATE_FILE:-/etc/logrotate.d/solana}"
@@ -287,8 +291,12 @@ current_affinity=$(taskset -cp "$thread_pid" 2>&1 | awk '{print $NF}')
 if [ "$current_affinity" == "__POH_CORE__" ]; then
     logger "set_affinity: solPohTickProd_already_set"; exit 0
 else
-    taskset -cp __POH_CORE__ "$thread_pid"
-    logger "set_affinity: set_done"
+    taskset -cp __POH_CORE__ "$thread_pid"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        logger "set_affinity: set_done"
+    else
+        logger "set_affinity: taskset_failed (exit $rc)"; exit "$rc"
+    fi
 fi
 EOF
 )
@@ -319,9 +327,9 @@ while true; do
     sleep "$CHECK_INTERVAL"
 done
 log "Pinning PoH thread..."
-bash "$PIN_SCRIPT"
-log "PoH pin completed (exit $?)"
-exit 0
+bash "$PIN_SCRIPT"; pin_rc=$?
+log "PoH pin completed (exit $pin_rc)"
+exit "$pin_rc"
 EOF
 )
     body="${body//__SOLANA_BIN__/$SOLANA_INSTALL_DIR/active_release/bin}"
@@ -334,7 +342,9 @@ _vcfg_render_poh_pin_service() {
 [Unit]
 Description=Pin Solana PoH thread to isolated CPU core (after catchup)
 After=solana.service
-Requires=solana.service
+# Requisite, not Requires: if solana.service is not already active, FAIL this
+# oneshot instead of pulling the validator up (post-boot timer / manual stop). I3
+Requisite=solana.service
 
 [Service]
 Type=oneshot
@@ -369,8 +379,10 @@ validatorcfg_generate() {
     write_file "$POH_PIN_SERVICE" "$(_vcfg_render_poh_pin_service)"
     write_file "$POH_PIN_TIMER"   "$(_vcfg_render_poh_pin_timer)"
 
-    # Symlink + enablement (idempotent); skipped under --dry-run via run().
-    run ln -sfn "$SOLANA_SERVICE" /etc/systemd/system/solana.service
+    # solana.service is written DIRECTLY to /etc/systemd/system as a real file
+    # (see SOLANA_SERVICE) — no on-mount symlink, so it is readable at early boot
+    # before the data mounts come up (H1). Enablement (idempotent); skipped under
+    # --dry-run via run().
     run systemctl daemon-reload
     run systemctl enable solana-poh-pin.timer
 

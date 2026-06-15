@@ -27,7 +27,6 @@ start_resolve_config() {
     STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
     VOTE_ACCOUNT_PUBKEY="$(state_get vote_account_pubkey "")"
     SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
-    SOLANA_SERVICE="${SOLANA_SERVICE:-$SOLANA_HOME/solana.service}"
     DZ_ENABLED="$(state_get dz_enabled false)"   # was dz_multicast (latent bug): the finalize pointer keys on ENABLEMENT
     # Resolve the validator bin dir WITHOUT $HOME — Phase 8 runs under the systemd
     # resume service where $HOME is empty (was: "/.local/.../solana" -> not found).
@@ -68,7 +67,8 @@ _start_solana_running() {
 
 start_enable_service() {
     step "Enabling solana.service"
-    run ln -sfn "$SOLANA_SERVICE" /etc/systemd/system/solana.service
+    # The unit is a real file at /etc/systemd/system/solana.service (written in
+    # Phase 6) — enable it by name; no on-mount symlink to (re)create here (H1).
     run systemctl daemon-reload
     run systemctl enable solana
     # IDEMPOTENT start — "ensure running", NOT "restart". Two paths reach Phase 8
@@ -103,7 +103,10 @@ start_wait_catchup() {
 start_pin_poh() {
     step "Pinning PoH thread"
     [[ -f "$SET_POH_SCRIPT" ]] || { warn "$SET_POH_SCRIPT missing — the poh-pin timer will handle it"; return 0; }
-    run bash "$SET_POH_SCRIPT"
+    # Non-fatal: the node is already up + synced here, and set_poh_affinity now
+    # reports a real failure (H4) instead of swallowing it — a pin failure must not
+    # abort the run; the hourly poh-pin timer retries.
+    run bash "$SET_POH_SCRIPT" || warn "PoH pin did not succeed — the poh-pin timer will retry (check 'systemctl status solana-poh-pin')"
 }
 
 start_print_summary() {

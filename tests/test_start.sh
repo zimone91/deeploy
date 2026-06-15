@@ -60,7 +60,7 @@ check "daemon-reload"        "$(grep -c 'systemctl daemon-reload' "$CALLS")" "1"
 check "enable solana"        "$(grep -c 'systemctl enable solana' "$CALLS")" "1"
 check "not-running -> start"      "$(grep -c 'systemctl start solana' "$CALLS")" "1"
 check "NEVER restart (would reset snapshot)" "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
-check "symlink unit"         "$(grep -c 'ln -sfn /root/solana/solana.service /etc/systemd/system/solana.service' "$CALLS")" "1"
+check "H1: no on-mount symlink (unit is a real /etc file, enabled by name)" "$(grep -c 'ln -sfn' "$CALLS")" "0"
 # Already running -> ADOPT: enable (idempotent) but neither start NOR restart.
 _start_solana_running() { return 0; }
 : >"$CALLS"; ADOUT=$(start_enable_service 2>&1)
@@ -119,6 +119,12 @@ e_out=$( set -Eeuo pipefail; CATCHUP_INTERVAL=0 start_wait_catchup 2>&1 ); e_rc=
 check "catchup loop survives non-zero catchup under set -Eeuo (rc 0)" "$e_rc" "0"
 check "loop POLLED 3x (did NOT abort on the 1st non-zero)"            "$(wc -l <"$CC" | tr -d ' ')" "3"
 check "loop reported caught up at the end"                            "$(grep -c 'Caught up' <<<"$e_out")" "1"
+
+echo "== H4: phase-8 PoH pin failure WARNS, does not abort the run (timer retries) =="
+printf '#!/bin/bash\nexit 3\n' >"$WORK/failpin.sh"; chmod +x "$WORK/failpin.sh"
+OUT=$( set -Eeuo pipefail; SET_POH_SCRIPT="$WORK/failpin.sh" start_pin_poh 2>&1 ); RC=$?
+check    "pin failure does not abort phase 8 (rc 0)" "$RC" "0"
+check_ge "pin failure surfaced as a warning"         "$(grep -ci 'did not succeed' <<<"$OUT")" "1"
 
 echo "== final summary: set-identity PATH form, no stdin, failover pointer =="
 SUM=$(start_print_summary 2>&1)

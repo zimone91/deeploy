@@ -131,6 +131,22 @@ state_set disk_layout root; validatorcfg_resolve_config
 check "no RequiresMountsFor on root layout" "$(grep -c 'RequiresMountsFor' "$(_vcfg_render_solana_service >"$WORK/sv"; echo "$WORK/sv")")" "0"
 state_set disk_layout two-nvme
 
+echo "== H1: solana.service installs as a REAL file under /etc, not on a data mount =="
+# systemd loads enabled units at early boot, before local-fs mounts; an on-mount
+# unit ($SOLANA_HOME -> ledger symlink) is unreadable then and dropped from the
+# boot transaction. The default install path must be /etc/systemd/system.
+( unset SOLANA_SERVICE; state_set solana_home /root/solana; validatorcfg_resolve_config
+  echo "$SOLANA_SERVICE" ) >"$WORK/svpath" 2>&1
+check "H1: unit path is /etc/systemd/system (root fs)"  "$(cat "$WORK/svpath")" "/etc/systemd/system/solana.service"
+check "H1: unit NOT under SOLANA_HOME (the ledger mount)" "$(grep -c '/root/solana/solana.service' "$WORK/svpath")" "0"
+validatorcfg_resolve_config
+
+echo "== I3: poh-pin service uses Requisite= (never pulls solana.service UP) =="
+PS=$(_vcfg_render_poh_pin_service)
+check "I3: Requisite=solana.service"             "$(grep -c '^Requisite=solana.service' <<<"$PS")" "1"
+check "I3: NOT Requires= (would start solana)"   "$(grep -c '^Requires=solana.service' <<<"$PS")" "0"
+check "I3: After=solana.service kept (ordering)" "$(grep -c '^After=solana.service' <<<"$PS")" "1"
+
 echo "== validator.sh paths read from STATE (not hardcoded /mnt) =="
 state_set ledger_path /custom/led; state_set accounts_path /custom/acc; state_set snapshots_path /custom/snap
 validatorcfg_resolve_config; V=$(_vcfg_render_validator_sh)
@@ -149,6 +165,11 @@ W=$(_vcfg_render_wait_and_pin)
 check "wait: SOLANA_BIN substituted"  "$(grep -c 'active_release/bin' <<<"$W")" "1"
 check "wait: catchup check"           "$(grep -c 'catchup --our-localhost' <<<"$W")" "1"
 check "wait: no placeholder left"     "$(grep -cE '__(SOLANA_BIN|PIN_SCRIPT)__' <<<"$W")" "0"
+# H4: a failed pin must NOT report success.
+check "H4: set_poh captures taskset exit"        "$(grep -c 'rc=\$?' <<<"$P")" "1"
+check "H4: set_poh has a taskset-failure branch"  "$(grep -c 'taskset_failed' <<<"$P")" "1"
+check "H4: wait_and_pin captures pin exit"        "$(grep -c 'pin_rc=\$?' <<<"$W")" "1"
+check "H4: wait_and_pin no hardcoded final exit 0" "$(grep -cE '^exit 0$' <<<"$W")" "0"
 T=$(_vcfg_render_poh_pin_timer)
 check "timer OnBootSec=1min"    "$(grep -c 'OnBootSec=1min' <<<"$T")" "1"
 check "timer OnUnitActiveSec=1h" "$(grep -c 'OnUnitActiveSec=1h' <<<"$T")" "1"
@@ -160,7 +181,10 @@ export VALIDATOR_SH="$WORK/validator.sh" SOLANA_SERVICE="$WORK/solana.service" \
     SET_POH_SCRIPT="$WORK/set_poh.sh" WAIT_PIN_SCRIPT="$WORK/wait_pin.sh" \
     LOGROTATE_FILE="$WORK/logrotate" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"
 validatorcfg_resolve_config
+: >"$WORK/lncalls"; ln() { echo "ln $*" >>"$WORK/lncalls"; }   # record any symlink attempt
 validatorcfg_generate >/dev/null 2>&1
+check "H1: generate creates NO on-mount symlink (unit is a real /etc file)" "$(grep -c 'ln -sfn' "$WORK/lncalls")" "0"
+ln() { :; }
 check_true "validator.sh written + valid bash" "[[ -f \"$WORK/validator.sh\" ]] && bash -n \"$WORK/validator.sh\""
 check_true "set_poh written + valid bash"      "bash -n \"$WORK/set_poh.sh\""
 check_true "wait_pin written + valid bash"     "bash -n \"$WORK/wait_pin.sh\""
