@@ -64,7 +64,9 @@ _base_resolve_config() {
     fi
     _valid_port "$SSH_PORT" || fail "Invalid SSH_PORT '$SSH_PORT' (must be 1-65535)"
     [[ "$SSH_PORT" == "22" ]] && warn "SSH_PORT is 22 (default) — a non-default port reduces noise/attack surface"
-    state_set ssh_port "$SSH_PORT"
+    # ssh_port is persisted to state ONLY after the change actually lands (in
+    # base_firewall, from the live sshd config) — recording the *desired* port here
+    # is what let a declined change firewall a port nothing listens on (S1).
 
     # The single early DoubleZero decision, alongside the SSH-port prompt. Records
     # dz_enabled to state; every later phase reads it (no re-prompt). Guarded so
@@ -116,7 +118,10 @@ base_ssh_port() {
 
     warn "Changing SSH port ${current:-22} -> ${port}. You must reconnect with:  ssh -p ${port} <user>@<host>"
     if ! confirm "Proceed with SSH port change to ${port}?" Y; then
-        warn "SSH port change skipped by operator"
+        warn "SSH port change skipped by operator — sshd stays on ${current:-22}"
+        # The change was NOT applied: fall back to the port sshd is actually on so
+        # base_firewall opens the right port, never the declined one (S1).
+        SSH_PORT="${current:-22}"
         return 0
     fi
 
@@ -148,21 +153,40 @@ _base_ssh_rollback() {
     warn "Rolling back sshd config — DO NOT close your current session."
     restore_file "$cfg"
     run systemctl restart ssh 2>/dev/null || run systemctl restart ssh.socket 2>/dev/null || true
+    # Reset to the restored (old) port so the firewall opens what sshd is back on,
+    # if it is ever reached on this path (S1 defense-in-depth).
+    SSH_PORT="$(_sshd_configured_port "$cfg")"; SSH_PORT="${SSH_PORT:-22}"
     fail "SSH port change to ${port} failed and was rolled back. Investigate sshd config/journal before retrying."
 }
 
 # --- firewall (core validator rules only) ------------------------------------
 base_firewall() {
-    local port="$SSH_PORT"
+    local cfg="${SSHD_CONFIG:-/etc/ssh/sshd_config}" port prev
     step "Configuring ufw (core validator rules)"
+    # Open the port sshd is ACTUALLY configured to listen on — NOT the desired
+    # SSH_PORT, which differs if the operator declined the port change. Limiting
+    # only the new port would lock the operator out after the reboot (the live
+    # session rides ufw's ESTABLISHED rule, which a reboot drops). No active Port
+    # line means sshd is on the default 22. (S1)
+    port="$(_sshd_configured_port "$cfg")"; port="${port:-22}"
     run ufw default deny incoming
     run ufw default allow outgoing
     # SSH FIRST and rate-limited, so enabling ufw can never lock the operator out.
     run ufw limit "${port}/tcp" comment "SSH"
-    # Gossip (TCP+UDP) and the dynamic port range (UDP: TPU/TVU/repair).
-    run ufw allow 8001/tcp comment "gossip"
-    run ufw allow 8001/udp comment "gossip"
-    run ufw allow 8900:9000/udp comment "solana-dynamic"
+    # Drop a stale SSH rule from a PRIOR port — added AFTER the new rule so there
+    # is never a window without an SSH rule. state holds the last realized port;
+    # deleting a non-existent rule is non-fatal. (I7)
+    prev="$(state_get ssh_port "")"
+    if [[ -n "$prev" ]] && _valid_port "$prev" && [[ "$prev" != "$port" ]]; then
+        run ufw delete limit "${prev}/tcp" >/dev/null 2>&1 || true
+    fi
+    # Gossip (TCP+UDP) and the dynamic port range (UDP: TPU/TVU/repair). Read the
+    # SAME overridable vars validatorcfg uses so the firewall can't diverge from
+    # the validator's own ports; ufw wants the range in colon form. (P12)
+    local gossip="${GOSSIP_PORT:-8001}" dyn="${DYNAMIC_PORT_RANGE:-8900-9000}"
+    run ufw allow "${gossip}/tcp" comment "gossip"
+    run ufw allow "${gossip}/udp" comment "gossip"
+    run ufw allow "${dyn//-/:}/udp" comment "solana-dynamic"
     # NOTE: public 8899/tcp (RPC) and 8900/tcp (pubsub) are deliberately NOT
     # opened — RPC is --private-rpc on 127.0.0.1. DoubleZero/relayer rules are
     # added by their own modules.
@@ -173,7 +197,10 @@ base_firewall() {
         dz_firewall
     fi
     run ufw --force enable
-    ok "ufw enabled (SSH limited on ${port}, gossip 8001, dynamic 8900:9000/udp; RPC kept private)"
+    # Persist the realized SSH port (post-success) — re-runs and `deeploy export`
+    # then reflect what sshd is actually on, never a desired-but-declined port (S1).
+    state_set ssh_port "$port"
+    ok "ufw enabled (SSH limited on ${port}, gossip ${gossip}, dynamic ${dyn//-/:}/udp; RPC kept private)"
 }
 
 # --- orchestrator ------------------------------------------------------------

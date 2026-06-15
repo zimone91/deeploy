@@ -71,8 +71,9 @@ check_true "upgrade marker recorded"   "state_has base_apt_upgraded"
 check "re-run skips upgrade (marker)"  "$(grep -c 'apt-get upgrade' "$CALLS")"   "0"
 check "re-run still installs"          "$(grep -c 'apt-get install -y' "$CALLS")" "1"
 
-echo "== base_firewall (lockout-safety ordering) =="
-: >"$CALLS"; SSH_PORT=2222 base_firewall >/dev/null 2>&1
+echo "== base_firewall (lockout-safety ordering; opens the CONFIGURED ssh port) =="
+FW=$(fresh_sshd 'Port 2222'); state_clear ssh_port
+: >"$CALLS"; SSHD_CONFIG="$FW" base_firewall >/dev/null 2>&1
 LIMLN=$(grep -n 'ufw limit 2222/tcp' "$CALLS" | cut -d: -f1)
 ENLN=$(grep -n 'ufw --force enable' "$CALLS" | cut -d: -f1)
 check_true "SSH limited BEFORE ufw enable" "[[ ${LIMLN:-0} -lt ${ENLN:-0} ]]"
@@ -82,6 +83,15 @@ check "gossip 8001/udp"       "$(grep -c 'ufw allow 8001/udp' "$CALLS")"        
 check "dynamic 8900:9000/udp" "$(grep -c 'ufw allow 8900:9000/udp' "$CALLS")"   "1"
 check "public 8899 NOT opened"   "$(grep -c '8899' "$CALLS")" "0"
 check "public 8900/tcp NOT opened" "$(grep -c '8900/tcp' "$CALLS")" "0"
+check "realized ssh_port recorded post-success" "$(state_get ssh_port)" "2222"
+
+echo "== P12: firewall honors overridable GOSSIP_PORT / DYNAMIC_PORT_RANGE =="
+FP=$(fresh_sshd 'Port 2222'); state_clear ssh_port
+: >"$CALLS"; GOSSIP_PORT=8101 DYNAMIC_PORT_RANGE=8910-9010 SSHD_CONFIG="$FP" base_firewall >/dev/null 2>&1
+check "gossip override 8101/tcp"      "$(grep -c 'ufw allow 8101/tcp' "$CALLS")" "1"
+check "gossip override 8101/udp"      "$(grep -c 'ufw allow 8101/udp' "$CALLS")" "1"
+check "dynamic range colon-converted" "$(grep -c 'ufw allow 8910:9010/udp' "$CALLS")" "1"
+check "default 8001 NOT used under override" "$(grep -c '8001' "$CALLS")" "0"
 
 echo "== DoubleZero in Phase 1: early prompt + packages/env + firewall (gated on dz_enabled) =="
 # Source doublezero.sh so base's declare-F-guarded DZ calls resolve. Mock the DZ
@@ -117,13 +127,15 @@ state_set dz_enabled false; : >"$CALLS"; BASE_APT_UPGRADE=false base_packages >/
 check "DZ disabled: no doublezero pkg install" "$(grep -c 'doublezero doublezero-solana' "$CALLS")" "0"
 
 # (c) base_firewall adds DZ rules when dz_enabled, none when not
-state_set dz_enabled true; : >"$CALLS"; SSH_PORT=2222 base_firewall >/dev/null 2>&1
+state_set dz_enabled true; FDZ=$(fresh_sshd 'Port 2222'); state_clear ssh_port
+: >"$CALLS"; SSHD_CONFIG="$FDZ" base_firewall >/dev/null 2>&1
 check "DZ fw: GRE rule"        "$(grep -c 'ufw allow proto gre' "$CALLS")" "1"
 check "DZ fw: BGP 179 in+out"  "$(grep -c 'on doublezero0 from 169.254.0.0/16 to 169.254.0.0/16 port 179 proto tcp' "$CALLS")" "2"
 check "DZ fw: 44880 udp in+out" "$(grep -c 'on doublezero0 to any port 44880 proto udp' "$CALLS")" "2"
 DZ_GRELN=$(grep -n 'ufw allow proto gre' "$CALLS" | cut -d: -f1); DZ_ENLN=$(grep -n 'ufw --force enable' "$CALLS" | cut -d: -f1)
 check_true "DZ fw rules BEFORE ufw enable" "[[ ${DZ_GRELN:-0} -lt ${DZ_ENLN:-0} ]]"
-state_set dz_enabled false; : >"$CALLS"; SSH_PORT=2222 base_firewall >/dev/null 2>&1
+state_set dz_enabled false; FDZ2=$(fresh_sshd 'Port 2222'); state_clear ssh_port
+: >"$CALLS"; SSHD_CONFIG="$FDZ2" base_firewall >/dev/null 2>&1
 check "DZ disabled: no GRE rule" "$(grep -c 'proto gre' "$CALLS")" "0"
 check "DZ disabled: no doublezero0 rules" "$(grep -c 'doublezero0' "$CALLS")" "0"
 unset -f curl bash doublezero find
@@ -160,6 +172,30 @@ RC=$?
 check "rollback exits non-zero"               "$RC" "1"
 check "config restored (no active Port 2222)" "$(_sshd_configured_port "$F")" ""
 check "original #Port 22 restored"            "$(grep -c '#Port 22' "$F")" "1"
+
+echo "== S1: declined port change must NOT lock out (firewall opens the LIVE port) =="
+# Operator is prompted to move 22->9999 but declines: sshd stays on 22, so the
+# firewall must open 22 (the live port), never the unapplied 9999, and state must
+# not record 9999. This is the interactive-"n" path the ASSUME_YES suite missed.
+FD=$(fresh_sshd '#Port 22'); state_clear ssh_port; state_clear dz_enabled
+confirm() { return 1; }                      # operator answers "n"
+( SS_PORT_LISTENING="" SSH_PORT=9999 SSHD_CONFIG="$FD" base_ssh_port ) >/dev/null 2>&1
+check "decline: sshd_config Port unchanged"        "$(_sshd_configured_port "$FD")" ""
+check "decline: ssh_port NOT recorded as 9999"     "$(state_get ssh_port '<unset>')" "<unset>"
+: >"$CALLS"; SSHD_CONFIG="$FD" base_firewall >/dev/null 2>&1
+check "decline: firewall limits 22 (live), not 9999" "$(grep -c 'ufw limit 22/tcp' "$CALLS")" "1"
+check "decline: firewall never references 9999"      "$(grep -c '9999' "$CALLS")" "0"
+unset -f confirm
+
+echo "== I7: re-run with a changed port deletes the stale old SSH rule =="
+FI=$(fresh_sshd 'Port 2244'); state_set ssh_port 2222; state_clear dz_enabled   # prior realized port 2222
+: >"$CALLS"; SSHD_CONFIG="$FI" base_firewall >/dev/null 2>&1
+check "stale old-port rule deleted" "$(grep -c 'ufw delete limit 2222/tcp' "$CALLS")" "1"
+check "new port limited"            "$(grep -c 'ufw limit 2244/tcp' "$CALLS")" "1"
+check "realized ssh_port updated"   "$(state_get ssh_port)" "2244"
+FI2=$(fresh_sshd 'Port 2244'); state_set ssh_port 2244
+: >"$CALLS"; SSHD_CONFIG="$FI2" base_firewall >/dev/null 2>&1
+check "no delete when port unchanged" "$(grep -c 'ufw delete' "$CALLS")" "0"
 
 echo ""
 echo "==================================="
