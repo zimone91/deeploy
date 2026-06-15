@@ -115,6 +115,18 @@ COMMISSION_BPS=700; MEV_MODE=bam; validatorcfg_resolve_config
 check "explicit commission 700 kept" "$COMMISSION_BPS" "700"
 unset COMMISSION_BPS
 
+echo "== R3: empty MEV endpoints FAIL resolve (no valueless flags rendered) =="
+# A failed region scan + no override leaves BAM/BLOCK_ENGINE/SHRED empty; the
+# renderer would emit bare flags (argv misalignment) -> unattended Phase 8
+# crash-loop. resolve must fail fast instead.
+state_clear suggested_bam_url; state_clear suggested_block_engine_url; state_clear suggested_shred_receiver
+( unset BAM_URL BLOCK_ENGINE_URL SHRED_RECEIVER_ADDRESS; MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "R3: bam mode + empty MEV urls -> resolve fails"       "$?" "1"
+( unset BLOCK_ENGINE_URL SHRED_RECEIVER_ADDRESS; MEV_MODE=relayer validatorcfg_resolve_config ) >/dev/null 2>&1
+check "R3: relayer mode + empty block-engine/shred -> fails" "$?" "1"
+seed; unset BAM_URL BLOCK_ENGINE_URL SHRED_RECEIVER_ADDRESS RELAYER_URL   # restore for later tests
+MEV_MODE=bam validatorcfg_resolve_config
+
 echo "== solana.service =="
 MEV_MODE=bam; validatorcfg_resolve_config
 S=$(_vcfg_render_solana_service)
@@ -126,6 +138,8 @@ check "ExecStartPost poh-pin"   "$(grep -c 'ExecStartPost=/bin/systemctl --no-bl
 check "metrics = BAM endpoint"  "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$S")" "1"
 check "RequiresMountsFor (two-nvme)" "$(grep -c 'RequiresMountsFor=/mnt/accounts /mnt/ledger' <<<"$S")" "1"
 check "ExecStart = validator.sh" "$(grep -c 'ExecStart=/root/solana/validator.sh' <<<"$S")" "1"
+check "R4: StartLimitIntervalSec=0 (rate limiter disabled)" "$(grep -c '^StartLimitIntervalSec=0' <<<"$S")" "1"
+check "R4: NOT the permanent-down =5"                        "$(grep -c 'StartLimitIntervalSec=5' <<<"$S")" "0"
 # RequiresMountsFor must be ABSENT on root layout (no separate mounts to wait on).
 state_set disk_layout root; validatorcfg_resolve_config
 check "no RequiresMountsFor on root layout" "$(grep -c 'RequiresMountsFor' "$(_vcfg_render_solana_service >"$WORK/sv"; echo "$WORK/sv")")" "0"

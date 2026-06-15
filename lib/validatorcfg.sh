@@ -52,6 +52,19 @@ validatorcfg_resolve_config() {
     BLOCK_ENGINE_URL="${BLOCK_ENGINE_URL:-$(state_get suggested_block_engine_url "")}"
     SHRED_RECEIVER_ADDRESS="${SHRED_RECEIVER_ADDRESS:-$(state_get suggested_shred_receiver "")}"
     RELAYER_URL="${RELAYER_URL:-http://127.0.0.1:11226}"
+    # Fail fast when the MEV endpoints are empty (region scan failed + no override):
+    # the renderer would otherwise emit bare --bam-url/--block-engine-url/
+    # --shred-receiver-address flags (argv misalignment) that only surface as an
+    # unattended Phase 8 crash-loop. Turn that into an actionable Phase 6 error. (R3)
+    local _mev_missing=""
+    [[ -n "$BLOCK_ENGINE_URL" ]]      || _mev_missing+=" BLOCK_ENGINE_URL"
+    [[ -n "$SHRED_RECEIVER_ADDRESS" ]] || _mev_missing+=" SHRED_RECEIVER_ADDRESS"
+    if [[ "$MEV_MODE" == "relayer" ]]; then
+        [[ -n "$RELAYER_URL" ]] || _mev_missing+=" RELAYER_URL"
+    else
+        [[ -n "$BAM_URL" ]] || _mev_missing+=" BAM_URL"
+    fi
+    [[ -z "$_mev_missing" ]] || fail "MEV endpoints unset (${_mev_missing# }) — the region scan likely failed. Set them in deeploy.conf / env (or re-run 'import --rescore'). Refusing to render a validator with empty MEV flags — it would crash-loop at start."
     # commission-bps: mode-derived DEFAULT (bam->0, relayer->1000) but PROMPTED
     # at install so the operator can override — never set silently (0 is required
     # by many pools, but some want otherwise).
@@ -225,7 +238,10 @@ _vcfg_render_solana_service() {
     cat <<EOF
 [Unit]
 Description=Solana MB node
-StartLimitIntervalSec=5
+# StartLimitIntervalSec=0 disables systemd's start-rate limiter so Restart=always
+# truly always restarts: a fast-failing crash (unreadable keypair, missing dir,
+# post-upgrade flag drift) must not trip the limiter into permanent-down. (R4)
+StartLimitIntervalSec=0
 ${requires}After=network.target systemd-remount-fs.service systemd-tmpfiles-setup.service systemd-modules-load.service auditd.service
 
 [Service]
