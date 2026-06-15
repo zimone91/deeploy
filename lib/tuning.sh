@@ -170,6 +170,11 @@ tuning_grub() {
     state_set irqaffinity  "$_ISO_IRQ"
     state_set xdp_cores    "$_ISO_XDP"
     state_set reboot_required 1
+    # Re-arming a reboot INVALIDATES any prior completion latch: a sanctioned
+    # re-tune (new POH/XDP) must force a fresh reboot, not let the boundary proceed
+    # to Phase 8 on a stale reboot_done against the OLD, still-live isolation (I1).
+    state_clear reboot_done
+    state_clear reboot_pending
     ok "GRUB updated — reboot required to apply CPU isolation"
 }
 

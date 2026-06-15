@@ -98,6 +98,16 @@ check "reboot_required recorded" "$(state_get reboot_required)" "1"
 check "isolated_set recorded"    "$(state_get isolated_set)" "2,26"
 check "irqaffinity recorded"     "$(state_get irqaffinity)" "0-1,3-25,27-47"
 
+echo "== I1: tuning_grub CLEARS the stale reboot_done/reboot_pending latch on re-arm =="
+# A sanctioned re-tune re-arms reboot_required; the stale completion latch must be
+# cleared so the reboot boundary forces a fresh reboot instead of proceeding to
+# Phase 8 against the OLD, still-live kernel isolation.
+state_set reboot_done "stale-ts"; state_set reboot_pending "stale-ts"
+POH_CORE=2 tuning_grub >/dev/null 2>&1
+check "I1: reboot_required re-armed"     "$(state_get reboot_required)" "1"
+check "I1: stale reboot_done CLEARED"    "$(state_has reboot_done && echo y || echo n)" "n"
+check "I1: stale reboot_pending CLEARED" "$(state_has reboot_pending && echo y || echo n)" "n"
+
 echo "== POH change 2 -> 10 re-run: exactly one isolcpus, new value, no concat =="
 GC="$WORK/grubchg"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"' >"$GC"
 MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=0; GRUB_FILE="$GC"

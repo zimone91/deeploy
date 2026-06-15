@@ -58,6 +58,22 @@ echo "== --only runs exactly one phase =="
 reset_state; : >"$RAN"; ONLY_PHASE=4 install_run >/dev/null 2>&1; ONLY_PHASE=""
 check "only phase 4 ran" "$(cat "$RAN")" "toolchain_build"
 
+echo "== I2: install --only 8 is isolation-gated (it bypasses the reboot boundary) =="
+# --only 8 runs start_run directly, skipping _install_reboot_boundary. The gate now
+# lives in start_run, so a mismatch must still refuse to start. Use a start_run that
+# runs the REAL gate (the suite's stub doesn't), then restore the stub.
+reset_state; state_set isolated_set "1-2,10,25-26,34"
+start_run() { _install_verify_isolation || fail "iso gate"; echo 'start_run' >>"$RAN"; }
+_install_read_isolated() { echo "10,34"; }                          # MISMATCH (GRUB didn't apply)
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,10,34"; }
+: >"$RAN"; ( ONLY_PHASE=8 install_run ) >/dev/null 2>&1; RC=$?
+check "I2: --only 8 mismatch -> aborts"        "$RC" "1"
+check "I2: --only 8 mismatch -> start NOT run" "$(grep -c '^start_run$' "$RAN")" "0"
+_install_read_isolated() { echo "1-2,10,25-26,34"; }               # MATCH
+: >"$RAN"; ONLY_PHASE=8 install_run >/dev/null 2>&1; ONLY_PHASE=""
+check "I2: --only 8 match -> start runs"        "$(grep -c '^start_run$' "$RAN")" "1"
+start_run() { echo 'start_run' >>"$RAN"; }   # restore the suite stub
+
 echo "== DZ Phase 7 dispatch: runs doublezero_run (pointer) iff state dz_enabled=true =="
 # The enable DECISION is made EARLY in Phase 1 (base -> dz_should_enable), which
 # is stubbed here; Phase 7 dispatch reads state dz_enabled. So simulate Phase 1's
@@ -166,6 +182,23 @@ reset_state; : >"$RAN"; : >"$CALLS"
 install_run >/dev/null 2>&1
 check "start_run ran (no gate)"         "$(grep -c '^start_run$' "$RAN")" "1"
 check_false "no resume service written" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
+
+echo "== I5: manual --resume after the reboot already happened -> verify + Phase 8 (no 2nd reboot) =="
+# The resume service died before recording reboot_done; the operator runs a manual
+# 'install --resume' (POST_REBOOT=0). The booted cmdline already carries the wanted
+# isolation, so the boundary detects that, verifies, and proceeds — it must NOT
+# re-prompt a second pointless reboot.
+reset_state; mark_07_done
+state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set reboot_pending "earlier-ts"            # a reboot WAS armed; the box rebooted
+_install_read_isolated() { echo "1-2,10,25-26,34"; }                            # isolation is live
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34"; }
+: >"$RAN"; : >"$CALLS"
+POST_REBOOT=0 install_run >/dev/null 2>&1
+check "I5: proceeded to Phase 8 (start_run ran)" "$(grep -c '^start_run$' "$RAN")" "1"
+check "I5: reboot_done now latched"              "$(state_has reboot_done && echo y || echo n)" "y"
+check "I5: NO second reboot issued"              "$(grep -c 'systemctl reboot' "$CALLS")" "0"
+check_false "I5: did NOT (re)write a resume service" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
 
 echo ""
 echo "==================================="

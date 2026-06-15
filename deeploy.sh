@@ -130,23 +130,46 @@ _install_disable_resume_service() {
     state_clear reboot_pending
 }
 
+# Post-reboot completion, shared by the auto-resume service AND a manual --resume
+# that detects the reboot already happened. Verify CPU isolation is actually live
+# (fail-closed — a node started without it runs PoH on a non-isolated core and
+# skips slots), restore a CONNECTED DoubleZero tunnel, latch reboot_done.
+_install_post_reboot_proceed() {
+    _install_verify_isolation || fail "Isolation verification failed — not starting the validator. Fix GRUB and re-run."
+    # Only the CONNECTED tunnel needs restore. DZ prepared-but-not-connected (the
+    # normal pre-swap state) no-ops. Gated on dz_connected, not dz_enabled.
+    if [[ "$(state_get dz_connected "")" != "" ]] && declare -F dz_resume >/dev/null 2>&1; then
+        dz_resume || warn "DoubleZero post-reboot restore had issues — check 'doublezero status'"
+    fi
+    state_set reboot_done "$(_ts)"
+    return 0
+}
+
 # Called right before phase 8. Returns 0 to proceed to phase 8, 1 to STOP
 # install_run (a reboot was requested and the box must reboot first).
 _install_reboot_boundary() {
+    local want
     # No GRUB change, or we already came back from the reboot -> just proceed.
     if [[ "$(state_get reboot_required 0)" != "1" ]] || state_has reboot_done; then
         return 0
     fi
+    want="$(state_get isolated_set "")"
+    # The post-reboot resume service: verify isolation, restore DZ, latch done.
     if [[ "$POST_REBOOT" == "1" ]]; then
-        # We are the post-reboot resume. Verify isolation BEFORE starting.
-        _install_verify_isolation || fail "Isolation verification failed — not starting the validator. Fix GRUB and re-run."
-        # DoubleZero: only the CONNECTED tunnel needs verify/restore here. If DZ was
-        # prepared but dz-connect hasn't run yet (the normal case — connect is
-        # post-swap), dz_resume no-ops. Gated on dz_connected, not dz_enabled.
-        if [[ "$(state_get dz_connected "")" != "" ]] && declare -F dz_resume >/dev/null 2>&1; then
-            dz_resume || warn "DoubleZero post-reboot restore had issues — check 'doublezero status'"
-        fi
-        state_set reboot_done "$(_ts)"
+        _install_post_reboot_proceed
+        return 0
+    fi
+    # A MANUAL `install --resume` after the reboot ALREADY happened (the resume
+    # service died before recording reboot_done): the booted kernel already carries
+    # the wanted isolation, so verify + proceed to Phase 8 instead of re-prompting a
+    # second, pointless reboot (I5). Guards keep this from firing pre-reboot — a
+    # not-yet-rebooted box lacks the new isolcpus in /proc/cmdline, and a sanctioned
+    # re-tune clears reboot_pending (I1) — so only a genuine post-reboot manual
+    # resume reaches here.
+    if [[ -n "$want" ]] && state_has reboot_pending \
+       && grep -q "isolcpus=domain,managed_irq,${want}" <<<"$(_install_read_cmdline)"; then
+        info "CPU-isolation reboot already applied — resuming to Phase 8 (no second reboot needed)."
+        _install_post_reboot_proceed
         return 0
     fi
     # Pre-reboot: install the auto-resume oneshot, then reboot.

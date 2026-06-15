@@ -130,6 +130,15 @@ start_print_summary() {
 
 start_run() {
     require_root
+    # Universal CPU-isolation gate: EVERY route to start — the post-reboot resume,
+    # a manual --resume, AND `install --only 8` (which bypasses the reboot boundary)
+    # — must confirm the recorded isolation is actually live before launching the
+    # validator (PoH on a non-isolated core skips slots). This closes the --only 8
+    # bypass (I2) and backstops a stale reboot_done latch (I1). Guarded: defined in
+    # deeploy.sh, so it no-ops when start.sh is unit-tested standalone.
+    if declare -F _install_verify_isolation >/dev/null 2>&1; then
+        _install_verify_isolation || fail "CPU isolation not verified — refusing to start the validator. Fix GRUB and re-run (see the diagnostics above)."
+    fi
     start_resolve_config
     start_precheck_disk
     start_enable_service

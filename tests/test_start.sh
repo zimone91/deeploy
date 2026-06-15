@@ -141,6 +141,21 @@ check "summary: export shown as ./deeploy.sh export" "$(grep -c './deeploy.sh ex
 check_ge "failover pointer"            "$(grep -ci 'failover' <<<"$SUM")" "1"
 check_ge "vote account shown"          "$(grep -c 'Vote1111' <<<"$SUM")" "1"
 
+echo "== I1/I2: start_run is isolation-gated — every route to start fails closed on mismatch =="
+# The gate calls _install_verify_isolation (declare-F guarded; defined in deeploy.sh,
+# absent here). Mock it + the heavy steps to assert start_run aborts BEFORE enabling
+# the service on a mismatch, and proceeds on a match.
+_install_verify_isolation() { return "${ISO_RC:-0}"; }
+start_resolve_config() { :; }; start_precheck_disk() { :; }
+start_enable_service() { echo "ENABLE" >>"$CALLS"; }
+start_wait_catchup() { :; }; start_pin_poh() { :; }; verify_run() { :; }; start_print_summary() { :; }
+: >"$CALLS"; ISO_RC=1; ( start_run ) >/dev/null 2>&1; RC=$?
+check "gate: mismatch -> start_run aborts"        "$RC" "1"
+check "gate: mismatch -> service NEVER enabled"   "$(grep -c ENABLE "$CALLS")" "0"
+: >"$CALLS"; ISO_RC=0; start_run >/dev/null 2>&1
+check "gate: match -> service enabled (proceeds)" "$(grep -c ENABLE "$CALLS")" "1"
+unset -f _install_verify_isolation
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
