@@ -110,8 +110,23 @@ start_pin_poh() {
 }
 
 start_print_summary() {
+    local catchup_rc="${1:-0}" verify_rc="${2:-0}"
+    # Degraded/failed finish: the node never reached catchup 0 (timed out or the
+    # service died). Say so plainly and tell the operator NOT to swap the staked
+    # key — a staked identity must only go live on a synced node (R1).
+    if [[ "$catchup_rc" -ne 0 ]]; then
+        step "DEPLOYMENT INCOMPLETE — node NOT synced"
+        warn "The node did not reach catchup 0 (catchup timed out or solana.service is not active)."
+        info "  DO NOT swap in the staked key — a staked identity must only go live on a synced node."
+        info "  Check:   systemctl status solana   and   journalctl -u solana -e"
+        info "  Resume:  ${DEEPLOY_CMD} install --resume   (re-attempts catchup; a running node is adopted, not restarted)"
+        info ""
+        info "Vote account: ${VOTE_ACCOUNT_PUBKEY:-<unset>}"
+        return 0
+    fi
     step "DEPLOYMENT COMPLETE"
     ok "Node is synced (catchup 0) on the unstaked sync identity."
+    [[ "$verify_rc" -ne 0 ]] && warn "Post-install verification reported issues — review them above and run '${DEEPLOY_CMD} verify' before the staked-key swap."
     info ""
     info "MANUAL staked-key hot-swap (DeePloy never touches the real key):"
     info "  1) Place the real staked keypair at:  ${STAKED_KEYPAIR}   (chmod 600)"
@@ -142,8 +157,19 @@ start_run() {
     start_resolve_config
     start_precheck_disk
     start_enable_service
-    start_wait_catchup || warn "Proceeding to verification despite catchup wait result"
+    # Capture the catchup + verify results (don't swallow them) so the summary can
+    # tell a real success from a degraded/failed finish, and Phase 8 isn't marked a
+    # clean success when the node never synced (R1).
+    local catchup_rc=0 verify_rc=0
+    start_wait_catchup || catchup_rc=$?
+    [[ $catchup_rc -eq 0 ]] || warn "catchup did not complete (timed out, or solana.service is not active)"
     start_pin_poh
-    if declare -F verify_run >/dev/null 2>&1; then verify_run || true; else info "verify.sh not loaded — skipping verification"; fi
-    start_print_summary
+    if declare -F verify_run >/dev/null 2>&1; then verify_run || verify_rc=$?; else info "verify.sh not loaded — skipping verification"; fi
+    start_print_summary "$catchup_rc" "$verify_rc"
+    # An unsynced node is NOT a clean Phase 8: return non-zero so run_phase does not
+    # mark phase 8 done and an idempotent resume re-attempts catchup (the running
+    # node is adopted, not restarted). A verify-only failure is advisory (the node
+    # IS synced) — surfaced in the summary, but it does not fail the phase.
+    [[ $catchup_rc -eq 0 ]] || return 1
+    return 0
 }

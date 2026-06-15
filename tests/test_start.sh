@@ -141,6 +141,27 @@ check "summary: export shown as ./deeploy.sh export" "$(grep -c './deeploy.sh ex
 check_ge "failover pointer"            "$(grep -ci 'failover' <<<"$SUM")" "1"
 check_ge "vote account shown"          "$(grep -c 'Vote1111' <<<"$SUM")" "1"
 
+echo "== R1: summary distinguishes a degraded/failed finish from a real success =="
+DSUM=$(start_print_summary 1 0 2>&1)   # catchup failed
+check    "R1: degraded -> NOT 'synced (catchup 0)'" "$(grep -c 'synced (catchup 0)' <<<"$DSUM")" "0"
+check_ge "R1: degraded -> says do NOT swap the key" "$(grep -ci 'do not swap' <<<"$DSUM")" "1"
+check    "R1: degraded -> no set-identity swap cmd" "$(grep -c 'set-identity' <<<"$DSUM")" "0"
+VSUM=$(start_print_summary 0 1 2>&1)   # synced, but verify reported issues
+check_ge "R1: synced+verify-issues -> still 'synced'"  "$(grep -c 'synced (catchup 0)' <<<"$VSUM")" "1"
+check_ge "R1: synced+verify-issues -> warns to review" "$(grep -ci 'verification' <<<"$VSUM")" "1"
+
+echo "== R1: start_run returns non-zero on failed catchup (phase 8 not a clean success) =="
+_install_verify_isolation() { return 0; }   # pass the gate
+start_resolve_config() { :; }; start_precheck_disk() { :; }; start_enable_service() { :; }
+start_pin_poh() { :; }; verify_run() { :; }
+start_wait_catchup() { return 1; }          # catchup failed / timed out
+OUT=$( ( start_run ) 2>&1 ); RC=$?
+check "R1: failed catchup -> start_run non-zero"       "$RC" "1"
+check "R1: failed catchup -> NOT 'synced (catchup 0)'" "$(grep -c 'synced (catchup 0)' <<<"$OUT")" "0"
+unset -f _install_verify_isolation start_resolve_config start_precheck_disk start_enable_service start_pin_poh verify_run start_wait_catchup
+# re-source to restore the real start_* functions the gate test below drives
+_DEEPLOY_START_SOURCED="" source "$ROOT/lib/start.sh"
+
 echo "== I1/I2: start_run is isolation-gated — every route to start fails closed on mismatch =="
 # The gate calls _install_verify_isolation (declare-F guarded; defined in deeploy.sh,
 # absent here). Mock it + the heavy steps to assert start_run aborts BEFORE enabling

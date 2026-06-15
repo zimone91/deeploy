@@ -200,6 +200,19 @@ check "I5: reboot_done now latched"              "$(state_has reboot_done && ech
 check "I5: NO second reboot issued"              "$(grep -c 'systemctl reboot' "$CALLS")" "0"
 check_false "I5: did NOT (re)write a resume service" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
 
+echo "== R1: a degraded (non-zero) start_run does NOT mark phase 8 done =="
+# start_run returns non-zero when the node never synced (catchup failed). Under
+# set -e that aborts run_phase before phase_end, so phase 8 stays un-done and an
+# idempotent resume re-attempts it instead of skipping a node that never synced.
+reset_state; clear_phase 8
+start_run() { echo 'start_run' >>"$RAN"; return 1; }   # simulate a degraded finish
+: >"$RAN"
+( set -Eeuo pipefail; ONLY_PHASE=8 install_run ) >/dev/null 2>&1; RC=$?; ONLY_PHASE=""
+check "R1: degraded start_run -> install exits non-zero" "$RC" "1"
+check "R1: degraded start_run actually ran"              "$(grep -c '^start_run$' "$RAN")" "1"
+check "R1: phase 8 NOT marked done"                      "$(is_phase_done 8 && echo y || echo n)" "n"
+start_run() { echo 'start_run' >>"$RAN"; }   # restore the suite stub
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
