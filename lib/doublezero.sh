@@ -55,13 +55,6 @@ DZ_PASS_INTERVAL="${DZ_PASS_INTERVAL:-10}"
 # --- helpers -----------------------------------------------------------------
 _dz_address()  { run_capture doublezero address 2>/dev/null || true; }   # the DoubleZero ID (from id.json)
 _dz_staked_pubkey() { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null || true; }
-_dz_valid_ip() {
-    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    local o; for o in ${1//./ }; do (( o >= 0 && o <= 255 )) || return 1; done
-}
-_dz_detect_public_ip() {
-    ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true
-}
 
 # run_capture — like run(), but returns the command's stdout (for probes whose
 # OUTPUT we need: doublezero address/status/latency/find-validator). Honors
@@ -109,11 +102,9 @@ dz_resolve_config() {
     SOLANA_HOME="$(state_get solana_home /root/solana)"
     DZ_KEYPAIR="$(_dz_keypair_path)"
     STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
-    # client-ip for `connect ibrl`: explicit env > recorded state > auto-detect.
-    [[ -z "${DZ_CLIENT_IP:-}" ]] && DZ_CLIENT_IP="$(state_get dz_client_ip "")"
-    [[ -z "${DZ_CLIENT_IP:-}" ]] && DZ_CLIENT_IP="$(_dz_detect_public_ip)"
+    # No client-ip resolution: the `connect ibrl --client-ip` CLI flag is deprecated
+    # and silently ignored; doublezerod auto-detects the client IP. (F6)
     state_set dz_keypair "$DZ_KEYPAIR"
-    [[ -n "$DZ_CLIENT_IP" ]] && state_set dz_client_ip "$DZ_CLIENT_IP"
 }
 
 # ============================================================================
@@ -379,9 +370,10 @@ _dz_connect_with_retry() {
 }
 
 dz_connect_ibrl() {
-    step "DoubleZero connect ibrl (client-ip ${DZ_CLIENT_IP:-auto})"
-    if [[ -n "${DZ_CLIENT_IP:-}" ]]; then _dz_connect_with_retry doublezero connect ibrl --client-ip "$DZ_CLIENT_IP"
-    else _dz_connect_with_retry doublezero connect ibrl; fi
+    # No --client-ip: the CLI flag is deprecated and silently ignored; doublezerod
+    # auto-detects the client IP (set it on the daemon if ever needed). (F6)
+    step "DoubleZero connect ibrl"
+    _dz_connect_with_retry doublezero connect ibrl
 }
 
 dz_multicast_publish() {

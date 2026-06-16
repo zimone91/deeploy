@@ -186,7 +186,7 @@ printf '[1,2,3]' >"$DZ_KEYPAIR"          # DZ ID placed (hard migrate will insta
 rm -f "$WORK/dzconfig/id.json"
 : >"$CALLS"
 read() { local v="${!#}"; eval "$v=y"; }  # old-server gate ack
-( NONINTERACTIVE=0 DZ_CLIENT_IP=203.0.113.7 dz_connect_run ) >/dev/null 2>&1; RC=$?
+( NONINTERACTIVE=0 dz_connect_run ) >/dev/null 2>&1; RC=$?
 unset -f read
 check "connect: full flow rc0"               "$RC" "0"
 check "connect: hard-migrate installed id.json" "$(grep -c "install -m 600 $DZ_KEYPAIR $WORK/dzconfig/id.json" "$CALLS")" "1"
@@ -194,7 +194,8 @@ check "connect: find-validator polled"       "$(grep -c 'passport find-validator
 check "connect: passport prepare (staked)"   "$(grep -c 'prepare-validator-access .* --primary-validator-id Stakedid' "$CALLS")" "1"
 check "connect: passport request +signature" "$(grep -c 'request-validator-access .* --signature SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567' "$CALLS")" "1"
 check "connect: NO --backup-validator-ids (Path 1)" "$(grep -c 'backup-validator-ids' "$CALLS")" "0"
-check "connect: connect ibrl --client-ip"    "$(grep -c 'connect ibrl --client-ip 203.0.113.7' "$CALLS")" "1"
+check "connect: connect ibrl issued"          "$(grep -c 'doublezero connect ibrl' "$CALLS")" "1"
+check "connect: NO deprecated --client-ip (F6)" "$(grep -c 'connect ibrl --client-ip' "$CALLS")" "0"
 check "connect: multicast publish"           "$(grep -c 'connect multicast --publish edge-solana-shreds' "$CALLS")" "1"
 check "connect: latency display ran"         "$(grep -c 'doublezero latency' "$CALLS")" "1"
 check "connect: status display ran"          "$(grep -c 'doublezero status' "$CALLS")" "1"
@@ -326,7 +327,7 @@ RES=$(dz_resume 2>&1); check "resume no-op when not connected -> rc0" "$?" "0"
 check "resume no-op: nothing connected"        "$(grep -c 'connect ibrl' "$CALLS")" "0"
 check "resume no-op: says nothing to restore"  "$(grep -c 'nothing to restore' <<<"$RES")" "1"
 # connected + iface up -> verify only
-state_set dz_connected t; state_set dz_client_ip 203.0.113.7
+state_set dz_connected t
 : >"$CALLS"; ip() { case "$*" in *"link show"*) return 0;; *"route get"*) echo "1.1.1.1 dev eth0 src 203.0.113.7";; esac; }
 dz_resume >/dev/null 2>&1
 check "resume connected+up: no reconnect"      "$(grep -c 'connect ibrl' "$CALLS")" "0"

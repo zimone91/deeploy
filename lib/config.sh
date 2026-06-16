@@ -59,7 +59,6 @@ COMMISSION_BPS commission_bps
 @ DoubleZero
 DZ_ENABLED dz_enabled
 DZ_ENV dz_env
-DZ_CLIENT_IP dz_client_ip
 DZ_KEYPAIR dz_keypair
 MAP
 }
