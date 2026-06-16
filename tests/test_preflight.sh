@@ -61,9 +61,14 @@ reset; OS_RELEASE_FILE="$OSR_UBUNTU" _pf_check_platform >/dev/null 2>&1; counts 
 uname() { echo x86_64; }
 
 echo "== cpu =="
-# nproc is absent on the test host -> falls back to counting cpuinfo (2 procs).
+# nproc IS present on real test hosts (coreutils) and would return the host's core
+# count, overriding the cpuinfo fixture (tripped both boxes in mirror directions).
+# Mock it to count the fixture's processors so the core-count cases are deterministic
+# on any host. (F5)
+nproc() { grep -c '^processor' "${PROC_CPUINFO:-/proc/cpuinfo}" 2>/dev/null || echo 0; }
 reset; PROC_CPUINFO="$CPU_GOOD" PF_MIN_CORES=2 _pf_check_cpu >/dev/null 2>&1; counts "aes + enough cores" 0 0
 reset; PROC_CPUINFO="$CPU_BAD"  PF_MIN_CORES=24 _pf_check_cpu >/dev/null 2>&1; counts "no aes + few cores" 0 2
+unset -f nproc
 
 echo "== memory =="
 reset; PROC_MEMINFO="$MEM_BIG"   _pf_check_memory >/dev/null 2>&1; counts "377 GiB ok"   0 0
