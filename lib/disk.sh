@@ -214,6 +214,19 @@ _fstab_comment_swap() {                           # comment any active /swapfile
     cat "$tmp" >"$FSTAB_FILE"; rm -f "$tmp"
     ok "Commented swap entries in fstab"
 }
+# Remove the swapfile — CLEANUP ONLY (swap is already off and _fstab_comment_swap
+# disables it at boot), so it must be NON-FATAL: a restricted/immutable swapfile
+# (chattr +i set by some providers, or swapoff failing under memory pressure so the
+# file is still active) must not abort the install under set -e. Path overridable
+# for tests. (F3)
+_disk_remove_swapfile() {
+    local swapf="${SWAPFILE:-/swapfile}"
+    [[ -e "$swapf" ]] || return 0
+    run rm -f "$swapf" 2>/dev/null \
+        || { run chattr -i "$swapf" 2>/dev/null && run rm -f "$swapf" 2>/dev/null; } \
+        || warn "Could not remove ${swapf} (immutable/restricted) — swap is OFF and fstab swap is commented, so this is harmless; continuing."
+    return 0
+}
 _disk_symlink_home() {                            # target link
     local target=$1 link=$2 cur
     if [[ -L "$link" ]]; then
@@ -349,7 +362,7 @@ _disk_two_nvme() {
     fi
 
     run swapoff -a || true
-    [[ -e /swapfile ]] && run rm -f /swapfile
+    _disk_remove_swapfile
     _fstab_comment_swap
 
     local d

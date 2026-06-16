@@ -128,7 +128,7 @@ check "NO mkfs issued"              "$(grep -c 'mkfs.xfs' "$CALLS")" "0"
 echo "== destructive sequence (after explicit yes) =="
 : >"$CALLS"; : >"$FSTAB_FILE"; rm -f "$SOLANA_LINK"
 require_yes() { return 0; }                                       # simulate operator typing 'yes'
-ACCOUNTS_DISK=/dev/nvme0n1 LEDGER_DISK=/dev/nvme1n1 MP_A="" MP_L="" _disk_two_nvme >/dev/null 2>&1
+SWAPFILE="$WORK/none" ACCOUNTS_DISK=/dev/nvme0n1 LEDGER_DISK=/dev/nvme1n1 MP_A="" MP_L="" _disk_two_nvme >/dev/null 2>&1
 check "blkdiscard accounts"  "$(grep -c 'blkdiscard -f /dev/nvme0n1' "$CALLS")" "1"
 check "blkdiscard ledger"    "$(grep -c 'blkdiscard -f /dev/nvme1n1' "$CALLS")" "1"
 check "mkfs accounts"        "$(grep -c 'mkfs.xfs -f /dev/nvme0n1' "$CALLS")"   "1"
@@ -137,6 +137,16 @@ check "swapoff issued"       "$(grep -c 'swapoff -a' "$CALLS")"  "1"
 check "mount -a issued"      "$(grep -c 'mount -a' "$CALLS")"    "1"
 check "fstab ledger entry"   "$(grep -c "U-nvme1n1 $WORK/ledger xfs defaults,noatime,logbufs=8,nofail 0 2" "$FSTAB_FILE")" "1"
 check "fstab accounts entry" "$(grep -c "U-nvme0n1 $WORK/accounts xfs " "$FSTAB_FILE")" "1"
+
+echo "== F3: swapfile removal is NON-FATAL (immutable/restricted) under -e =="
+SWD="$WORK/swapdir"; mkdir -p "$SWD/keep"          # non-empty dir -> rm -f fails
+( set -Eeuo pipefail; SWAPFILE="$SWD" _disk_remove_swapfile ) >/dev/null 2>&1
+check "F3: unremovable swapfile -> non-fatal (rc 0 under -e)" "$?" "0"
+SWF="$WORK/swapok"; : >"$SWF"                       # a normal, removable swapfile
+SWAPFILE="$SWF" _disk_remove_swapfile >/dev/null 2>&1
+check "F3: removable swapfile -> deleted"          "$([[ -e "$SWF" ]] && echo y || echo n)" "n"
+( set -Eeuo pipefail; SWAPFILE="$WORK/absent-swap" _disk_remove_swapfile ) >/dev/null 2>&1
+check "F3: absent swapfile -> no-op (rc 0)"        "$?" "0"
 check_true "symlink created" "[[ -L \"$SOLANA_LINK\" ]]"
 check "ledger_path recorded"   "$(state_get ledger_path)"   "$SOLANA_LINK/ledger"
 check "accounts_path recorded" "$(state_get accounts_path)" "$WORK/accounts/solana/accounts"

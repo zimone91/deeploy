@@ -34,6 +34,11 @@ export MLX5_IRQ_SCRIPT="$WORK/root/solana/mlx5-irq.sh" MLX5_IRQ_SERVICE="$WORK/m
 export SOLANA_INSTALL_DIR="$WORK/install" MOSTLY_THRESHOLD_ROOT="$WORK/mct" RESUME_SERVICE_FILE="$WORK/deeploy-resume.service"
 export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo" PROC_MDSTAT="$WORK/mdstat"
 export SSHD_CONFIG="$WORK/etc/sshd_config" NIC_TUNING_SCRIPT="$WORK/nic-tuning.sh" NIC_TUNING_SERVICE="$WORK/nic-tuning.service"
+# F3/F4: redirect the swapfile into the sandbox AND make it unremovable (a non-empty
+# dir, so `rm -f` fails) — this keeps the -e assertions OFF the host's real /swapfile
+# (which may be active -> EPERM) AND exercises the non-fatal swapfile-rm path: the
+# disk phase must WARN and continue, not abort under set -Eeuo.
+mkdir -p "$WORK/swapdir/keep"; export SWAPFILE="$WORK/swapdir"
 # NB: do NOT pre-create $WORK/root/solana — phase 3 (disk) creates it as a symlink.
 mkdir -p "$WORK/etc/default" "$WORK/etc" "$WORK/root" "$WORK/bin" "$WORK/install/releases"
 printf '#Port 22\nPermitRootLogin yes\n' >"$SSHD_CONFIG"
@@ -202,6 +207,7 @@ rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
 ( set -Eeuo pipefail; install_run ) >/dev/null 2>&1
 check "install_run survives set -Eeuo pipefail (phases 0-7 + reboot gate)" "$?" "0"
 check "reached the reboot gate under -e"  "$(grep -c 'install --resume --post-reboot' "$RESUME_SERVICE_FILE")" "1"
+check "F3/F4: disk phase completed under -e despite an unremovable swapfile" "$(state_has phase-3 && echo y || echo n)" "y"
 ( set -Eeuo pipefail; POST_REBOOT=1 install_run ) >/dev/null 2>&1
 check "POST_REBOOT install_run survives set -Eeuo pipefail (phase 8)" "$?" "0"
 check "phase 8 completed under -e"        "$(state_has phase-8 && echo y || echo n)" "y"
