@@ -62,8 +62,10 @@ doublezero()      { echo "doublezero $*" >>"$CALLS"
                      ' Tunnel Status | Tunnel Name | Current Device | Metro | Multicast Groups ' \
                      ' BGP Session Up | doublezero0 | dz-syn1-sw01 | metro-a | ' \
                      ' BGP Session Up | doublezero1 | dz-syn1-sw01 | metro-a | P:edge-solana-shreds ';; esac; }
+# find-validator now emits JSON (--json-compact); DZ_FV_JSON overrides per-test.
+DZ_FV_JSON='{"cluster":"mainnet-beta","in_leader_schedule":true,"role":"primary","visible_in_gossip":true}'
 doublezero-solana(){ echo "doublezero-solana $*" >>"$CALLS"
-    case "$*" in *find-validator*) echo "validator gossip: yes; In Leader scheduler: yes";; esac; }
+    case "$*" in *find-validator*) echo "$DZ_FV_JSON";; esac; }
 ufw()             { echo "ufw $*" >>"$CALLS"; }
 systemctl()       { echo "systemctl $*" >>"$CALLS"; }
 apt-get()         { echo "apt-get $*" >>"$CALLS"; }
@@ -136,6 +138,22 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # enabled + installed but staked key absent -> fail
 rm -f "$WORK/mainnet-validator-keypair.json"
 ( dz_connect_run ) >/dev/null 2>&1; check "connect no staked key -> fail" "$?" "1"
+
+echo "== F1/R16: leader-schedule gate parses in_leader_schedule JSON (polarity-safe) =="
+# Real captured fixtures (host000001): primary=true vs backup=false. The old
+# substring 'leader schedul' matched BOTH ("leader scheduled" / "not leader
+# scheduled"), and ✅ shows for a backup too. The JSON boolean is the clean anchor;
+# fail closed on anything not exactly true.
+F1_POS='{"cluster":"mainnet-beta","validator_id":"SynthPrimary1111111111111111111111111111111","gossip_ip":"203.0.113.10","in_leader_schedule":true,"role":"primary","visible_in_gossip":true}'
+F1_NEG='{"cluster":"mainnet-beta","validator_id":"SynthBackup22222222222222222222222222222222","gossip_ip":"198.51.100.20","in_leader_schedule":false,"role":"backup","visible_in_gossip":true}'
+F1_HUMAN='✅ This validator can only connect as a backup in DoubleZero. It is not leader scheduled and cannot act as a primary validator.'
+: >"$CALLS"; DZ_FV_JSON="$F1_POS" _dz_await_in_leader_schedule >/dev/null 2>&1
+check "F1: in_leader_schedule:true -> proceeds (rc 0)"        "$?" "0"
+check "F1: requests --json-compact"                           "$(grep -c 'find-validator -u mainnet-beta --json-compact' "$CALLS")" "1"
+( DZ_FV_JSON="$F1_NEG"; _dz_await_in_leader_schedule ) >/dev/null 2>&1
+check "F1: backup (false) -> does NOT proceed (fails)"        "$?" "1"
+( DZ_FV_JSON="$F1_HUMAN"; _dz_await_in_leader_schedule ) >/dev/null 2>&1
+check "F1: non-JSON output -> fail-closed (does NOT proceed)" "$?" "1"
 
 echo "== dz-connect FULL flow: hard-migrate -> find -> gate -> passport -> connect -> multicast -> displays =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"

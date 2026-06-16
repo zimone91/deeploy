@@ -274,17 +274,25 @@ dz_keypair_migrate() {
 # Poll passport find-validator until the validator is in gossip AND the leader
 # schedule (the 5-10 min post-swap window).
 _dz_await_in_leader_schedule() {
-    local i out
+    local i out in_sched
+    have jq || fail "jq is required to parse 'doublezero-solana passport find-validator' output but is not installed (it is a base package — re-run Phase 1)."
     for ((i=1; i<=DZ_FIND_RETRIES; i++)); do
-        out="$(run_capture doublezero-solana passport find-validator -u "$DZ_ENV" 2>&1 || true)"
-        if grep -qi 'leader schedul' <<<"$out"; then
-            ok "Validator is in gossip + leader schedule"
+        # --json-compact gives a clean boolean. The HUMAN text is polarity-blind:
+        # both the positive ("...leader scheduled validator.") and the negative
+        # ("...not leader scheduled...") contain "leader schedul", and ✅ shows for a
+        # backup too — so neither the label nor the checkmark is a usable anchor.
+        # Parse in_leader_schedule and fail CLOSED: anything not exactly true
+        # (false / empty / invalid JSON) keeps polling, never proceeds. (R16/F1)
+        out="$(run_capture doublezero-solana passport find-validator -u "$DZ_ENV" --json-compact 2>&1 || true)"
+        in_sched="$(jq -r '.in_leader_schedule // false' <<<"$out" 2>/dev/null || echo false)"
+        if [[ "$in_sched" == "true" ]]; then
+            ok "Validator is in gossip + leader schedule (primary-eligible)"
             return 0
         fi
         info "Waiting for the validator to appear in gossip + leader schedule (attempt ${i}/${DZ_FIND_RETRIES}, ~${DZ_FIND_INTERVAL}s)…"
         sleep "$DZ_FIND_INTERVAL"
     done
-    fail "Validator never appeared in the leader schedule after $((DZ_FIND_RETRIES * DZ_FIND_INTERVAL))s. Confirm the staked-key swap completed and the node is voting, then re-run '${DEEPLOY_CMD} dz-connect'."
+    fail "Validator never reached in_leader_schedule=true after $((DZ_FIND_RETRIES * DZ_FIND_INTERVAL))s — it can connect only as a backup, or the staked-key swap/voting hasn't propagated yet. Confirm the node is voting, then re-run '${DEEPLOY_CMD} dz-connect'."
 }
 
 # Blocking gate, before this machine connects (the moment the DZ ID goes live).
