@@ -155,6 +155,28 @@ check "F1: backup (false) -> does NOT proceed (fails)"        "$?" "1"
 ( DZ_FV_JSON="$F1_HUMAN"; _dz_await_in_leader_schedule ) >/dev/null 2>&1
 check "F1: non-JSON output -> fail-closed (does NOT proceed)" "$?" "1"
 
+echo "== F2: connect retries the access-pass race only; fails fast otherwise =="
+DZ_PASS_RETRIES=5 DZ_PASS_INTERVAL=0
+# Fail with the pass-race error on the first 2 calls, then succeed -> must retry+proceed.
+F2N="$WORK/f2n"; : >"$F2N"
+_f2_pass_race() { echo c >>"$F2N"; local n; n=$(wc -l <"$F2N" | tr -d ' '); [[ "$n" -lt 3 ]] && { echo "Error: Access Pass not found" >&2; return 1; }; return 0; }
+_dz_connect_with_retry _f2_pass_race >/dev/null 2>&1
+check "F2: retries past access-pass race -> rc0"         "$?" "0"
+check "F2: re-attempted 3x (2 fails + success)"          "$(wc -l <"$F2N" | tr -d ' ')" "3"
+# Any OTHER connect error fails fast, NOT retried (don't mask a real failure).
+F2B="$WORK/f2b"; : >"$F2B"
+_f2_other_err() { echo c >>"$F2B"; echo "Error: tunnel device busy" >&2; return 1; }
+( _dz_connect_with_retry _f2_other_err ) >/dev/null 2>&1
+check "F2: non-access-pass error fails fast"             "$?" "1"
+check "F2: non-access-pass error NOT retried (1 try)"    "$(wc -l <"$F2B" | tr -d ' ')" "1"
+# Exhausted access-pass retries -> actionable fail, capped (no infinite loop).
+F2E="$WORK/f2e"; : >"$F2E"
+_f2_always_race() { echo c >>"$F2E"; echo "Error: Access Pass not found" >&2; return 1; }
+( _dz_connect_with_retry _f2_always_race ) >/dev/null 2>&1
+check "F2: exhausted retries -> fail (no infinite loop)" "$?" "1"
+check "F2: capped at DZ_PASS_RETRIES (5) attempts"       "$(wc -l <"$F2E" | tr -d ' ')" "5"
+unset -f _f2_pass_race _f2_other_err _f2_always_race
+
 echo "== dz-connect FULL flow: hard-migrate -> find -> gate -> passport -> connect -> multicast -> displays =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
 state_set solana_home /root/solana; state_set staked_keypair "$WORK/mainnet-validator-keypair.json"

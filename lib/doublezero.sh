@@ -49,6 +49,8 @@ DZ_LATENCY_TOPN="${DZ_LATENCY_TOPN:-8}"       # show only the N nearest devices 
 # slower of the two, then warn. (These supersede the old DZ_STATUS_* status-poll vars.)
 DZ_MCAST_RETRIES="${DZ_MCAST_RETRIES:-18}"    # ~3 min at 10s for both BGP sessions
 DZ_MCAST_INTERVAL="${DZ_MCAST_INTERVAL:-10}"
+DZ_PASS_RETRIES="${DZ_PASS_RETRIES:-12}"      # access-pass propagation after request: ~2 min at 10s
+DZ_PASS_INTERVAL="${DZ_PASS_INTERVAL:-10}"
 
 # --- helpers -----------------------------------------------------------------
 _dz_address()  { run_capture doublezero address 2>/dev/null || true; }   # the DoubleZero ID (from id.json)
@@ -351,17 +353,42 @@ dz_passport() {
     ok "Passport access requested"
 }
 
+# Run a `doublezero connect ...` with a bounded retry ONLY on the access-pass
+# propagation race: request-validator-access submits the on-chain request, but the
+# resulting Access Pass isn't immediately visible to `connect` (~1 min lag, seen
+# on-box). Retry specifically on "Access Pass not found"; ANY other connect error
+# fails FAST so a real failure is never masked. On exhausted retries, fail with an
+# actionable message (the request was submitted; re-run dz-connect — idempotent). (F2)
+_dz_connect_with_retry() {
+    local i out
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} $*"; return 0; fi
+    for ((i=1; i<=DZ_PASS_RETRIES; i++)); do
+        if out="$("$@" 2>&1)"; then
+            [[ -n "$out" ]] && printf '%s\n' "$out"
+            return 0
+        fi
+        if grep -qi 'Access Pass not found' <<<"$out"; then
+            info "Access Pass not yet propagated — retrying connect (attempt ${i}/${DZ_PASS_RETRIES}, ~${DZ_PASS_INTERVAL}s)…"
+            sleep "$DZ_PASS_INTERVAL"
+            continue
+        fi
+        [[ -n "$out" ]] && printf '%s\n' "$out" >&2
+        fail "DoubleZero connect failed ('$*') — not an access-pass race, so not retried. See the error above."
+    done
+    fail "DoubleZero Access Pass never propagated after $((DZ_PASS_RETRIES * DZ_PASS_INTERVAL))s. The access request WAS submitted; wait ~1 min and re-run '${DEEPLOY_CMD} dz-connect' (it is idempotent — request is a no-op, connect picks up the pass)."
+}
+
 dz_connect_ibrl() {
     step "DoubleZero connect ibrl (client-ip ${DZ_CLIENT_IP:-auto})"
-    if [[ -n "${DZ_CLIENT_IP:-}" ]]; then run doublezero connect ibrl --client-ip "$DZ_CLIENT_IP"
-    else run doublezero connect ibrl; fi
+    if [[ -n "${DZ_CLIENT_IP:-}" ]]; then _dz_connect_with_retry doublezero connect ibrl --client-ip "$DZ_CLIENT_IP"
+    else _dz_connect_with_retry doublezero connect ibrl; fi
 }
 
 dz_multicast_publish() {
     step "DoubleZero multicast publish (edge-solana-shreds)"
     # No validator restart: the multicast shred-address is already in validator.sh
     # (Phase 6, gated on dz_enabled) and is picked up live.
-    run doublezero connect multicast --publish edge-solana-shreds
+    _dz_connect_with_retry doublezero connect multicast --publish edge-solana-shreds
 }
 
 # --- verification displays (end of dz-connect) -------------------------------
