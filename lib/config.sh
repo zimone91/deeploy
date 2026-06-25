@@ -141,9 +141,12 @@ _config_key_type() {
 _cfg_t_path()      { [[ "$1" =~ ^/[A-Za-z0-9._/-]+$ && "$1" != *..* ]]; }
 _cfg_t_pubkey()    { _keys_valid_pubkey "$1"; }
 _cfg_t_port()      { _valid_port "$1"; }
-_cfg_t_portrange() { [[ "$1" =~ ^([0-9]+)-([0-9]+)$ ]] \
-                     && _valid_port "${BASH_REMATCH[1]}" && _valid_port "${BASH_REMATCH[2]}" \
-                     && (( 10#${BASH_REMATCH[1]} < 10#${BASH_REMATCH[2]} )); }
+_cfg_t_portrange() {
+    [[ "$1" =~ ^([0-9]+)-([0-9]+)$ ]] || return 1
+    # Capture BEFORE calling _valid_port — its own [[ =~ ]] clobbers BASH_REMATCH.
+    local lo="${BASH_REMATCH[1]}" hi="${BASH_REMATCH[2]}"
+    _valid_port "$lo" && _valid_port "$hi" && (( 10#$lo < 10#$hi ))
+}
 _cfg_t_cores()     { [[ "$1" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; }
 _cfg_t_int()       { [[ "$1" =~ ^[0-9]+$ ]]; }
 _cfg_t_bool()      { [[ "$1" =~ ^(true|false)$ ]]; }

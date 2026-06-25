@@ -165,6 +165,23 @@ type_reject "int with exponent"  'COMMISSION_BPS="1e9"'
 type_reject "cores with inject"  'XDP_CORES="1-2;x"'
 type_reject "url with space"     'BAM_URL="http://x y"'
 type_reject "ip non-numeric"     'RPC_BIND_ADDRESS="localhost"'
+type_reject "portrange reversed" 'DYNAMIC_PORT_RANGE="9000-8900"'
+type_reject "portrange bad port" 'DYNAMIC_PORT_RANGE="10-70000"'
+
+echo "== S2: VALID values of every type ACCEPTED (incl. portrange under set -u) =="
+type_accept() {   # <desc> <conf line> <KEY> <expected-global>
+    local desc=$1 line=$2 key=$3 want=$4
+    unset "$key" 2>/dev/null || true
+    printf '%s\n' "$line" > "$WORK/ok.conf"
+    _config_parse_safe "$WORK/ok.conf" >/dev/null 2>&1
+    check "$desc accepted -> sets global" "${!key:-<unset>}" "$want"
+}
+type_accept "portrange"  'DYNAMIC_PORT_RANGE="8900-9000"'   DYNAMIC_PORT_RANGE  "8900-9000"
+type_accept "ip"         'RPC_BIND_ADDRESS="127.0.0.1"'     RPC_BIND_ADDRESS    "127.0.0.1"
+type_accept "cores"      'XDP_CORES="1-2,10,25-26,34"'      XDP_CORES           "1-2,10,25-26,34"
+type_accept "hostport"   'SHRED_RECEIVER_ADDRESS="1.2.3.4:1002"' SHRED_RECEIVER_ADDRESS "1.2.3.4:1002"
+type_accept "url"        'BAM_URL="https://a.b.jito.wtf"'   BAM_URL             "https://a.b.jito.wtf"
+type_accept "bool"       'DZ_ENABLED="true"'                DZ_ENABLED          "true"
 
 echo "== S2: unknown key ignored — sets no global, parse still succeeds =="
 unset EVIL 2>/dev/null || true
