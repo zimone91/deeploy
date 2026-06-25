@@ -234,9 +234,18 @@ import_cmd()      { require_root; debug "import (rescore=${RESCORE:-0})"; config
 # --- config + args -----------------------------------------------------------
 _load_config() {
     local cfg="${CONFIG_FILE:-${DEEPLOY_CONF:-/opt/deeploy/deeploy.conf}}"
-    if [[ -f "$cfg" ]]; then
-        # shellcheck disable=SC1090
-        if source "$cfg"; then debug "loaded config $cfg"; else warn "could not source config $cfg"; fi
+    [[ -f "$cfg" ]] || return 0
+    # Parse, NEVER source (S2): this runs on EVERY command, before dispatch, so a
+    # poisoned conf at any of these paths must not execute as root.
+    if _config_parse_safe "$cfg"; then
+        debug "loaded config $cfg"
+    elif [[ -n "${CONFIG_FILE:-}" || -n "${DEEPLOY_CONF:-}" ]]; then
+        # Operator pointed at this file explicitly (--config / $DEEPLOY_CONF): abort.
+        fail "malformed config $cfg — refusing to continue"
+    else
+        # Only the default path was auto-loaded: warn + apply nothing (don't brick
+        # verify/recovery on a bad on-box default).
+        warn "ignoring malformed config $cfg"
     fi
 }
 

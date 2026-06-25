@@ -9,9 +9,6 @@
 # All values below are PLACEHOLDERS — replace them for your host.
 # ============================================================================
 
-# --- Host ---
-NODE_NAME="my-validator"               # label (e.g. metrics/telegraf hostname)
-
 # --- Network and SSH ---
 SSH_PORT="22"                          # a non-default port reduces noise/scans
 
@@ -47,7 +44,7 @@ VOTE_ACCOUNT_PUBKEY="YourVoteAccountPubkey22222222222222222222222"   # REQUIRED:
 MEV_MODE="bam"                         # bam (recommended)
 BAM_URL="http://frankfurt.mainnet.bam.jito.wtf"               # EXAMPLE region — preflight scores the closest
 BLOCK_ENGINE_URL="https://frankfurt.mainnet.block-engine.jito.wtf"   # EXAMPLE region
-SHRED_RECEIVER_ADDRESS="<shred-ip>:1002"   # for your block-engine region — see docs.jito.wtf/lowlatencytxnsend
+SHRED_RECEIVER_ADDRESS="203.0.113.7:1002"   # EXAMPLE ip:port for your block-engine region — see docs.jito.wtf/lowlatencytxnsend
 COMMISSION_BPS="0"                     # 0 is required by many pools (you are prompted at install)
 
 # --- DoubleZero (optional) ---

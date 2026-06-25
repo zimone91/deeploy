@@ -16,6 +16,12 @@ export CONFIG_FILE="$WORK/deeploy.conf"
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# base.sh / keys.sh provide _valid_port and _keys_valid_pubkey, reused by the
+# config type-validators (production sources all modules; mirror that here).
+# shellcheck source-path=SCRIPTDIR source=../lib/base.sh
+source "$ROOT/lib/base.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/keys.sh
+source "$ROOT/lib/keys.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/config.sh
 source "$ROOT/lib/config.sh"
 
@@ -29,7 +35,7 @@ VOTE="Vote1111111111111111111111111111111111111111"
 
 seed_state() {
     rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
-    state_set node_name MYBOX;            state_set ssh_port 2222
+    state_set ssh_port 2222
     state_set poh_core 10;                state_set xdp_cores_count 2; state_set xdp_cores 1-2
     state_set isolated_set "1-2,10,25-26,34"
     state_set nic_driver mlx5_core;       state_set retransmit_supported 1; state_set retransmit_zero_copy 1
@@ -109,6 +115,101 @@ rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
 state_set deeploy_version 0.9.9
 CONFIG_FILE="$WORK/ver.conf" config_export >/dev/null 2>&1
 check "export header shows recorded version 0.9.9" "$(grep -c '# Created with DeePloy v0.9.9' "$WORK/ver.conf")" "1"
+
+echo "== S2: typed parser executes NOTHING (parse, never source/eval) =="
+# Each payload is written LITERALLY: printf's format is a single-quoted string,
+# so $(...), backticks and ; are data, and only %s (=$WORK) expands. Re-using the
+# expanded value as a printf format is safe — the metacharacters are not format
+# directives, so they reach the parser verbatim.
+parse_noexec() {   # <desc> <printf-fmt with one %s for $WORK>
+    local desc=$1 fmt=$2 rc
+    rm -f "$WORK/pwned"
+    # shellcheck disable=SC2059
+    printf "$fmt"'\n' "$WORK" > "$WORK/evil.conf"
+    ( _config_parse_safe "$WORK/evil.conf" ) >/dev/null 2>&1; rc=$?
+    check "$desc: rejected (rc 1)"                 "$rc" "1"
+    check_true "$desc: NO side effect (no sentinel)" "[[ ! -e \"$WORK/pwned\" ]]"
+}
+parse_noexec "semicolon+touch" 'SSH_PORT="22; touch %s/pwned"'
+# SC2016: the $(...) / backticks are LITERAL injection payloads, kept unexpanded on purpose.
+# shellcheck disable=SC2016
+parse_noexec "command-subst"   'BAM_URL="http://x$(touch %s/pwned)"'
+# shellcheck disable=SC2016
+parse_noexec "backticks"       'LEDGER_PATH="/x`touch %s/pwned`"'
+parse_noexec "rm-injection"    'STAKED_KEYPAIR="/a;rm -rf %s/pwned"'
+# A value with an embedded newline + a second KEY= line must not execute either.
+rm -f "$WORK/pwned"
+printf 'SSH_PORT="22\nLEDGER_PATH=/x; touch %s/pwned"\n' "$WORK" > "$WORK/evil.conf"
+( _config_parse_safe "$WORK/evil.conf" ) >/dev/null 2>&1
+check_true "newline-injection: NO side effect" "[[ ! -e \"$WORK/pwned\" ]]"
+
+echo "== S2: config_import on a poisoned conf aborts and runs nothing =="
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; seed_state
+config_export >/dev/null 2>&1                       # a VALID base conf
+rm -f "$WORK/pwned"
+printf 'SSH_PORT="22; touch %s/pwned"\n' "$WORK" >> "$CONFIG_FILE"   # append a poisoned override
+( RESCORE=0 config_import ) >/dev/null 2>&1; rc=$?
+check_true "import aborts (non-zero)"        "[[ \"$rc\" != \"0\" ]]"
+check_true "import ran NO injected code"     "[[ ! -e \"$WORK/pwned\" ]]"
+
+echo "== S2: type validation rejects malformed values =="
+type_reject() {   # <desc> <conf line, no %>
+    local desc=$1 line=$2 rc
+    printf '%s\n' "$line" > "$WORK/t.conf"
+    ( _config_parse_safe "$WORK/t.conf" ) >/dev/null 2>&1; rc=$?
+    check "$desc -> rejected" "$rc" "1"
+}
+type_reject "port out of range"  'SSH_PORT="70000"'
+type_reject "bad pubkey charset" 'VOTE_ACCOUNT_PUBKEY="bad!key"'
+type_reject "int with exponent"  'COMMISSION_BPS="1e9"'
+type_reject "cores with inject"  'XDP_CORES="1-2;x"'
+type_reject "url with space"     'BAM_URL="http://x y"'
+type_reject "ip non-numeric"     'RPC_BIND_ADDRESS="localhost"'
+
+echo "== S2: unknown key ignored — sets no global, parse still succeeds =="
+unset EVIL 2>/dev/null || true
+printf 'EVIL="x"\n' > "$WORK/u.conf"
+_config_parse_safe "$WORK/u.conf" >/dev/null 2>&1; rc=$?
+check "unknown key -> rc 0 (ignored)"          "$rc" "0"
+check_true "unknown key creates NO global"     "[[ -z \"\${EVIL+set}\" ]]"
+
+echo "== P2: empty value SKIPPED (preserves default), export omits empties =="
+DZ_ENV="mainnet-beta"                                   # a default already in the global
+printf 'DZ_ENV=""\n' > "$WORK/e.conf"
+_config_parse_safe "$WORK/e.conf" >/dev/null 2>&1
+check "DZ_ENV='' does NOT clobber default"     "$DZ_ENV" "mainnet-beta"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; seed_state
+state_clear dz_env
+CONFIG_FILE="$WORK/p2.conf" config_export >/dev/null 2>&1
+check "empty dz_env -> NO DZ_ENV= line"        "$(grep -c '^DZ_ENV=' "$WORK/p2.conf")" "0"
+check "non-empty key still emitted"            "$(grep -c '^SSH_PORT=' "$WORK/p2.conf")" "1"
+
+echo "== P11: NODE_NAME fully removed (export emits none; not whitelisted) =="
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; seed_state
+CONFIG_FILE="$WORK/p11.conf" config_export >/dev/null 2>&1
+check "export has NO NODE_NAME line"           "$(grep -c 'NODE_NAME' "$WORK/p11.conf")" "0"
+check "NODE_NAME not a whitelisted type"       "$(_config_key_type NODE_NAME)" ""
+
+echo "== Fix1: deeploy.conf.example parses with EVERY key valid =="
+EX="$ROOT/deeploy.conf.example"
+check_true "example file exists"               "[[ -f \"$EX\" ]]"
+_config_parse_safe "$EX" >/dev/null 2>&1; rc=$?
+check "example: all keys validate (rc 0)"      "$rc" "0"
+check "example: SSH_PORT parsed, comment ignored"  "$SSH_PORT" "22"
+check "example: SHRED hostport parsed"             "$SHRED_RECEIVER_ADDRESS" "203.0.113.7:1002"
+check "example: MEV_MODE parsed"                   "$MEV_MODE" "bam"
+check "example: JITO_TAG parsed"                   "$JITO_TAG" "v4.0.0-jito"
+
+echo "== X6: _config_keys <-> _config_key_type are in lockstep =="
+sync_missing=0
+while read -r a b; do
+    [[ -z "$a" || "$a" == "@" ]] && continue
+    [[ -n "$(_config_key_type "$a")" ]] || { echo "  MISSING TYPE: $a"; sync_missing=1; }
+done < <(_config_keys)
+check "every _config_keys key has a type"      "$sync_missing" "0"
+keys_set="$(_config_keys     | awk '$1!="@"{print $1}' | sort)"
+types_set="$(_config_key_types | awk '{print $1}'      | sort)"
+check "typed-key set == _config_keys key set"  "$types_set" "$keys_set"
 
 echo ""
 echo "==================================="
