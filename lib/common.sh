@@ -163,6 +163,36 @@ run() {
     "$@"
 }
 
+# _redact_argv <flag> <args...> — echo the args space-joined, with the single
+# token following <flag> replaced by ***. Used to LOG a command without leaking
+# a secret value (e.g. a signature); never alters what is executed.
+_redact_argv() {
+    local flag=$1; shift
+    local out=()
+    while (( $# )); do
+        out+=("$1")
+        if [[ "$1" == "$flag" ]] && (( $# > 1 )); then
+            out+=("***"); shift 2; continue
+        fi
+        shift
+    done
+    printf '%s' "${out[*]}"
+}
+
+# run_redacted <flag> <cmd...> — like run(), but the DEBUG/dry-run log shows the
+# value following <flag> masked as *** (the real argv is executed UNCHANGED).
+# Use when an argument is secret, e.g. a passport --signature. (X4)
+run_redacted() {
+    local redact=$1; shift
+    if is_dry_run; then
+        info "${C_DIM}[dry-run]${C_NC} $(_redact_argv "$redact" "$@")"
+        _log DRYRUN "$(_redact_argv "$redact" "$@")"
+        return 0
+    fi
+    debug "+ $(_redact_argv "$redact" "$@")"
+    "$@"
+}
+
 # apply_sysctl_file <file> — apply a sysctl drop-in TOLERANTLY (belt + suspenders
 # for set -e). `sysctl -p <file>` returns non-zero the moment it hits a key whose
 # subtree isn't present yet — e.g. fs.xfs.* before the xfs module is loaded, or a

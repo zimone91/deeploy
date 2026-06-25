@@ -193,6 +193,9 @@ check "connect: hard-migrate installed id.json" "$(grep -c "install -m 600 $DZ_K
 check "connect: find-validator polled"       "$(grep -c 'passport find-validator -u mainnet-beta' "$CALLS")" "1"
 check "connect: passport prepare (staked)"   "$(grep -c 'prepare-validator-access .* --primary-validator-id Stakedid' "$CALLS")" "1"
 check "connect: passport request +signature" "$(grep -c 'request-validator-access .* --signature SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567' "$CALLS")" "1"
+# X4: the signature is in the EXECUTED argv (above) but must be MASKED in the log.
+check "X4: passport request LOGGED with --signature *** (masked)" "$(grep -c -- 'request-validator-access.*--signature \*\*\*' "$LOG_FILE")" "1"
+check "X4: real signature NOT written to the log"                 "$(grep -c 'SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567' "$LOG_FILE")" "0"
 check "connect: NO --backup-validator-ids (Path 1)" "$(grep -c 'backup-validator-ids' "$CALLS")" "0"
 check "connect: connect ibrl issued"          "$(grep -c 'doublezero connect ibrl' "$CALLS")" "1"
 check "connect: NO deprecated --client-ip (F6)" "$(grep -c 'connect ibrl --client-ip' "$CALLS")" "0"

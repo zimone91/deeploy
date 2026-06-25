@@ -338,7 +338,9 @@ dz_passport() {
     sig_raw=$("$SOLANA_BIN/solana" sign-offchain-message "service_key=${dz_id}" -k "$STAKED_KEYPAIR" 2>/dev/null || true)
     sig=$(printf '%s\n' "$sig_raw" | awk 'NF{last=$0} END{print last}' | tr -d '[:space:]')
     [[ "$sig" =~ ^[1-9A-HJ-NP-Za-km-z]{40,}$ ]] || fail "Could not parse a base58 signature from sign-offchain-message output"
-    run doublezero-solana passport request-validator-access \
+    # run_redacted: the signature is an offchain-message secret — keep it out of
+    # $LOG_FILE (debug logs argv). Executes the real argv unchanged. (X4)
+    run_redacted --signature doublezero-solana passport request-validator-access \
         --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
         --signature "$sig" -u "$DZ_ENV" -k "$STAKED_KEYPAIR"
     ok "Passport access requested"

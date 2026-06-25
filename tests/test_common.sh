@@ -160,6 +160,17 @@ XF="$WORK/gen/pubscript.sh"; write_file "$XF" "$(printf '#!/bin/bash\n:\n')" 075
 # shellcheck disable=SC2012
 check "0755 script stays -rwxr-xr-x (unchanged path)" "$(ls -l "$XF" | cut -c1-10)" "-rwxr-xr-x"
 
+echo "== X4: run_redacted masks a flag value in logs but executes the real argv =="
+check "redact: masks the token after the flag" "$(_redact_argv --signature cmd a --signature SECRET -k /p)" "cmd a --signature *** -k /p"
+check "redact: flag absent -> unchanged"        "$(_redact_argv --signature cmd a b)" "cmd a b"
+check "redact: trailing flag, no value -> as-is" "$(_redact_argv --signature cmd --signature)" "cmd --signature"
+REC="$WORK/rec"; : >"$REC"
+xrec() { printf '%s\n' "$*" >"$REC"; }   # records the argv it was actually called with
+run_redacted --signature xrec --signature SECRET33 -k /path >/dev/null 2>&1
+check "run_redacted EXECUTES the real argv (secret present)" "$(cat "$REC")" "--signature SECRET33 -k /path"
+check "run_redacted LOGS the masked form"        "$(grep -c -- '+ xrec --signature \*\*\* -k /path' "$LOG_FILE")" "1"
+check "run_redacted does NOT leak the secret to the log" "$(grep -c 'SECRET33' "$LOG_FILE")" "0"
+
 echo "== deeploy_solana_bin: \$HOME-independent (systemd resume has empty HOME) =="
 # Precedence: explicit SOLANA_BIN > state solana_bin > /root default. NEVER the
 # empty-HOME '/.local/...' that broke Phase 8's catchup wait on the real box.
