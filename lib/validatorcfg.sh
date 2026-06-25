@@ -108,33 +108,83 @@ validatorcfg_resolve_config() {
 }
 
 # --- validator.sh ------------------------------------------------------------
+# Fail-closed gate at the code-generation point (X1): every UNTRUSTED value that
+# gets interpolated into validator.sh (a root-executed shell script) must pass
+# its type validator first. Reuses the SAME _cfg_validate_type as the config
+# parser (single source of truth) — so this should never fire if the config
+# layer already validated, which is exactly why it belongs here (defense in
+# depth at the point where data becomes an executable).
+_vcfg_assert_render_safe() {
+    local bad=""
+    _cfg_validate_type path     "$SYNC_IDENTITY"                    || bad+=" SYNC_IDENTITY"
+    _cfg_validate_type pubkey   "$VOTE_ACCOUNT_PUBKEY"              || bad+=" VOTE_ACCOUNT_PUBKEY"
+    _cfg_validate_type port     "$GOSSIP_PORT"                      || bad+=" GOSSIP_PORT"
+    _cfg_validate_type port     "$RPC_PORT"                         || bad+=" RPC_PORT"
+    _cfg_validate_type ip       "$RPC_BIND_ADDRESS"                 || bad+=" RPC_BIND_ADDRESS"
+    _cfg_validate_type int      "$RPC_THREADS"                      || bad+=" RPC_THREADS"
+    _cfg_validate_type portrange "$DYNAMIC_PORT_RANGE"              || bad+=" DYNAMIC_PORT_RANGE"
+    _cfg_validate_type int      "$REPLAY_THREADS"                   || bad+=" REPLAY_THREADS"
+    _cfg_validate_type int      "$POH_CORE"                         || bad+=" POH_CORE"
+    _cfg_validate_type path     "$SOLANA_HOME"                      || bad+=" SOLANA_HOME"
+    _cfg_validate_type path     "$LEDGER_PATH"                      || bad+=" LEDGER_PATH"
+    _cfg_validate_type path     "$ACCOUNTS_PATH"                    || bad+=" ACCOUNTS_PATH"
+    _cfg_validate_type path     "$SNAPSHOTS_PATH"                   || bad+=" SNAPSHOTS_PATH"
+    _cfg_validate_type int      "$LIMIT_LEDGER_SIZE"                || bad+=" LIMIT_LEDGER_SIZE"
+    _cfg_validate_type int      "$MIN_SNAPSHOT_DOWNLOAD_SPEED"      || bad+=" MIN_SNAPSHOT_DOWNLOAD_SPEED"
+    _cfg_validate_type int      "$FULL_SNAPSHOT_INTERVAL_SLOTS"     || bad+=" FULL_SNAPSHOT_INTERVAL_SLOTS"
+    _cfg_validate_type int      "$INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS" || bad+=" INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS"
+    _cfg_validate_type hostport "$SHRED_RECEIVER_ADDRESS"          || bad+=" SHRED_RECEIVER_ADDRESS"
+    _cfg_validate_type int      "$COMMISSION_BPS"                  || bad+=" COMMISSION_BPS"
+    _cfg_validate_type url      "$BLOCK_ENGINE_URL"                || bad+=" BLOCK_ENGINE_URL"
+    if [[ "$MEV_MODE" == "relayer" ]]; then
+        _cfg_validate_type url  "$RELAYER_URL"                     || bad+=" RELAYER_URL"
+    else
+        _cfg_validate_type url  "$BAM_URL"                         || bad+=" BAM_URL"
+    fi
+    # XDP_CORES is interpolated only when the RETRANSMIT block is included.
+    if [[ "$RETRANSMIT_SUPPORTED" == "1" && -n "$XDP_CORES" ]]; then
+        _cfg_validate_type cores "$XDP_CORES"                     || bad+=" XDP_CORES"
+    fi
+    if [[ -n "$bad" ]]; then
+        warn "validator.sh render: refusing to generate — invalid value(s):${bad}"
+        return 1
+    fi
+    return 0
+}
+
 _vcfg_render_validator_sh() {
+    _vcfg_assert_render_safe || return 1            # X1: validate BEFORE building the heredoc
     local e k entry_lines="" known_lines="" jito_lines="" exec_lines="" shred_line retransmit_section="" b
-    for e in "${MAINNET_ENTRYPOINTS[@]}";      do entry_lines+="  --entrypoint ${e}"$'\n'; done
-    for k in "${MAINNET_KNOWN_VALIDATORS[@]}"; do known_lines+="  --known-validator ${k}"$'\n'; done
+    # Every interpolated value is double-quoted in the EMITTED script (X1). Type
+    # validation already guarantees a safe charset, so quoting cannot change
+    # agave's parsing — it only removes the shell-breakout surface. Constants are
+    # quoted too (cheap defense in depth). Fixed literals (program-id, when-newest,
+    # numeric retain counts) are NOT interpolated and stay bare.
+    for e in "${MAINNET_ENTRYPOINTS[@]}";      do entry_lines+="  --entrypoint \"${e}\""$'\n'; done
+    for k in "${MAINNET_KNOWN_VALIDATORS[@]}"; do known_lines+="  --known-validator \"${k}\""$'\n'; done
     known_lines="${known_lines%$'\n'}"   # strip trailing newline HERE (ANSI-C quoting isn't honored inside a heredoc)
 
     if [[ "${DZ_ENABLED_RESOLVED:-false}" == "true" ]]; then
         # DZ enabled -> append the DZ multicast shred address (harmless before the
         # tunnel is up: no route to it until 'connect multicast', so it just drops).
-        shred_line="  --shred-receiver-address ${SHRED_RECEIVER_ADDRESS} ${DZ_MULTICAST_SHRED}"
+        shred_line="  --shred-receiver-address \"${SHRED_RECEIVER_ADDRESS}\" \"${DZ_MULTICAST_SHRED}\""
     else
-        shred_line="  --shred-receiver-address ${SHRED_RECEIVER_ADDRESS}"
+        shred_line="  --shred-receiver-address \"${SHRED_RECEIVER_ADDRESS}\""
     fi
 
     if [[ "$MEV_MODE" == "relayer" ]]; then
-        jito_lines="  --relayer-url ${RELAYER_URL}"$'\n'
+        jito_lines="  --relayer-url \"${RELAYER_URL}\""$'\n'
     else
-        jito_lines="  --bam-url ${BAM_URL}"$'\n'
+        jito_lines="  --bam-url \"${BAM_URL}\""$'\n'
     fi
-    jito_lines+="  --tip-payment-program-pubkey ${JITO_TIP_PAYMENT_PROGRAM}"$'\n'
-    jito_lines+="  --tip-distribution-program-pubkey ${JITO_TIP_DISTRIBUTION_PROGRAM}"$'\n'
-    jito_lines+="  --merkle-root-upload-authority ${JITO_MERKLE_ROOT_AUTHORITY}"$'\n'
-    jito_lines+="  --commission-bps ${COMMISSION_BPS}"$'\n'
-    jito_lines+="  --block-engine-url ${BLOCK_ENGINE_URL}"$'\n'
+    jito_lines+="  --tip-payment-program-pubkey \"${JITO_TIP_PAYMENT_PROGRAM}\""$'\n'
+    jito_lines+="  --tip-distribution-program-pubkey \"${JITO_TIP_DISTRIBUTION_PROGRAM}\""$'\n'
+    jito_lines+="  --merkle-root-upload-authority \"${JITO_MERKLE_ROOT_AUTHORITY}\""$'\n'
+    jito_lines+="  --commission-bps \"${COMMISSION_BPS}\""$'\n'
+    jito_lines+="  --block-engine-url \"${BLOCK_ENGINE_URL}\""$'\n'
     jito_lines+="${shred_line}"$'\n'
     jito_lines+="  --account-index program-id"$'\n'
-    jito_lines+="  --account-index-include-key ${ALT_PROGRAM_KEY}"
+    jito_lines+="  --account-index-include-key \"${ALT_PROGRAM_KEY}\""
 
     # RETRANSMIT only when the driver supports XDP retransmit AND cores were
     # reserved. cpu-cores first, then the zero-copy flag (mlx5 only; bnxt is
@@ -142,7 +192,7 @@ _vcfg_render_validator_sh() {
     local include_retransmit=0
     [[ "$RETRANSMIT_SUPPORTED" == "1" && -n "$XDP_CORES" ]] && include_retransmit=1
     if (( include_retransmit )); then
-        retransmit_section="RETRANSMIT=("$'\n'"  --experimental-retransmit-xdp-cpu-cores ${XDP_CORES}"$'\n'
+        retransmit_section="RETRANSMIT=("$'\n'"  --experimental-retransmit-xdp-cpu-cores \"${XDP_CORES}\""$'\n'
         [[ "$RETRANSMIT_ZERO_COPY" == "1" ]] && retransmit_section+="  --experimental-retransmit-xdp-zero-copy"$'\n'
         retransmit_section+=")"$'\n'
     fi
@@ -158,61 +208,61 @@ _vcfg_render_validator_sh() {
 set -euo pipefail
 # Generated by DeePloy — regenerate via: deeploy install --only validatorcfg
 
-KEYPAIR=${SYNC_IDENTITY}
+KEYPAIR="${SYNC_IDENTITY}"
 [[ -r "\$KEYPAIR" ]] || { echo "FATAL: keypair \$KEYPAIR not readable"; exit 1; }
 
 CONSENSUS=(
-  --identity ${SYNC_IDENTITY}
-  --vote-account ${VOTE_ACCOUNT_PUBKEY}
-  --expected-genesis-hash ${MAINNET_GENESIS_HASH}
+  --identity "${SYNC_IDENTITY}"
+  --vote-account "${VOTE_ACCOUNT_PUBKEY}"
+  --expected-genesis-hash "${MAINNET_GENESIS_HASH}"
   --no-poh-speed-test
 )
 
 GOSSIP=(
-  --gossip-port ${GOSSIP_PORT}
+  --gossip-port "${GOSSIP_PORT}"
 ${entry_lines}  --no-port-check
 )
 
 RPC=(
   --only-known-rpc
-  --rpc-port ${RPC_PORT}
-  --rpc-bind-address ${RPC_BIND_ADDRESS}
-  --rpc-threads ${RPC_THREADS}
-  --dynamic-port-range ${DYNAMIC_PORT_RANGE}
+  --rpc-port "${RPC_PORT}"
+  --rpc-bind-address "${RPC_BIND_ADDRESS}"
+  --rpc-threads "${RPC_THREADS}"
+  --dynamic-port-range "${DYNAMIC_PORT_RANGE}"
   --full-rpc-api
   --private-rpc
 ${known_lines}
 )
 
 REPLAY=(
-  --unified-scheduler-handler-threads ${REPLAY_THREADS}
+  --unified-scheduler-handler-threads "${REPLAY_THREADS}"
 )
 
 POH=(
-  --experimental-poh-pinned-cpu-core ${POH_CORE}
+  --experimental-poh-pinned-cpu-core "${POH_CORE}"
 )
 ${retransmit_section}
 LEDGER=(
-  --ledger ${LEDGER_PATH}
-  --accounts ${ACCOUNTS_PATH}
-  --limit-ledger-size ${LIMIT_LEDGER_SIZE}
+  --ledger "${LEDGER_PATH}"
+  --accounts "${ACCOUNTS_PATH}"
+  --limit-ledger-size "${LIMIT_LEDGER_SIZE}"
   --wal-recovery-mode skip_any_corrupted_record
 )
 
 SNAPSHOTS=(
-  --snapshots ${SNAPSHOTS_PATH}
-  --minimal-snapshot-download-speed ${MIN_SNAPSHOT_DOWNLOAD_SPEED}
+  --snapshots "${SNAPSHOTS_PATH}"
+  --minimal-snapshot-download-speed "${MIN_SNAPSHOT_DOWNLOAD_SPEED}"
   --maximum-full-snapshots-to-retain 1
   --maximum-incremental-snapshots-to-retain 1
-  --full-snapshot-interval-slots ${FULL_SNAPSHOT_INTERVAL_SLOTS}
-  --incremental-snapshot-interval-slots ${INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS}
+  --full-snapshot-interval-slots "${FULL_SNAPSHOT_INTERVAL_SLOTS}"
+  --incremental-snapshot-interval-slots "${INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS}"
   --snapshot-packager-niceness-adjustment 20
   --maximum-local-snapshot-age 4000
   --use-snapshot-archives-at-startup when-newest
 )
 
 LOG=(
-  --log ${SOLANA_HOME}/solana.log
+  --log "${SOLANA_HOME}/solana.log"
 )
 
 REPORTING=(
@@ -387,7 +437,13 @@ EOF
 # --- generate ----------------------------------------------------------------
 validatorcfg_generate() {
     step "Generating validator.sh + solana.service + poh-pin + logrotate"
-    write_file "$VALIDATOR_SH"    "$(_vcfg_render_validator_sh)"        0755
+    # Render validator.sh into a variable first so the X1 fail-closed gate (a
+    # non-zero return from _vcfg_render_validator_sh) ABORTS here — a command
+    # substitution's failure does not propagate to the enclosing write_file, so
+    # without this an unvalidated value would silently produce an empty script.
+    local _vsh
+    _vsh="$(_vcfg_render_validator_sh)" || fail "validator.sh render aborted — an untrusted value failed type validation; refusing to write an executable validator script"
+    write_file "$VALIDATOR_SH"    "$_vsh"                                0755
     write_file "$SOLANA_SERVICE"  "$(_vcfg_render_solana_service)"
     write_file "$SET_POH_SCRIPT"  "$(_vcfg_render_set_poh_affinity)"    0755
     write_file "$WAIT_PIN_SCRIPT" "$(_vcfg_render_wait_and_pin)"        0755

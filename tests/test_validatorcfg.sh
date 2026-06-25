@@ -18,6 +18,14 @@ export NONINTERACTIVE=1 DEEPLOY_COLOR=never
 source "$ROOT/lib/common.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/constants.sh
 source "$ROOT/lib/constants.sh"
+# base.sh / keys.sh / config.sh provide the typed validators reused by the X1
+# render gate (_cfg_validate_type); production sources all modules, mirror that.
+# shellcheck source-path=SCRIPTDIR source=../lib/base.sh
+source "$ROOT/lib/base.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/keys.sh
+source "$ROOT/lib/keys.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/config.sh
+source "$ROOT/lib/config.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/validatorcfg.sh
 source "$ROOT/lib/validatorcfg.sh"
 
@@ -48,32 +56,33 @@ echo "== validator.sh: arg blocks (BAM, no retransmit, no DZ) =="
 state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
 MEV_MODE=bam; state_set dz_enabled false; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "identity = sync identity" "$(grep -c -- '--identity /root/solana/unstaked-identity.json' <<<"$V")" "1"
-check "vote-account"           "$(grep -c -- '--vote-account Vote1111' <<<"$V")" "1"
-check "genesis hash"           "$(grep -c -- "--expected-genesis-hash $MAINNET_GENESIS_HASH" <<<"$V")" "1"
-check "5 entrypoints"          "$(grep -c -- '--entrypoint entrypoint' <<<"$V")" "5"
+check "identity = sync identity" "$(grep -c -- '--identity "/root/solana/unstaked-identity.json"' <<<"$V")" "1"
+check "vote-account"           "$(grep -c -- '--vote-account "Vote1111' <<<"$V")" "1"
+check "genesis hash"           "$(grep -c -- "--expected-genesis-hash \"$MAINNET_GENESIS_HASH\"" <<<"$V")" "1"
+check "5 entrypoints"          "$(grep -c -- '--entrypoint "entrypoint' <<<"$V")" "5"
 check "4 known-validators"     "$(grep -c -- '--known-validator' <<<"$V")" "4"
-check "no blank before ) after known" "$(awk '/--known-validator CakcnaRD/{getline; print}' <<<"$V")" ")"
-check "private-rpc + bind 127" "$(grep -c -- '--rpc-bind-address 127.0.0.1' <<<"$V")" "1"
-check "poh pinned core = 10"   "$(grep -c -- '--experimental-poh-pinned-cpu-core 10' <<<"$V")" "1"
-check "unified-scheduler 14"   "$(grep -c -- '--unified-scheduler-handler-threads 14' <<<"$V")" "1"
-check "ledger path"            "$(grep -c -- '--ledger /root/solana/ledger' <<<"$V")" "1"
-check "accounts on accounts disk" "$(grep -c -- '--accounts /mnt/accounts/solana/accounts' <<<"$V")" "1"
-check "snapshots on ledger disk"  "$(grep -c -- '--snapshots /root/solana/snapshots' <<<"$V")" "1"
+check "no blank before ) after known" "$(awk '/--known-validator "CakcnaRD/{getline; print}' <<<"$V")" ")"
+check "private-rpc + bind 127" "$(grep -c -- '--rpc-bind-address "127.0.0.1"' <<<"$V")" "1"
+check "poh pinned core = 10"   "$(grep -c -- '--experimental-poh-pinned-cpu-core "10"' <<<"$V")" "1"
+check "unified-scheduler 14"   "$(grep -c -- '--unified-scheduler-handler-threads "14"' <<<"$V")" "1"
+check "ledger path"            "$(grep -c -- '--ledger "/root/solana/ledger"' <<<"$V")" "1"
+check "accounts on accounts disk" "$(grep -c -- '--accounts "/mnt/accounts/solana/accounts"' <<<"$V")" "1"
+check "snapshots on ledger disk"  "$(grep -c -- '--snapshots "/root/solana/snapshots"' <<<"$V")" "1"
 check "account-index program-id"  "$(grep -c -- '--account-index program-id' <<<"$V")" "1"
-check "account-index ALT key"     "$(grep -c -- "--account-index-include-key $ALT_PROGRAM_KEY" <<<"$V")" "1"
-check "tip-payment program"    "$(grep -c -- "--tip-payment-program-pubkey $JITO_TIP_PAYMENT_PROGRAM" <<<"$V")" "1"
-check "merkle authority"       "$(grep -c -- "--merkle-root-upload-authority $JITO_MERKLE_ROOT_AUTHORITY" <<<"$V")" "1"
-check "bam-url present"        "$(grep -c -- '--bam-url http://amsterdam.mainnet.bam.jito.wtf' <<<"$V")" "1"
-check "commission-bps 0 (bam)" "$(grep -c -- '--commission-bps 0' <<<"$V")" "1"
+check "account-index ALT key"     "$(grep -c -- "--account-index-include-key \"$ALT_PROGRAM_KEY\"" <<<"$V")" "1"
+check "tip-payment program"    "$(grep -c -- "--tip-payment-program-pubkey \"$JITO_TIP_PAYMENT_PROGRAM\"" <<<"$V")" "1"
+check "merkle authority"       "$(grep -c -- "--merkle-root-upload-authority \"$JITO_MERKLE_ROOT_AUTHORITY\"" <<<"$V")" "1"
+check "bam-url present"        "$(grep -c -- '--bam-url "http://amsterdam.mainnet.bam.jito.wtf"' <<<"$V")" "1"
+check "commission-bps 0 (bam)" "$(grep -c -- '--commission-bps "0"' <<<"$V")" "1"
 check "RETRANSMIT omitted"     "$(grep -c 'RETRANSMIT' <<<"$V")" "0"
-check "shred single address"   "$(grep -c -- '--shred-receiver-address 74.118.140.240:1002$' <<<"$V")" "1"
+check "shred single address"   "$(grep -c -- '--shred-receiver-address "74.118.140.240:1002"$' <<<"$V")" "1"
+check "every interpolated value is double-quoted (no bare --ledger)" "$(grep -c -- '--ledger /' <<<"$V")" "0"
 
 echo "== RETRANSMIT: mlx5 = cpu-cores + zero-copy, in order =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores 1-2
 validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "cpu-cores 1-2 present"        "$(grep -c -- '--experimental-retransmit-xdp-cpu-cores 1-2' <<<"$V")" "1"
+check "cpu-cores 1-2 present"        "$(grep -c -- '--experimental-retransmit-xdp-cpu-cores "1-2"' <<<"$V")" "1"
 check "zero-copy present (mlx5)"     "$(grep -c -- '--experimental-retransmit-xdp-zero-copy' <<<"$V")" "1"
 check "cpu-cores BEFORE zero-copy"   "$(awk '/xdp-cpu-cores/{c=NR} /xdp-zero-copy/{z=NR} END{print (c<z)?"yes":"no"}' <<<"$V")" "yes"
 check "RETRANSMIT in exec list"      "$(grep -c 'RETRANSMIT\[@\]' <<<"$V")" "1"
@@ -82,7 +91,7 @@ echo "== RETRANSMIT: bnxt = cpu-cores, NO zero-copy =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 0; state_set xdp_cores 1-2
 validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "bnxt cpu-cores present"  "$(grep -c -- '--experimental-retransmit-xdp-cpu-cores 1-2' <<<"$V")" "1"
+check "bnxt cpu-cores present"  "$(grep -c -- '--experimental-retransmit-xdp-cpu-cores "1-2"' <<<"$V")" "1"
 check "bnxt zero-copy ABSENT"   "$(grep -c -- '--experimental-retransmit-xdp-zero-copy' <<<"$V")" "0"
 
 echo "== RETRANSMIT omitted on unsupported driver =="
@@ -97,11 +106,11 @@ state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xd
 # to state_get dz_enabled. dz_enabled=true -> both shred addresses.
 state_set dz_enabled true; unset DZ_ENABLED DZ_MULTICAST; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "dz_enabled=true: BOTH shred addrs (jito + DZ multicast)" "$(grep -c -- "--shred-receiver-address 74.118.140.240:1002 $DZ_MULTICAST_SHRED" <<<"$V")" "1"
+check "dz_enabled=true: BOTH shred addrs (jito + DZ multicast)" "$(grep -c -- "--shred-receiver-address \"74.118.140.240:1002\" \"$DZ_MULTICAST_SHRED\"" <<<"$V")" "1"
 # dz_enabled=false -> ONLY the Jito primary, no DZ multicast address.
 state_set dz_enabled false; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "dz_enabled=false: only Jito primary"  "$(grep -c -- "--shred-receiver-address 74.118.140.240:1002\$" <<<"$V")" "1"
+check "dz_enabled=false: only Jito primary"  "$(grep -c -- "--shred-receiver-address \"74.118.140.240:1002\"\$" <<<"$V")" "1"
 check "dz_enabled=false: NO DZ multicast addr" "$(grep -c -- "$DZ_MULTICAST_SHRED" <<<"$V")" "0"
 
 echo "== validator.sh: relayer mode flips url + commission =="
@@ -109,7 +118,7 @@ MEV_MODE=relayer; state_set dz_enabled false; unset COMMISSION_BPS; validatorcfg
 V=$(_vcfg_render_validator_sh)
 check "relayer-url present"     "$(grep -c -- '--relayer-url ' <<<"$V")" "1"
 check "bam-url absent"          "$(grep -c -- '--bam-url' <<<"$V")" "0"
-check "commission-bps 1000"     "$(grep -c -- '--commission-bps 1000' <<<"$V")" "1"
+check "commission-bps 1000"     "$(grep -c -- '--commission-bps "1000"' <<<"$V")" "1"
 # commission is prompted with a mode default but an explicit value is kept (not forced)
 COMMISSION_BPS=700; MEV_MODE=bam; validatorcfg_resolve_config
 check "explicit commission 700 kept" "$COMMISSION_BPS" "700"
@@ -164,11 +173,41 @@ check "I3: After=solana.service kept (ordering)" "$(grep -c '^After=solana.servi
 echo "== validator.sh paths read from STATE (not hardcoded /mnt) =="
 state_set ledger_path /custom/led; state_set accounts_path /custom/acc; state_set snapshots_path /custom/snap
 validatorcfg_resolve_config; V=$(_vcfg_render_validator_sh)
-check "ledger from state"    "$(grep -c -- '--ledger /custom/led' <<<"$V")" "1"
-check "accounts from state"  "$(grep -c -- '--accounts /custom/acc' <<<"$V")" "1"
-check "snapshots from state" "$(grep -c -- '--snapshots /custom/snap' <<<"$V")" "1"
+check "ledger from state"    "$(grep -c -- '--ledger "/custom/led"' <<<"$V")" "1"
+check "accounts from state"  "$(grep -c -- '--accounts "/custom/acc"' <<<"$V")" "1"
+check "snapshots from state" "$(grep -c -- '--snapshots "/custom/snap"' <<<"$V")" "1"
 state_set ledger_path /root/solana/ledger; state_set accounts_path /mnt/accounts/solana/accounts; state_set snapshots_path /root/solana/snapshots
 validatorcfg_resolve_config
+
+echo "== X1: a hostile value seeded DIRECTLY to state -> render is fail-closed =="
+# Bypass the config parser (write straight to state) with a value crafted to break
+# out of the validator.sh heredoc. The render-gate (_cfg_validate_type path) must
+# refuse, render must produce nothing, and nothing must execute.
+seed; state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
+MEV_MODE=bam; state_set dz_enabled false
+state_set ledger_path '/x")</dev/null;touch '"$WORK"'/pwned #'
+validatorcfg_resolve_config
+rm -f "$WORK/pwned"
+V=$(_vcfg_render_validator_sh); rc=$?
+check_true "X1: render ABORTS on hostile LEDGER_PATH (rc != 0)" "[[ \"$rc\" != \"0\" ]]"
+check_true "X1: render produced NO script"                     "[[ -z \"$V\" ]]"
+check_true "X1: nothing executed (no sentinel)"                "[[ ! -e \"$WORK/pwned\" ]]"
+# pubkey gate too: a hostile vote pubkey is rejected at the render point.
+state_set ledger_path /root/solana/ledger
+# SC2016: the $(...) is a LITERAL hostile payload, kept unexpanded on purpose.
+# shellcheck disable=SC2016
+state_set vote_account_pubkey 'Vote111 $(touch '"$WORK"'/pwned)'
+validatorcfg_resolve_config
+rm -f "$WORK/pwned"
+V=$(_vcfg_render_validator_sh); rc=$?
+check_true "X1: render ABORTS on hostile VOTE pubkey (rc != 0)" "[[ \"$rc\" != \"0\" ]]"
+check_true "X1: hostile vote — no sentinel"                     "[[ ! -e \"$WORK/pwned\" ]]"
+# Restore a clean baseline; the gate now passes and quoting is present.
+seed; state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
+MEV_MODE=bam; state_set dz_enabled false; validatorcfg_resolve_config
+V=$(_vcfg_render_validator_sh); rc=$?
+check "X1: valid state renders OK again (rc 0)"                "$rc" "0"
+check "X1: ledger is quoted in the good render"               "$(grep -c -- '--ledger "/root/solana/ledger"' <<<"$V")" "1"
 
 echo "== poh scripts + timer + logrotate =="
 P=$(_vcfg_render_set_poh_affinity)
@@ -203,6 +242,18 @@ check_true "validator.sh written + valid bash" "[[ -f \"$WORK/validator.sh\" ]] 
 check_true "set_poh written + valid bash"      "bash -n \"$WORK/set_poh.sh\""
 check_true "wait_pin written + valid bash"     "bash -n \"$WORK/wait_pin.sh\""
 check_true "validator.sh is executable"        "[[ -x \"$WORK/validator.sh\" ]]"
+# X1 (production path): generate must ABORT — and write no executable — when an
+# untrusted value fails the render gate (a command-substitution failure does not
+# propagate, so validatorcfg_generate captures-then-fails explicitly).
+rm -f "$WORK/nope.sh" "$WORK/pwned"
+( VALIDATOR_SH="$WORK/nope.sh"
+  state_set ledger_path '/x")</dev/null;touch '"$WORK"'/pwned #'
+  validatorcfg_resolve_config
+  validatorcfg_generate ) >/dev/null 2>&1; rc=$?
+check_true "X1: validatorcfg_generate ABORTS on hostile state" "[[ \"$rc\" != \"0\" ]]"
+check_true "X1: generate wrote NO validator.sh"                "[[ ! -e \"$WORK/nope.sh\" ]]"
+check_true "X1: generate executed nothing"                     "[[ ! -e \"$WORK/pwned\" ]]"
+seed; validatorcfg_resolve_config   # restore clean state
 
 echo ""
 echo "==================================="
