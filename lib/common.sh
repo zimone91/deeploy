@@ -414,17 +414,41 @@ ensure_kv() {
     ensure_line "$file" "${key}${sep}${val}" "^[[:space:]]*${key}[[:space:]]*${sep}"
 }
 
+# _mode_is_restrictive <octal-mode>
+#   True ONLY for modes with no group/other READ bit (0600/0700/0400/0500/...).
+#   0644 configs and 0755 scripts are NOT restrictive and keep the normal path,
+#   so this narrows the umask hardening below to genuinely sensitive files.
+_mode_is_restrictive() {
+    local m=$1
+    [[ "$m" =~ ^[0-7]{3,4}$ ]] || return 1
+    (( (8#$m & 8#044) == 0 ))
+}
+
 # write_file <path> <content> [mode]
 #   Dry-run-aware whole-file writer for generated artifacts (validator.sh, unit
 #   files, sysctl drop-ins). Backs up any existing file, writes only on content
 #   change, then applies mode. Modules use this instead of a raw `> file` so no
 #   side effect can bypass backup/dry-run. Content should include its own
 #   trailing newline.
+#
+#   S3: for a RESTRICTIVE mode (e.g. the 0600 conf), a sensitive file must never
+#   be group/world-readable for even an instant. _commit replaces content in
+#   place (cat > file), which preserves a pre-existing dest's looser perms and,
+#   for a fresh file, is born world-readable under the default umask — both leave
+#   a TOCTOU window before the trailing chmod. So: chmod the existing dest down
+#   FIRST, and run the create+commit under ( umask 077 ) so a fresh file is born
+#   0600. The subshell scopes the umask (auto-restored); _commit's side effects
+#   (backup copy, content write, logging) are all external, so nothing is lost.
 write_file() {
     local path=$1 content=$2 mode=${3:-} tmp
     _ensure_parent "$path"
     tmp=$(_mktemp); printf '%s' "$content" >"$tmp"
-    _commit "$path" "$tmp" "write_file"
+    if [[ -n "$mode" ]] && _mode_is_restrictive "$mode"; then
+        if [[ -e "$path" ]] && ! is_dry_run; then chmod "$mode" "$path"; fi   # close the window on a looser existing dest
+        ( umask 077; _commit "$path" "$tmp" "write_file" )                    # a fresh file is born 0600
+    else
+        _commit "$path" "$tmp" "write_file"
+    fi
     [[ -n "$mode" ]] || return 0
     if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would chmod $mode $path"
     else chmod "$mode" "$path"; fi

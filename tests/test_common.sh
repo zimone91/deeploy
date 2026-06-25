@@ -129,6 +129,37 @@ write_file "$WF" "$(printf '#!/bin/bash\necho bye\n')"$'\n' 0700  # overwrite
 check "write_file overwrote"           "$(grep -c bye "$WF")" "1"
 check_true "write_file backed up prior" "[[ -f \"$DEEPLOY_BACKUP_DIR/$RUN_TS$WF\" ]]"
 
+echo "== S3: write_file umask-protects RESTRICTIVE modes (perms from birth) =="
+# _mode_is_restrictive truth table: true ONLY when no group/other READ bit.
+check_true "0600 restrictive"  "_mode_is_restrictive 0600"
+check_true "0700 restrictive"  "_mode_is_restrictive 0700"
+check_true "0400 restrictive"  "_mode_is_restrictive 0400"
+check_true "0644 NOT restrictive" "! _mode_is_restrictive 0644"
+check_true "0755 NOT restrictive" "! _mode_is_restrictive 0755"
+check_true "0640 NOT restrictive (group reads)" "! _mode_is_restrictive 0640"
+check_true "garbage mode NOT restrictive"       "! _mode_is_restrictive nope"
+# fresh write of a 0600 file -> born -rw------- (umask 077 path)
+SF="$WORK/gen/secret.conf"
+write_file "$SF" "$(printf 'TOPSECRET=1\n')" 0600
+# shellcheck disable=SC2012  # symbolic perms via ls is portable (macOS + Linux)
+check "fresh 0600 file is -rw-------"        "$(ls -l "$SF" | cut -c1-10)" "-rw-------"
+check "fresh 0600 content correct"           "$(grep -c TOPSECRET "$SF")" "1"
+# overwrite a PRE-EXISTING world-readable 0644 file with a 0600 write -> tightened
+LF="$WORK/gen/loose.conf"; printf 'OLD=1\n' >"$LF"; chmod 0644 "$LF"
+# shellcheck disable=SC2012
+check "precondition: loose file is 0644"     "$(ls -l "$LF" | cut -c1-10)" "-rw-r--r--"
+write_file "$LF" "$(printf 'NEW=1\n')" 0600
+# shellcheck disable=SC2012
+check "overwrite tightens to -rw-------"      "$(ls -l "$LF" | cut -c1-10)" "-rw-------"
+check "overwrite updated content"            "$(grep -c NEW "$LF")" "1"
+# narrow blast radius: 0644/0755 writes keep the normal (world-readable) path
+NF="$WORK/gen/public.txt"; write_file "$NF" "$(printf 'pub\n')" 0644
+# shellcheck disable=SC2012
+check "0644 write stays -rw-r--r-- (unchanged path)"  "$(ls -l "$NF" | cut -c1-10)" "-rw-r--r--"
+XF="$WORK/gen/pubscript.sh"; write_file "$XF" "$(printf '#!/bin/bash\n:\n')" 0755
+# shellcheck disable=SC2012
+check "0755 script stays -rwxr-xr-x (unchanged path)" "$(ls -l "$XF" | cut -c1-10)" "-rwxr-xr-x"
+
 echo "== deeploy_solana_bin: \$HOME-independent (systemd resume has empty HOME) =="
 # Precedence: explicit SOLANA_BIN > state solana_bin > /root default. NEVER the
 # empty-HOME '/.local/...' that broke Phase 8's catchup wait on the real box.
