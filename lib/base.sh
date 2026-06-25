@@ -49,10 +49,13 @@ _sshd_configured_port() {
 }
 
 # Success (0) if something is listening on tcp <port>. If ss is unavailable we
-# cannot verify — return success so we never roll back a change blindly.
+# CANNOT verify — fail closed (return 1 = "not listening") so the caller rolls
+# the SSH change back rather than trusting an unverifiable success and risking a
+# remote lockout. ss ships in Ubuntu's base iproute2, so the proven path is
+# unchanged; this only hardens the ss-absent edge. (X5)
 _ssh_listening_on() {
     local port=$1
-    have ss || return 0
+    have ss || { warn "cannot verify SSH listener — 'ss' (iproute2) not found; treating as NOT listening (fail-closed)"; return 1; }
     ss -tlnH 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {found=1} END{exit !found}'
 }
 

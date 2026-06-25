@@ -173,6 +173,24 @@ check "rollback exits non-zero"               "$RC" "1"
 check "config restored (no active Port 2222)" "$(_sshd_configured_port "$F")" ""
 check "original #Port 22 restored"            "$(grep -c '#Port 22' "$F")" "1"
 
+echo "== X5: ss unavailable -> fail-closed (no false 'listening', rollback) =="
+# Simulate ss absent by overriding `have` for ss only (real for everything else).
+( have() { [[ "$1" == ss ]] && return 1; command -v "$1" >/dev/null 2>&1; }
+  _ssh_listening_on 2222 ) >/dev/null 2>&1
+check "ss absent -> _ssh_listening_on returns 1 (fail-closed)" "$?" "1"
+# The base_ssh_port verify path must then ROLL BACK — even though SS_PORT_LISTENING
+# says 2222 is up, an unverifiable check must not report success.
+F=$(fresh_sshd_full); : >"$CALLS"
+( have() { [[ "$1" == ss ]] && return 1; command -v "$1" >/dev/null 2>&1; }
+  SS_PORT_LISTENING=2222 SOCKET_RC=1 ASSUME_YES=1 SSH_PORT=2222 SSHD_CONFIG="$F" base_ssh_port ) >/dev/null 2>&1
+RC=$?
+check "ss absent -> base_ssh_port rolls back (non-zero)"    "$RC" "1"
+check "ss absent -> config restored (no active Port 2222)"  "$(_sshd_configured_port "$F")" ""
+# ss PRESENT + listening -> proven S1 path unchanged: returns 0.
+SS_PORT_LISTENING=2222
+( _ssh_listening_on 2222 ) >/dev/null 2>&1
+check "ss present + listening -> rc 0 (proven path unchanged)" "$?" "0"
+
 echo "== S1: declined port change must NOT lock out (firewall opens the LIVE port) =="
 # Operator is prompted to move 22->9999 but declines: sshd stays on 22, so the
 # firewall must open 22 (the live port), never the unapplied 9999, and state must
