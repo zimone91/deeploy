@@ -45,6 +45,12 @@ mark_07_done() { local i; for i in 0 1 2 3 4 5 6 7; do mark_phase_done "$i"; don
 echo "== version: --version flag output =="
 check "print_version prints 'DeePloy <ver>'" "$(print_version)" "DeePloy $DEEPLOY_VERSION"
 
+echo "== flags: --net-test wires NET_TEST=1; absence leaves it; unknown arg fails =="
+check "--net-test sets NET_TEST=1"          "$( NET_TEST=0; parse_args install --net-test; echo "$NET_TEST" )" "1"
+check "no --net-test leaves NET_TEST as-is" "$( NET_TEST=0; parse_args install;            echo "$NET_TEST" )" "0"
+( parse_args install --bogus-flag ) >/dev/null 2>&1
+check "unknown flag still fails (fail-closed parse)" "$?" "1"
+
 echo "== full run (no reboot needed): all phases, then re-run skips done =="
 reset_state; ONLY_PHASE=""; FORCE=0; POST_REBOOT=0; DZ_ENABLED=false
 : >"$RAN"; install_run >/dev/null 2>&1

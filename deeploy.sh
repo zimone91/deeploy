@@ -272,6 +272,7 @@ Flags:
   --config <path>      Load a deeploy.conf as defaults
   --rescore            (import) re-ping BAM/block-engine instead of reproducing the stored region
   --rollback           (upgrade) switch back to the previous release
+  --net-test           (preflight) run the opt-in uplink bandwidth probe to a public CDN
   --post-reboot        Internal: unattended resume after the reboot
   --version, -V        Print version and exit
 USAGE
@@ -289,6 +290,7 @@ parse_args() {
             --force)       FORCE=1 ;;
             --rescore)     RESCORE=1 ;;
             --rollback)    ROLLBACK=1 ;;
+            --net-test)    NET_TEST=1 ;;   # opt-in preflight uplink bandwidth probe (read by preflight.sh)
             --only)        ONLY_PHASE="$2"; shift ;;
             --config)      CONFIG_FILE="$2"; shift ;;
             --version|-V)  print_version; exit 0 ;;
@@ -304,6 +306,7 @@ main() {
     parse_args "$@"
     case "$SUBCMD" in --version|-V|version) print_version; exit 0 ;; esac
     common_init
+    debug "flags: dry_run=${DRY_RUN:-0} net_test=${NET_TEST:-0} force=${FORCE:-0} post_reboot=${POST_REBOOT:-0}"
     deeploy_init_traps
     _load_config
     case "$SUBCMD" in
