@@ -12,13 +12,21 @@ touched, and a `--dry-run` that prints the whole plan and changes nothing.
 
 ## ⚠️ Read this first — the staked-key model
 
-DeePloy **never touches your real staked validator key.** Understand the flow
-before you run it; this is what separates "fine on testnet" from "I know what I'm
-doing on mainnet":
+DeePloy never **generates, copies, moves, or transmits** your real staked
+validator key, and never places it on the box for you. The node syncs on a
+throwaway identity and you swap the staked key in manually (step 2). The tool
+does **read** the keypair file in two narrow, local, read-only ways — to derive
+its **public** key (the identity≠vote check and the upgrade staked-restart guard)
+and to produce a single DoubleZero passport signature during `dz-connect` — but
+the private key is never written, copied, or sent off the box. Understand the
+flow before you run it; this is what separates "fine on testnet" from "I know
+what I'm doing on mainnet":
 
 1. DeePloy brings the node up on a **throwaway "fake" identity** and lets it sync.
 2. The **real staked key is moved in manually by you**, at the end, with the
-   printed `set-identity` commands. DeePloy will not generate, copy, or read it.
+   printed `set-identity` commands. DeePloy will not generate, copy, move, or
+   transmit it (it reads the file only to derive the public key, and in
+   `dz-connect` to sign one passport message).
 3. The **tower is *not* transferred.** A fresh node started on an identity with no
    local tower **rebuilds its vote floor from the cluster** — the safe path for a
    first bring-up. (Moving a tower is only for a live-to-live failover swap, which
@@ -76,7 +84,7 @@ for `catchup 0` and prints the manual staked-key swap instructions.
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
 | 5 | Keys | generate the unstaked sync identity; print where the real key goes |
 | 6 | Validator config | generate `validator.sh`, `solana.service`, logrotate, PoH-pin, NIC setup |
-| 7 | DoubleZero | (optional, prompted) PREPARE only: install/env/ufw(GRE,BGP,44880)/ID-migration/disconnect — connect is a separate post-swap step (`dz-connect`) |
+| 7 | DoubleZero | (optional, prompted) PREPARE only: packages, env→mainnet-beta, ufw (GRE, BGP, 44880) + old-server-disconnect reminder + pointer — ID-migration, passport, and connect are the separate post-swap `dz-connect` step |
 | 8 | Start | free-disk precheck → start → `catchup 0` → pin PoH → verify → summary |
 
 ## Commands

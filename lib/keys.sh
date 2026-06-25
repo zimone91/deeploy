@@ -102,7 +102,7 @@ keys_validate() {
 # --- manual real-key instructions --------------------------------------------
 keys_print_manual() {
     step "MANUAL: the real staked key (DeePloy will not touch it)"
-    warn "DeePloy never generates, copies, or reads your real staked validator key."
+    warn "DeePloy never generates, copies, or transmits your real staked validator key (read-only: to derive its pubkey, and to sign one DoubleZero passport message)."
     info "The node syncs on the unstaked sync identity. After 'catchup 0', you hot-swap manually."
     info ""
     info "1) Place your real staked keypair at:"

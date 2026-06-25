@@ -270,6 +270,8 @@ Flags:
   --force              Re-run even completed phases
   --yes                Auto-confirm normal prompts (never disk wipes)
   --config <path>      Load a deeploy.conf as defaults
+  --rescore            (import) re-ping BAM/block-engine instead of reproducing the stored region
+  --rollback           (upgrade) switch back to the previous release
   --post-reboot        Internal: unattended resume after the reboot
   --version, -V        Print version and exit
 USAGE

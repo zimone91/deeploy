@@ -299,16 +299,13 @@ dz_confirm_old_server_disconnected() {
     if ! is_interactive; then
         fail "Cannot confirm the OLD server is disconnected in a non-interactive run. On the OLD server run 'doublezero disconnect' (then stop/disable doublezerod), then re-run '${DEEPLOY_CMD} dz-connect'."
     fi
-    # Robust interactive read: trim whitespace, take the LAST token (so backspace
-    # artifacts / a stray char-then-correction don't poison the answer), match
-    # strictly y/n. RE-PROMPT on anything else — a typo must not abort dz-connect.
-    # Still ignores --yes (this is a safety gate, like require_yes). An explicit
-    # 'n'/'no' fails (operator says the old server is NOT yet disconnected).
-    # Match the WHOLE trimmed reply strictly (NOT the last token of a phrase — a
-    # safety gate must never auto-proceed on an ambiguous multi-word answer like
-    # "maybe y"). Trim surrounding whitespace, then: y/yes -> proceed; n/no ->
-    # fail; empty -> fail (closed); anything else (typo, phrase) -> RE-PROMPT so a
-    # mistype doesn't abort dz-connect. Terminates on EOF (read fails -> "" -> fail).
+    # Robust interactive read: trim surrounding whitespace, then match the WHOLE
+    # trimmed reply strictly (NOT the last token of a phrase — a safety gate must
+    # never auto-proceed on an ambiguous multi-word answer like "maybe y").
+    # y/yes -> proceed; n/no -> fail; empty -> fail (closed); anything else (typo,
+    # phrase) -> RE-PROMPT so a mistype doesn't abort dz-connect. Still ignores
+    # --yes (this is a safety gate, like require_yes). Terminates on EOF (read
+    # fails -> "" -> fail).
     local reply ans
     while true; do
         printf '%s  Has the OLD server been disconnected (doublezerod stopped)?%s [y/N]: ' "$C_BOLD" "$C_NC"

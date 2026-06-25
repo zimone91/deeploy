@@ -560,7 +560,7 @@ _deeploy_on_exit() {
             printf '  Backups:  %s\n' "$BACKUP_DIR"
             printf '            (system files were copied here before edits — restore from this dir)\n'
         fi
-        printf '  Resume:   deeploy.sh install --resume\n'
+        printf '  Resume:   %s install --resume\n' "${DEEPLOY_CMD:-$DEEPLOY_SELF}"
     } >&2
     return 0
 }
