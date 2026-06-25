@@ -24,7 +24,6 @@
 [[ -n "${_DEEPLOY_KEYS_SOURCED:-}" ]] && return 0
 _DEEPLOY_KEYS_SOURCED=1
 
-SOLANA_BIN="${SOLANA_BIN:-$HOME/.local/share/solana/install/active_release/bin}"
 KEYS_RPC_URL="${KEYS_RPC_URL:-https://api.mainnet-beta.solana.com}"
 
 # --- thin wrappers (overridden in tests) -------------------------------------

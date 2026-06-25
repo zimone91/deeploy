@@ -19,7 +19,6 @@
 [[ -n "${_DEEPLOY_UPGRADE_SOURCED:-}" ]] && return 0
 _DEEPLOY_UPGRADE_SOURCED=1
 
-SOLANA_BIN="${SOLANA_BIN:-${ACTIVE_RELEASE:-$HOME/.local/share/solana/install/active_release}/bin}"
 STAKED_RESTART=0
 
 # --- release APIs (mockable) -------------------------------------------------

@@ -13,8 +13,6 @@
 [[ -n "${_DEEPLOY_VERIFY_SOURCED:-}" ]] && return 0
 _DEEPLOY_VERIFY_SOURCED=1
 
-SOLANA_BIN="${SOLANA_BIN:-$HOME/.local/share/solana/install/active_release/bin}"
-
 _VF_WARN=0; _VF_FAIL=0
 vf_ok()   { ok "$@"; }
 vf_warn() { _VF_WARN=$((_VF_WARN + 1)); warn "$@"; }

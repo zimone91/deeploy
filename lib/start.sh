@@ -13,7 +13,6 @@
 [[ -n "${_DEEPLOY_START_SOURCED:-}" ]] && return 0
 _DEEPLOY_START_SOURCED=1
 
-SOLANA_BIN="${SOLANA_BIN:-$HOME/.local/share/solana/install/active_release/bin}"
 START_MIN_ACCOUNTS_GB="${START_MIN_ACCOUNTS_GB:-300}"   # snapshot rebuild + accountsdb
 START_MIN_LEDGER_GB="${START_MIN_LEDGER_GB:-100}"       # snapshot download + ledger
 CATCHUP_TIMEOUT="${CATCHUP_TIMEOUT:-3600}"

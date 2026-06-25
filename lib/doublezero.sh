@@ -33,7 +33,6 @@
 [[ -n "${_DEEPLOY_DOUBLEZERO_SOURCED:-}" ]] && return 0
 _DEEPLOY_DOUBLEZERO_SOURCED=1
 
-SOLANA_BIN="${SOLANA_BIN:-$HOME/.local/share/solana/install/active_release/bin}"
 DZ_SETUP_URL="${DZ_SETUP_URL:-https://dl.cloudsmith.io/public/malbeclabs/doublezero/setup.deb.sh}"
 DZ_CONFIG_DIR="${DZ_CONFIG_DIR:-$HOME/.config/doublezero}"
 DZ_OVERRIDE_CONF="${DZ_OVERRIDE_CONF:-/etc/systemd/system/doublezerod.service.d/override.conf}"

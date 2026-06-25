@@ -184,6 +184,22 @@ state_clear solana_bin
 check "fallback base is /root (NOT empty-HOME /.local)" "$(cat "$WORK/sb3")" "/root/.local/share/solana/install/active_release/bin"
 check "deeploy_solana_bin never yields a leading /.local" "$(grep -c '^/\.local' "$WORK/sb3")" "0"
 
+echo "== R9: no module-scope SOLANA_BIN pre-seed (empty HOME can't poison it) =="
+# Before R9 each module ran SOLANA_BIN="\${SOLANA_BIN:-\$HOME/.local/...}" at SOURCE
+# time; under an empty HOME (cron/systemd) that became "/.local/..." and then
+# SHADOWED deeploy_solana_bin's state-recorded resolution (its first branch returns
+# an already-set SOLANA_BIN). Sourcing a module must now leave SOLANA_BIN UNSET so
+# the resolve falls through to state -> the /root default.
+for _m in doublezero keys start upgrade verify; do
+    _sb="$(HOME="" bash -c '
+        unset SOLANA_BIN
+        source "'"$ROOT"'/lib/common.sh"
+        source "'"$ROOT"'/lib/constants.sh"
+        source "'"$ROOT"'/lib/'"$_m"'.sh"
+        printf "%s" "${SOLANA_BIN:-<unset>}"' 2>&1)"
+    check "lib/${_m}.sh does NOT pre-seed SOLANA_BIN (empty HOME)" "$_sb" "<unset>"
+done
+
 echo "== ensure_cargo_env: puts rustup cargo on PATH for the whole run =="
 # Simulate a rustup install: ~/.cargo/bin/cargo + ~/.cargo/env, with bin NOT yet
 # on PATH (the real-box bug: nic.sh couldn't find cargo after Phase 4).
