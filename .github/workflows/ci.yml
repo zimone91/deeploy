@@ -12,8 +12,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install shellcheck v0.11.0 (pinned + sha256-verified)
+        # Pin the dev-gate version, with checksum verification. Ubuntu 24.04's apt
+        # ships 0.9.0, whose older checks are false positives the repo lints clean
+        # against on 0.11.0 (SC2317 on indirectly-invoked test mocks; SC2218 on
+        # lib/start.sh functions that resolve at runtime after `source`). The sha256
+        # is the official v0.11.0 linux.x86_64 release-asset digest; the step fails
+        # closed on any mismatch.
+        run: |
+          ver=v0.11.0
+          tarball="shellcheck-${ver}.linux.x86_64.tar.xz"
+          sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          curl -fsSL -o "$tarball" "https://github.com/koalaman/shellcheck/releases/download/${ver}/${tarball}"
+          echo "${sha256}  ${tarball}" | sha256sum -c -
+          tar -xJf "$tarball"
+          sudo install -m755 "shellcheck-${ver}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
       - name: Syntax — bash -n
         run: for f in deeploy.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
