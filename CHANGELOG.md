@@ -5,6 +5,41 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc1] - 2026-06-25
+
+Security & release-hardening pass — the config-execution cluster + safe-static
+batch, on top of the audit Sprint-1 + F-series work.
+
+### Security
+- **S2** — config files are parsed, never `source`d, at BOTH load sites: a poisoned
+  deeploy.conf / `--config` can no longer execute as root. Typed whitelist validates
+  every key by type.
+- **X1** — the generated `validator.sh` validates + quotes every interpolated value;
+  no shell injection via config/state into the root-run start script.
+- **X4** — the DoubleZero passport signature is redacted from logs.
+- **S3** — restrictive files (the 0600 config) are created private from birth (umask),
+  closing a world-readable TOCTOU window.
+
+### Reliability
+- **X5** — the SSH-listener verify fails closed when `ss` is unavailable (no silent
+  lockout risk on the port change).
+- **R9** — removed a module-scope `SOLANA_BIN` pre-seed that shadowed the
+  $HOME-independent resolution.
+- Fixed a `BASH_REMATCH` clobber in the portrange validator under `set -u`.
+
+### Docs & UX
+- Corrected the staked-key safety wording: the key is read read-only to derive its
+  pubkey and to sign one DoubleZero passport message — never generated, copied, moved,
+  or transmitted. Runnable recovery footer; accurate phase-7 description;
+  `--rescore`/`--rollback` documented; `--net-test` wired.
+
+### Tests / CI
+- Suite 757 → 843. Added GitHub Actions CI (bash -n + shellcheck + 17 suites).
+
+**Not yet hardware-validated at this HEAD** (pending an on-box run): X2 (disk
+eligibility of non-OS mounts), R5/H2 (mount-safety), R2 (bnxt XDP gate), and the
+`upgrade` subcommand.
+
 ## [0.1.0] - 2026-05-31
 
 First tagged version: an interactive, idempotent installer that deploys, tunes,

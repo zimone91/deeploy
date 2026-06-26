@@ -1,5 +1,7 @@
 # DeePloy
 
+[![CI](https://github.com/zimone91/deeploy/actions/workflows/ci.yml/badge.svg)](https://github.com/zimone91/deeploy/actions/workflows/ci.yml)
+
 An interactive, idempotent CLI that deploys, tunes, and upgrades a **Solana
 mainnet-beta** validator (Agave + Jito-BAM, built from source) on a fresh server
 — from bare box to `catchup 0`, ready for a manual staked-key transfer.
@@ -58,6 +60,30 @@ Target: a fresh Ubuntu 24.04 x86-64 box (built and proven on AMD EPYC,
 The disk phase **detects** your disks, shows a table, proposes a mapping, and
 **requires you to type `yes`** before wiping anything. `--yes`/`--post-reboot`
 never auto-wipe.
+
+---
+
+## Get it
+
+DeePloy is meant to be **read before it is run as root** — there is no `curl | sh`
+one-liner by design. It wipes disks, rewrites GRUB, reboots the box, and runs as
+root on a machine that will hold real stake; inspect it first.
+
+```bash
+# 1) Get the source — clone, or download a tagged release tarball
+git clone https://github.com/zimone91/deeploy.git
+cd deeploy
+
+# 2) (release tarballs) verify the checksum before you trust it
+#    sha256sum -c SHA256SUMS
+
+# 3) READ it, then dry-run it (prints the whole plan, changes nothing)
+less deeploy.sh lib/*.sh
+sudo ./deeploy.sh install --dry-run
+
+# 4) Run it for real
+sudo ./deeploy.sh install
+```
 
 ---
 
