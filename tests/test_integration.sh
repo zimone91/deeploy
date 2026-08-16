@@ -34,6 +34,7 @@ export MLX5_IRQ_SCRIPT="$WORK/root/solana/mlx5-irq.sh" MLX5_IRQ_SERVICE="$WORK/m
 export SOLANA_INSTALL_DIR="$WORK/install" MOSTLY_THRESHOLD_ROOT="$WORK/mct" RESUME_SERVICE_FILE="$WORK/deeploy-resume.service"
 export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo" PROC_MDSTAT="$WORK/mdstat"
 export SSHD_CONFIG="$WORK/etc/sshd_config" NIC_TUNING_SCRIPT="$WORK/nic-tuning.sh" NIC_TUNING_SERVICE="$WORK/nic-tuning.service"
+export FAIL2BAN_JAIL_LOCAL="$WORK/etc/fail2ban-jail.local"
 # F3/F4: redirect the swapfile into the sandbox AND make it unremovable (a non-empty
 # dir, so `rm -f` fails) — this keeps the -e assertions OFF the host's real /swapfile
 # (which may be active -> EPERM) AND exercises the non-fatal swapfile-rm path: the

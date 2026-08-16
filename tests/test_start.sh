@@ -50,6 +50,22 @@ _start_free_gb() { echo 1800; }   # plenty
 WARNS=$(start_precheck_disk 2>&1); check "ample free -> no WARN" "$(grep -c '\[WARN\]' <<<"$WARNS")" "0"
 _start_free_gb() { echo 50; }     # low
 WARNS=$(start_precheck_disk 2>&1); check_ge "low free -> warns" "$(grep -c '\[WARN\]' <<<"$WARNS")" "1"
+
+echo "== N15: free-space check on a MISSING dir warns + reports 0 (fail-closed) =="
+# Use the REAL _start_free_gb (re-source; the lines above mocked it): a missing
+# dir used to silently skip the check — the exact data-mount-didn't-come-up case.
+_DEEPLOY_START_SOURCED="" source "$ROOT/lib/start.sh"
+MISSOUT=$(_start_free_gb "$WORK/definitely-missing-dir" 2>&1)
+check "missing dir -> reports 0G"          "$(tail -1 <<<"$MISSOUT")" "0"
+check "missing dir -> warns (mount up?)"   "$(grep -c 'does not exist' <<<"$MISSOUT")" "1"
+# and the precheck turns that 0 into its low-space warns (both filesystems)
+state_set accounts_path "$WORK/missing/acc"; state_set snapshots_path "$WORK/missing/snap"
+start_resolve_config
+PRE=$(start_precheck_disk 2>&1)
+check_ge "precheck warns on missing mounts" "$(grep -c '\[WARN\]' <<<"$PRE")" "2"
+state_set accounts_path /mnt/accounts/solana/accounts
+state_set snapshots_path /root/solana/snapshots
+start_resolve_config
 _start_free_gb() { echo 1800; }
 
 echo "== enable + start: IDEMPOTENT (adopt a running node; never restart mid-snapshot) =="

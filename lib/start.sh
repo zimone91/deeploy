@@ -33,7 +33,19 @@ start_resolve_config() {
 }
 
 # Free space on the FS holding a path, in GiB (mockable).
-_start_free_gb() { df -BG "$1" 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4); print $4}'; }
+# N15: a MISSING dir used to silently skip the check (df fails -> empty ->
+# "?G" with no warn) — exactly the case where the data mount didn't come up.
+# Warn + report 0 so the caller's low-space warn fires (fail-closed toward
+# "not enough space"; the only caller is start_precheck_disk, which warns).
+_start_free_gb() {
+    local p=$1
+    if [[ ! -d "$p" ]]; then
+        warn "free-space check: ${p} does not exist — treating as 0G free (is the data mount up?)"
+        echo 0
+        return 0
+    fi
+    df -BG "$p" 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4); print $4}'
+}
 
 start_precheck_disk() {
     step "Pre-start free-disk check"

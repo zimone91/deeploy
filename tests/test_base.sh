@@ -307,6 +307,17 @@ FI2=$(fresh_sshd 'Port 2244'); state_set ssh_port 2244
 : >"$CALLS"; SSHD_CONFIG="$FI2" base_firewall >/dev/null 2>&1
 check "no delete when port unchanged" "$(grep -c 'ufw delete' "$CALLS")" "0"
 
+echo "== N15: fail2ban sshd jail follows the realized SSH port =="
+export FAIL2BAN_JAIL_LOCAL="$WORK/jail.local"
+FJ=$(fresh_sshd 'Port 2222'); state_clear ssh_port; state_clear dz_enabled
+: >"$CALLS"; SSHD_CONFIG="$FJ" base_firewall >/dev/null 2>&1
+check "jail.local rendered with the realized port" "$(grep -c '^port = 2222$' "$FAIL2BAN_JAIL_LOCAL")" "1"
+check "jail targets [sshd]"                        "$(grep -c '^\[sshd\]$' "$FAIL2BAN_JAIL_LOCAL")" "1"
+check "fail2ban reloaded to pick the jail up"      "$(grep -c 'systemctl reload-or-restart fail2ban' "$CALLS")" "1"
+FJ2=$(fresh_sshd '#Port 22'); state_clear ssh_port
+SSHD_CONFIG="$FJ2" base_firewall >/dev/null 2>&1
+check "default port -> still explicit 'port = 22'" "$(grep -c '^port = 22$' "$FAIL2BAN_JAIL_LOCAL")" "1"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
