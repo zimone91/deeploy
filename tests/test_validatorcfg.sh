@@ -78,6 +78,10 @@ check "RETRANSMIT omitted"     "$(grep -c 'RETRANSMIT' <<<"$V")" "0"
 check "shred single address"   "$(grep -c -- '--shred-receiver-address "74.118.140.240:1002"$' <<<"$V")" "1"
 check "every interpolated value is double-quoted (no bare --ledger)" "$(grep -c -- '--ledger /' <<<"$V")" "0"
 
+echo "== N4: generated header advertises a RUNNABLE regenerate hint (rendered, not template) =="
+check "header: runnable numeric form via DEEPLOY_CMD" "$(grep -c -- 'regenerate via: ./deeploy.sh install --only 6' <<<"$V")" "1"
+check "header: NOT the broken '--only validatorcfg'"  "$(grep -c -- '--only validatorcfg' <<<"$V")" "0"
+
 echo "== RETRANSMIT: mlx5 = cpu-cores + zero-copy, in order =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores 1-2
 validatorcfg_resolve_config

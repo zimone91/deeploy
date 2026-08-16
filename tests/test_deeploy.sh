@@ -64,6 +64,26 @@ echo "== --only runs exactly one phase =="
 reset_state; : >"$RAN"; ONLY_PHASE=4 install_run >/dev/null 2>&1; ONLY_PHASE=""
 check "only phase 4 ran" "$(cat "$RAN")" "toolchain_build"
 
+echo "== N4: --only validated at parse (no silent no-op success); values required =="
+( parse_args install --only validatorcfg ) >/dev/null 2>&1
+check "N4: --only validatorcfg -> fail"           "$?" "1"
+N4OUT=$( ( parse_args install --only 9 ) 2>&1 ); N4RC=$?
+check "N4: --only 9 -> fail"                      "$N4RC" "1"
+check "N4: message lists the valid phases 0-8"    "$(grep -c 'valid phases: 0-8' <<<"$N4OUT")" "1"
+check "N4: NO success banner on a bad --only"     "$(grep -c 'install complete' <<<"$N4OUT")" "0"
+N4T=$( ( parse_args install --only ) 2>&1 ); N4TRC=$?
+check "N4: trailing --only fails cleanly"         "$N4TRC" "1"
+check "N4: trailing --only named (no unbound \$2)" "$(grep -c 'requires a phase number' <<<"$N4T")" "1"
+N4C=$( ( parse_args install --config ) 2>&1 ); N4CRC=$?
+check "N4: trailing --config fails cleanly"       "$N4CRC" "1"
+check "N4: trailing --config names the problem"   "$(grep -c 'requires a path' <<<"$N4C")" "1"
+# the runnable form the generated header advertises: --only 6 runs EXACTLY phase 6
+parse_args install --only 6
+reset_state; : >"$RAN"; install_run >/dev/null 2>&1; ONLY_PHASE=""
+check "N4: --only 6 runs exactly phase 6"         "$(tr '\n' ' ' <"$RAN")" "validatorcfg_run nic_run "
+# drift-proof: the header constant must keep naming the ValidatorConfig phase
+check "N4: VALIDATORCFG_PHASE names ValidatorConfig" "$(phase_name "${VALIDATORCFG_PHASE:?}")" "ValidatorConfig"
+
 echo "== I2: install --only 8 is isolation-gated (it bypasses the reboot boundary) =="
 # --only 8 runs start_run directly, skipping _install_reboot_boundary. The gate now
 # lives in start_run, so a mismatch must still refuse to start. Use a start_run that

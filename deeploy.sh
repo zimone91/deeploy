@@ -296,8 +296,16 @@ parse_args() {
             --rescore)     RESCORE=1 ;;
             --rollback)    ROLLBACK=1 ;;
             --net-test)    NET_TEST=1 ;;   # opt-in preflight uplink bandwidth probe (read by preflight.sh)
-            --only)        ONLY_PHASE="$2"; shift ;;
-            --config)      CONFIG_FILE="$2"; shift ;;
+            --only)
+                # N4: validate here — an unmatched value ('validatorcfg', '9')
+                # used to run NOTHING and still print the success banner; a
+                # trailing --only crashed on unbound $2 before traps installed.
+                [[ $# -ge 2 ]] || fail "--only requires a phase number (valid phases: 0-8)"
+                [[ "$2" =~ ^[0-8]$ ]] || fail "--only: invalid phase '$2' — valid phases: 0-8 (e.g. --only 6 = ValidatorConfig)"
+                ONLY_PHASE="$2"; shift ;;
+            --config)
+                [[ $# -ge 2 ]] || fail "--config requires a path"
+                CONFIG_FILE="$2"; shift ;;
             --version|-V)  print_version; exit 0 ;;
             -h|--help)     usage; exit 0 ;;
             *)             fail "Unknown argument: $1" ;;
