@@ -48,15 +48,82 @@ _sshd_configured_port() {
     awk '/^[[:space:]]*Port[[:space:]]+[0-9]+/{p=$2} END{if(p) print p}' "$cfg"
 }
 
-# Success (0) if something is listening on tcp <port>. If ss is unavailable we
+# N5 (read side): the port(s) sshd will ACTUALLY listen on, one per line.
+# `sshd -T` is authoritative — it resolves the default (a commented '#Port 22'
+# is an effective 22), catches MULTIPLE Port directives, and sees Include
+# drop-ins (Ubuntu 24.04 ships 'Include /etc/ssh/sshd_config.d/*.conf'; cloud
+# providers land port overrides there, invisible to a file parse). Fallback:
+# parse every ACTIVE Port line in the file when sshd -T is unavailable or
+# fails (non-root, tests, sshd not installed).
+_sshd_effective_ports() {
+    local cfg=$1 out=""
+    out="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}')" || out=""
+    if [[ -n "$out" ]]; then printf '%s\n' "$out"; return 0; fi
+    [[ -f "$cfg" ]] || return 0
+    awk '/^[[:space:]]*Port[[:space:]]+[0-9]+/{print $2}' "$cfg"
+    return 0
+}
+
+# N5: more than one effective Port means the firewall can only be coherent with
+# one of them — a classic post-reboot lockout (the live session rides ufw's
+# ESTABLISHED rule, which a reboot drops). Requires an explicit typed 'yes':
+# does NOT honor --yes and refuses non-interactive (require_yes semantics, like
+# the disk-wipe gate) because this is a lockout-risk decision.
+_base_multiport_gate() {                          # <ports, one per line>
+    local ports=$1 n
+    n=$(printf '%s\n' "$ports" | grep -c .) || true
+    (( n > 1 )) || return 0
+    warn "sshd has ${n} effective Port directives: $(printf '%s' "$ports" | tr '\n' ' ')"
+    warn "ufw can only be made coherent with ONE SSH port — the wrong one locks you out after reboot."
+    if is_dry_run; then
+        info "${C_DIM}[dry-run]${C_NC} would require a typed 'yes' to proceed with multiple sshd ports"
+        return 0
+    fi
+    require_yes "Proceed anyway with multiple sshd Port directives?" \
+        || fail "Aborted on multiple sshd Port directives — consolidate /etc/ssh/sshd_config (and sshd_config.d/) to a single Port, then re-run."
+    return 0
+}
+
+# N5 (write side): leave EXACTLY ONE Port directive. The old ensure_line edit
+# replaced only the FIRST match — including a commented '#Port 22' — so an
+# image with '#Port 22' + a provider-appended 'Port 2222' kept TWO active
+# directives after the edit (read/write incoherence, firewall opens one of
+# them). Replace ALL commented/active Port lines with the single new directive
+# at the FIRST one's position (append if none). Routed through _commit, so a
+# content-identical rewrite is a no-op and the canonical single-Port image
+# produces a byte-identical file.
+_sshd_write_port() {                              # <cfg> <port>
+    local cfg=$1 port=$2 tmp
+    _ensure_parent "$cfg"
+    tmp=$(_mktemp)
+    if [[ -e "$cfg" ]]; then
+        awk -v repl="Port ${port}" '
+            /^[[:space:]]*#?[[:space:]]*Port[[:space:]]/ { if (!done) { print repl; done=1 }; next }
+            { print }
+            END { if (!done) print repl }
+        ' "$cfg" >"$tmp"
+    else
+        printf 'Port %s\n' "$port" >"$tmp"
+    fi
+    _commit "$cfg" "$tmp" "sshd Port -> ${port} (single directive)"
+}
+
+# Success (0) if SSHD is listening on tcp <port>. If ss is unavailable we
 # CANNOT verify — fail closed (return 1 = "not listening") so the caller rolls
 # the SSH change back rather than trusting an unverifiable success and risking a
 # remote lockout. ss ships in Ubuntu's base iproute2, so the proven path is
 # unchanged; this only hardens the ss-absent edge. (X5)
+# N14: when the process column is readable (-p; needs privilege), require the
+# matching listener to actually BE sshd — any daemon parked on the port used to
+# false-pass this verify-or-rollback gate. If no matching socket exposes
+# process info (capability-restricted), fall back to the port-only match —
+# never weaker than the previous check.
 _ssh_listening_on() {
     local port=$1
     have ss || { warn "cannot verify SSH listener — 'ss' (iproute2) not found; treating as NOT listening (fail-closed)"; return 1; }
-    ss -tlnH 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {found=1} END{exit !found}'
+    ss -tlnpH 2>/dev/null | awk -v p=":${port}\$" '
+        $4 ~ p { found=1; if ($0 ~ /users:\(\(/) { anyproc=1; if ($0 ~ /"sshd"/) issshd=1 } }
+        END { if (!found) exit 1; if (anyproc) exit (issshd ? 0 : 1); exit 0 }'
 }
 
 # --- config resolution -------------------------------------------------------
@@ -119,6 +186,10 @@ base_ssh_port() {
         return 0
     fi
 
+    # N5: surface MULTIPLE effective Port directives (provider image, or a box
+    # damaged by the old first-match edit) before layering a change on top.
+    _base_multiport_gate "$(_sshd_effective_ports "$cfg")"
+
     warn "Changing SSH port ${current:-22} -> ${port}. You must reconnect with:  ssh -p ${port} <user>@<host>"
     if ! confirm "Proceed with SSH port change to ${port}?" Y; then
         warn "SSH port change skipped by operator — sshd stays on ${current:-22}"
@@ -129,8 +200,8 @@ base_ssh_port() {
     fi
 
     backup_file "$cfg"
-    # Replace any commented/active Port line in place (else append).
-    ensure_line "$cfg" "Port ${port}" "^[[:space:]]*#?[[:space:]]*Port[[:space:]]"
+    # Replace ALL commented/active Port lines with exactly ONE directive (N5).
+    _sshd_write_port "$cfg" "$port"
 
     # Ubuntu 24.04 socket-activates sshd; switch to the service so sshd_config
     # Port takes effect (matches the guide).
@@ -164,23 +235,33 @@ _base_ssh_rollback() {
 
 # --- firewall (core validator rules only) ------------------------------------
 base_firewall() {
-    local cfg="${SSHD_CONFIG:-/etc/ssh/sshd_config}" port prev
+    local cfg="${SSHD_CONFIG:-/etc/ssh/sshd_config}" port prev ports p2
     step "Configuring ufw (core validator rules)"
-    # Open the port sshd is ACTUALLY configured to listen on — NOT the desired
-    # SSH_PORT, which differs if the operator declined the port change. Limiting
-    # only the new port would lock the operator out after the reboot (the live
-    # session rides ufw's ESTABLISHED rule, which a reboot drops). No active Port
-    # line means sshd is on the default 22. (S1)
-    port="$(_sshd_configured_port "$cfg")"; port="${port:-22}"
+    # Open the port(s) sshd will ACTUALLY listen on (sshd -T view, with a
+    # file-parse fallback — N5) — NOT the desired SSH_PORT, which differs if the
+    # operator declined the port change. Limiting only the new port would lock
+    # the operator out after the reboot (the live session rides ufw's
+    # ESTABLISHED rule, which a reboot drops). No readable effective port means
+    # sshd is on the stock default 22. (S1)
+    ports="$(_sshd_effective_ports "$cfg")"; ports="${ports:-22}"
+    # N5: multiple effective ports -> explicit gate (this fires when the port
+    # edit was skipped/declined on a multi-port image; on confirm, EVERY
+    # effective port is limited so none of them is firewalled shut).
+    _base_multiport_gate "$ports"
+    port="$(printf '%s\n' "$ports" | head -1)"
     run ufw default deny incoming
     run ufw default allow outgoing
     # SSH FIRST and rate-limited, so enabling ufw can never lock the operator out.
-    run ufw limit "${port}/tcp" comment "SSH"
+    while IFS= read -r p2; do
+        [[ -n "$p2" ]] || continue
+        run ufw limit "${p2}/tcp" comment "SSH"
+    done <<<"$ports"
     # Drop a stale SSH rule from a PRIOR port — added AFTER the new rule so there
     # is never a window without an SSH rule. state holds the last realized port;
-    # deleting a non-existent rule is non-fatal. (I7)
+    # deleting a non-existent rule is non-fatal; NEVER delete a rule for a port
+    # sshd still effectively listens on. (I7, N5)
     prev="$(state_get ssh_port "")"
-    if [[ -n "$prev" ]] && _valid_port "$prev" && [[ "$prev" != "$port" ]]; then
+    if [[ -n "$prev" ]] && _valid_port "$prev" && ! grep -qx "$prev" <<<"$ports"; then
         run ufw delete limit "${prev}/tcp" >/dev/null 2>&1 || true
     fi
     # Gossip (TCP+UDP) and the dynamic port range (UDP: TPU/TVU/repair). Read the

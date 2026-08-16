@@ -33,6 +33,10 @@ ufw()       { echo "ufw $*"       >>"$CALLS"; return 0; }
 systemctl() { echo "systemctl $*" >>"$CALLS"
     case "$*" in "is-enabled ssh.socket"|"is-active ssh.socket") return "${SOCKET_RC:-1}";; *) return 0;; esac; }
 ss() { [[ -n "${SS_PORT_LISTENING:-}" ]] && printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:*\n' "$SS_PORT_LISTENING"; return 0; }
+# Hermetic: a real sshd may exist on the test host (macOS/CI); force the N5
+# effective-port read onto the deterministic file-parse fallback. The sshd -T
+# path is tested explicitly with an emitting mock in the N5 section below.
+sshd() { return 1; }
 
 SSHN=0
 fresh_sshd()      { SSHN=$((SSHN+1)); printf '%s\n' "$1" >"$WORK/sshd_$SSHN"; printf '%s' "$WORK/sshd_$SSHN"; }
@@ -190,6 +194,94 @@ check "ss absent -> config restored (no active Port 2222)"  "$(_sshd_configured_
 SS_PORT_LISTENING=2222
 ( _ssh_listening_on 2222 ) >/dev/null 2>&1
 check "ss present + listening -> rc 0 (proven path unchanged)" "$?" "0"
+
+echo "== N5: _sshd_effective_ports — sshd -T preferred, active-line file fallback =="
+sshd() { case "${1:-}" in -T) printf 'port 2222\n';; *) return 1;; esac; }
+check "sshd -T single port"        "$(_sshd_effective_ports /nonexistent | tr '\n' ' ')" "2222 "
+sshd() { case "${1:-}" in -T) printf 'port 22\nport 2222\n';; *) return 1;; esac; }
+check "sshd -T multiple ports"     "$(_sshd_effective_ports /nonexistent | tr '\n' ' ')" "22 2222 "
+sshd() { return 1; }               # back to the hermetic fallback
+FEP=$(fresh_sshd $'Port 2222\nPort 2244')
+check "fallback: ALL active Port lines" "$(_sshd_effective_ports "$FEP" | tr '\n' ' ')" "2222 2244 "
+FEP2=$(fresh_sshd '#Port 22')
+check "fallback: commented-only -> empty" "$(_sshd_effective_ports "$FEP2")" ""
+
+echo "== N5 write side: exactly ONE Port directive; canonical files byte-identical =="
+# canonical stock image (#Port 22 + friends): the new all-lines edit must yield
+# the SAME BYTES the old first-match ensure_line edit produced (proven path).
+FBI=$(fresh_sshd_full)
+printf '%s\n' "Port 2222" "#AddressFamily any" "#GatewayPorts no" "PermitRootLogin yes" >"$WORK/expected_canon"
+_sshd_write_port "$FBI" 2222 >/dev/null 2>&1
+check_true "canonical #Port-22 image -> byte-identical to the old edit" "cmp -s \"$FBI\" \"$WORK/expected_canon\""
+# canonical single ACTIVE Port image: in-place value swap, byte-identical.
+FB2=$(fresh_sshd 'Port 2222')
+printf 'Port 2244\n' >"$WORK/expected_single"
+_sshd_write_port "$FB2" 2244 >/dev/null 2>&1
+check_true "canonical single-Port image -> byte-identical in-place swap" "cmp -s \"$FB2\" \"$WORK/expected_single\""
+# THE N5 image (#Port 22 + provider-appended Port 2222): the old edit rewrote
+# the comment and left TWO active directives; now it collapses to exactly one.
+FB3=$(fresh_sshd $'#Port 22\nPort 2222')
+_sshd_write_port "$FB3" 2244 >/dev/null 2>&1
+check "N5 image: exactly ONE active Port after edit" "$(grep -cE '^Port ' "$FB3")" "1"
+check "N5 image: no commented Port remains"          "$(grep -c '#Port' "$FB3")" "0"
+check "N5 image: it is the new port"                 "$(grep -c '^Port 2244$' "$FB3")" "1"
+# no Port line at all -> single directive appended
+FB4=$(fresh_sshd 'PermitRootLogin yes')
+_sshd_write_port "$FB4" 2222 >/dev/null 2>&1
+check "no-Port file: single directive appended"      "$(grep -cE '^Port ' "$FB4")" "1"
+
+echo "== N5 gate: multiple effective ports -> typed-yes gate; single port -> no gate =="
+# Controllable require_yes mock: records the gate firing; GATE_RC = the answer.
+require_yes() { echo "GATE:$1" >>"$CALLS"; return "${GATE_RC:-0}"; }
+GATE_RC=0
+# rc1-damaged image: TWO active ports. Refuse -> abort, file untouched.
+FDMG=$(fresh_sshd $'Port 2222\nPort 2244')
+GATE_RC=1
+( SS_PORT_LISTENING=2255 SOCKET_RC=1 ASSUME_YES=1 SSH_PORT=2255 SSHD_CONFIG="$FDMG" base_ssh_port ) >/dev/null 2>&1
+check "gate refused -> base_ssh_port aborts"      "$?" "1"
+check "gate refused -> file untouched (2 ports)"  "$(grep -cE '^Port ' "$FDMG")" "2"
+# Confirm -> edit collapses to ONE directive; firewall then opens that one.
+GATE_RC=0; : >"$CALLS"
+SS_PORT_LISTENING=2255 SOCKET_RC=1 ASSUME_YES=1 SSH_PORT=2255 SSHD_CONFIG="$FDMG" base_ssh_port >/dev/null 2>&1
+check "gate fired once (require_yes consulted)"   "$(grep -c '^GATE:' "$CALLS")" "1"
+check "confirmed: exactly one active Port"        "$(grep -cE '^Port ' "$FDMG")" "1"
+check "confirmed: it is the new port 2255"        "$(grep -c '^Port 2255$' "$FDMG")" "1"
+state_clear ssh_port; state_clear dz_enabled; : >"$CALLS"
+SSHD_CONFIG="$FDMG" base_firewall >/dev/null 2>&1
+check "firewall: limits the single sshd port"     "$(grep -c 'ufw limit 2255/tcp' "$CALLS")" "1"
+check "firewall: no gate on a single port"        "$(grep -c '^GATE:' "$CALLS")" "0"
+# Edit skipped/declined on a multi-port image -> base_firewall's OWN gate.
+FDM2=$(fresh_sshd $'Port 2222\nPort 2244'); state_clear ssh_port
+GATE_RC=1; : >"$CALLS"
+( SSHD_CONFIG="$FDM2" base_firewall ) >/dev/null 2>&1
+check "firewall multi-port + refuse -> abort"     "$?" "1"
+check "firewall multi-port + refuse: NOT enabled" "$(grep -c 'force enable' "$CALLS")" "0"
+GATE_RC=0; : >"$CALLS"
+SSHD_CONFIG="$FDM2" base_firewall >/dev/null 2>&1
+check "firewall multi-port + confirm: BOTH ports limited" "$(grep -cE 'ufw limit 22(22|44)/tcp' "$CALLS")" "2"
+check "firewall multi-port: first recorded to state"      "$(state_get ssh_port)" "2222"
+GATE_RC=0
+
+echo "== N14: the listener check requires sshd when the process column is visible =="
+ss() { printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("nginx",pid=7,fd=3))\n'; }
+( _ssh_listening_on 2222 ) >/dev/null 2>&1
+check "foreign daemon on the port -> NOT listening (rc1)" "$?" "1"
+ss() { printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=7,fd=3))\n'; }
+( _ssh_listening_on 2222 ) >/dev/null 2>&1
+check "sshd on the port -> rc0"                           "$?" "0"
+ss() { printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:*\n'; }
+( _ssh_listening_on 2222 ) >/dev/null 2>&1
+check "no process info -> port-only pass (today's behavior)" "$?" "0"
+( _ssh_listening_on 9999 ) >/dev/null 2>&1
+check "port not present -> rc1"                           "$?" "1"
+# and the verify-or-rollback gate actually ROLLS BACK on a foreign daemon
+ss() { printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("nginx",pid=7,fd=3))\n'; }
+FN14=$(fresh_sshd_full); : >"$CALLS"
+( SOCKET_RC=1 ASSUME_YES=1 SSH_PORT=2222 SSHD_CONFIG="$FN14" base_ssh_port ) >/dev/null 2>&1
+check "foreign daemon -> base_ssh_port rolls back (rc1)"  "$?" "1"
+check "foreign daemon -> config restored (no active Port)" "$(_sshd_configured_port "$FN14")" ""
+# restore the suite's standard ss mock for the sections below
+ss() { [[ -n "${SS_PORT_LISTENING:-}" ]] && printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:*\n' "$SS_PORT_LISTENING"; return 0; }
 
 echo "== S1: declined port change must NOT lock out (firewall opens the LIVE port) =="
 # Operator is prompted to move 22->9999 but declines: sshd stays on 22, so the
