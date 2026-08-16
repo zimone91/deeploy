@@ -67,6 +67,10 @@ CALLS="$WORK/calls"; : >"$CALLS"
 
 # --- mocks: reads (simulate the EPYC box) ------------------------------------
 require_root() { :; }
+# N8: the resume-unit ownership gate stats the real checkout (user-owned in the
+# sandbox) — give it the safe answers a root-owned checkout would produce.
+_install_path_uid()  { echo 0; }
+_install_path_mode() { echo 755; }
 uname()       { echo x86_64; }
 nproc()       { echo 48; }
 _cpu_total()  { echo 48; }
