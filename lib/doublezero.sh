@@ -55,6 +55,32 @@ DZ_PASS_INTERVAL="${DZ_PASS_INTERVAL:-10}"
 _dz_address()  { run_capture doublezero address 2>/dev/null || true; }   # the DoubleZero ID (from id.json)
 _dz_staked_pubkey() { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null || true; }
 
+# N6: NEVER install the STAKED validator keypair as the DoubleZero ID. The two
+# `install -m 600` sites below are the ONLY code paths where DeePloy itself
+# copies a key file — a mixed-up path here would silently duplicate staked key
+# material to two more locations AND register the staked pubkey as a DZ ID
+# on-chain. Derive the candidate's pubkey (read-only, the same solana-keygen
+# mechanism keys_validate uses) and hard-refuse on a match with the staked key.
+# Staked keypair absent (normal pre-swap box) -> proceed, warn that the check
+# was skipped. Pubkeys underivable -> proceed with a warn (dz-connect's own
+# staked-pubkey read fails loudly right after if the toolchain is broken).
+_dz_assert_not_staked_key() {                    # <candidate-file>
+    local cand=$1 staked cand_pk staked_pk
+    staked="${STAKED_KEYPAIR:-$(state_get staked_keypair "")}"
+    if [[ -z "$staked" || ! -f "$staked" ]]; then
+        warn "staked-key identity check skipped (no staked keypair on this box yet) — make sure '${cand}' is your DoubleZero ID, not a validator key"
+        return 0
+    fi
+    cand_pk="$(_dz_staked_pubkey "$cand")"
+    staked_pk="$(_dz_staked_pubkey "$staked")"
+    if [[ -z "$cand_pk" || -z "$staked_pk" ]]; then
+        warn "could not derive pubkeys to compare '${cand}' against the staked keypair — identity check skipped"
+        return 0
+    fi
+    [[ "$cand_pk" != "$staked_pk" ]] || fail "REFUSED: '${cand}' is your STAKED validator keypair (${cand_pk}) — it must never be copied or registered as a DoubleZero ID. Point at your DoubleZero keypair (dz-keypair.json) instead; nothing was copied."
+    return 0
+}
+
 # run_capture — like run(), but returns the command's stdout (for probes whose
 # OUTPUT we need: doublezero address/status/latency/find-validator). Honors
 # dry-run by echoing nothing; mockable by shadowing the underlying command.
@@ -177,6 +203,7 @@ dz_keypair_check_soft() {
         ask "DoubleZero ID path (or place it at ${kp} then press Enter; blank to defer)" "$kp"
         local src="$REPLY"
         if [[ -n "$src" && -f "$src" && "$src" != "$kp" ]]; then
+            _dz_assert_not_staked_key "$src"     # N6: refuse the staked keypair
             run install -m 600 "$src" "$kp" && ok "Copied DoubleZero ID to ${kp}"
         fi
     fi
@@ -247,6 +274,7 @@ dz_keypair_migrate() {
             fail "DoubleZero ID absent at ${DZ_KEYPAIR} and run is non-interactive. Place it (chmod 600) and re-run '${DEEPLOY_CMD} dz-connect'."
         fi
         if [[ -n "$src" && -f "$src" ]]; then
+            _dz_assert_not_staked_key "$src"     # N6: refuse the staked keypair (before ANY copy)
             run install -m 600 "$src" "$DZ_CONFIG_DIR/id.json"
             [[ "$src" != "$DZ_KEYPAIR" ]] && run install -m 600 "$src" "$DZ_KEYPAIR"   # keep the canonical copy too
             addr="$(_dz_address)"

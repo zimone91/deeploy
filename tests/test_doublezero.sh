@@ -119,6 +119,43 @@ check "soft: absent -> WARNS to place before dz-connect" "$(grep -c 'place it be
 state_set dz_enabled false; ( dz_keypair_check_soft ) >/dev/null 2>&1; check "soft: dz_enabled=false -> no-op rc0" "$?" "0"
 state_set dz_enabled true
 
+echo "== N6: the STAKED keypair is REFUSED as a DoubleZero ID (both install paths) =="
+# The two install-m600 sites are the ONLY places DeePloy itself copies a key; a
+# mixed-up path must never duplicate staked material or register it as a DZ ID.
+# The solana-keygen mock keys on the filename: *mainnet-validator-keypair* ->
+# the staked pubkey, so a candidate named like the staked key == staked identity.
+state_set dz_enabled true
+N6_STAKED="$WORK/mainnet-validator-keypair.json"; printf '[9]' >"$N6_STAKED"
+state_set staked_keypair "$N6_STAKED"
+N6_BAD="$WORK/oops-mainnet-validator-keypair.json"; printf '[9]' >"$N6_BAD"   # == staked pubkey
+N6_OK="$WORK/good-dz-id.json"; printf '[1,2,3]' >"$N6_OK"                     # != staked pubkey
+# soft path (Phase 5): staked candidate -> FAIL, nothing copied
+N6_KP="$WORK/n6-soft-dz.json"; rm -f "$N6_KP"; state_set dz_keypair "$N6_KP"
+ask() { REPLY="$N6_BAD"; }
+N6SOFT=$( DZ_KEYPAIR="$N6_KP" NONINTERACTIVE=0 STAKED_KEYPAIR="" dz_keypair_check_soft 2>&1 ); N6RC=$?
+unset -f ask
+check "N6 soft: staked candidate -> fail (rc1)"        "$N6RC" "1"
+check_true "N6 soft: nothing copied to the DZ path"    "[[ ! -e \"$N6_KP\" ]]"
+check "N6 soft: says REFUSED + names the staked key"   "$(grep -c 'REFUSED.*STAKED' <<<"$N6SOFT")" "1"
+# hard path (dz_keypair_migrate): staked candidate -> FAIL before ANY install
+rm -f "$WORK/dzconfig/id.json"; : >"$CALLS"
+N6HARD=$( DZ_KEYPAIR="$N6_BAD" STAKED_KEYPAIR="" dz_keypair_migrate 2>&1 ); N6HRC=$?
+check "N6 migrate: staked candidate -> fail (rc1)"     "$N6HRC" "1"
+check "N6 migrate: NO install issued (either dest)"    "$(grep -c 'install -m 600' "$CALLS")" "0"
+check_true "N6 migrate: id.json NOT written"           "[[ ! -e \"$WORK/dzconfig/id.json\" ]]"
+check "N6 migrate: names the refusal"                  "$(grep -c 'REFUSED' <<<"$N6HARD")" "1"
+# non-staked candidate proceeds exactly as before
+rm -f "$WORK/dzconfig/id.json"; : >"$CALLS"
+( DZ_KEYPAIR="$N6_OK" STAKED_KEYPAIR="" dz_keypair_migrate ) >/dev/null 2>&1
+check "N6 migrate: non-staked candidate proceeds"      "$?" "0"
+check "N6 migrate: installed to id.json"               "$(grep -c "install -m 600 $N6_OK $WORK/dzconfig/id.json" "$CALLS")" "1"
+# staked file ABSENT (pre-swap box) -> proceeds, warns the check was skipped
+rm -f "$N6_STAKED" "$WORK/dzconfig/id.json"; : >"$CALLS"
+N6ABS=$( DZ_KEYPAIR="$N6_BAD" STAKED_KEYPAIR="" dz_keypair_migrate 2>&1 ); N6ARC=$?
+check "N6: staked ABSENT -> proceeds (pre-swap box)"   "$N6ARC" "0"
+check "N6: staked ABSENT -> warns check skipped"       "$(grep -c 'identity check skipped' <<<"$N6ABS")" "1"
+printf '[9]' >"$N6_STAKED"   # restore for later sections
+
 echo "== dz-connect GUARD: enabled + binaries installed + staked key (replaces dz_prepared) =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
 state_set solana_home /root/solana; state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
