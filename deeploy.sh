@@ -138,8 +138,13 @@ _install_post_reboot_proceed() {
     _install_verify_isolation || fail "Isolation verification failed — not starting the validator. Fix GRUB and re-run."
     # Only the CONNECTED tunnel needs restore. DZ prepared-but-not-connected (the
     # normal pre-swap state) no-ops. Gated on dz_connected, not dz_enabled.
+    # SUBSHELL isolation (N1): dz_resume can reach fail() (= exit 1) inside
+    # _dz_connect_with_retry; a bare `dz_resume || warn` catches a RETURN but not
+    # an EXIT of the current shell — the unattended resume service died here,
+    # BEFORE reboot_done and phase 8, so the staked validator never started, on
+    # every boot. A failed DZ restore must never block the validator start.
     if [[ "$(state_get dz_connected "")" != "" ]] && declare -F dz_resume >/dev/null 2>&1; then
-        dz_resume || warn "DoubleZero post-reboot restore had issues — check 'doublezero status'"
+        ( dz_resume ) || warn "DoubleZero post-reboot restore FAILED — continuing the resume (the validator still starts); reconnect manually with: ${DEEPLOY_CMD} dz-connect"
     fi
     state_set reboot_done "$(_ts)"
     return 0

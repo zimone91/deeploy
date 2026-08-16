@@ -152,6 +152,41 @@ POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
 check "post-reboot prepared-not-connected: dz_resume NOT called" "$(grep -c '^dz_resume$' "$RAN")" "0"
 unset -f dz_resume
 
+echo "== N1: resume survives a dz_resume that EXITS (fail inside), not just returns =="
+# fail() = exit 1; a bare 'dz_resume || warn' catches a RETURN but not an EXIT of
+# the current shell — the resume service died BEFORE reboot_done/phase 8 and the
+# staked node stayed down, unattended, on every boot. The boundary now runs
+# dz_resume in a subshell, so BOTH failure shapes warn + continue to phase 8.
+_install_read_isolated() { echo "1-2,10,25-26,34"; }
+_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
+dz_resume() { echo 'dz_resume' >>"$RAN"; exit 1; }          # hard-exit shape (fail() inside)
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set dz_enabled true; state_set dz_connected t
+: >"$RAN"; : >"$CALLS"
+N1OUT=$( ( set -Eeuo pipefail; POST_REBOOT=1 install_run ) 2>&1 ); N1RC=$?
+check "N1 exit-shape: install completes under -Eeuo (rc0)" "$N1RC" "0"
+check "N1 exit-shape: dz_resume was attempted"             "$(grep -c '^dz_resume$' "$RAN")" "1"
+check "N1 exit-shape: start_run STILL ran (phase 8)"       "$(grep -c '^start_run$' "$RAN")" "1"
+check "N1 exit-shape: reboot_done latched"                 "$(state_has reboot_done && echo y || echo n)" "y"
+check "N1 exit-shape: warns + points at dz-connect"        "$(grep -c 'reconnect manually' <<<"$N1OUT")" "1"
+# plain return-1 shape: identical outcome (the pre-existing guard, still covered)
+dz_resume() { echo 'dz_resume' >>"$RAN"; return 1; }
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set dz_enabled true; state_set dz_connected t
+: >"$RAN"
+POST_REBOOT=1 install_run >/dev/null 2>&1
+check "N1 return-shape: start_run still ran"               "$(grep -c '^start_run$' "$RAN")" "1"
+check "N1 return-shape: reboot_done latched"               "$(state_has reboot_done && echo y || echo n)" "y"
+# happy path: dz_resume succeeds -> no warn, phase 8 runs (unchanged behavior)
+dz_resume() { echo 'dz_resume' >>"$RAN"; return 0; }
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set dz_enabled true; state_set dz_connected t
+: >"$RAN"
+N1OK=$( POST_REBOOT=1 install_run 2>&1 )
+check "N1 happy path: no restore-failed warn"              "$(grep -c 'restore FAILED' <<<"$N1OK")" "0"
+check "N1 happy path: start_run ran"                       "$(grep -c '^start_run$' "$RAN")" "1"
+unset -f dz_resume
+
 echo "== POST-REBOOT, isolation MISMATCH: FAIL + diagnostics, validator NOT started =="
 reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
 _install_read_isolated() { echo "10,34"; }   # GRUB didn't fully apply
