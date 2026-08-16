@@ -1,0 +1,44 @@
+# Contributing to DeePloy
+
+DeePloy is written to be **read before it is run as root** on a box that holds
+real stake. Contributions are held to the same bar: small, auditable, tested.
+
+## The gate (run before every PR)
+
+```bash
+for f in deeploy.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+shellcheck -x deeploy.sh lib/*.sh tests/*.sh     # shellcheck 0.11.0 — see below
+for t in tests/test_*.sh; do bash "$t" || echo "FAILED: $t"; done
+```
+
+- **shellcheck is pinned to 0.11.0** (what CI installs). Older versions (e.g.
+  Ubuntu 24.04's apt 0.9.0) emit false positives this repo does not carry
+  exceptions for.
+- Tests are self-contained: no root, no network, no live node. Every external
+  command a module touches is mockable by shadowing it with a shell function.
+
+## Conventions
+
+- **Per-finding commits**, subject format `area: description (IDs)` — one
+  logical fix per commit, with its tests in the same commit.
+- **Fixes come with tests.** A behavior fix without a regression test that
+  fails on the old code is not done.
+- Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
+  gotchas (`var=$(pipeline)` on commands that legitimately return non-zero,
+  functions ending in `while read` loops).
+- All mutations go through `run()` / `write_file` / `ensure_*` so `--dry-run`
+  stays truthful and every touched system file is backed up first.
+- Never commit secrets, real pubkeys/IPs/hostnames, or key material — test
+  fixtures use synthetic identifiers (RFC 5737 IPs, throwaway base58).
+
+## Releases
+
+Tags are annotated, **signed** (`git tag -s vX.Y.Z`), and must match
+`DEEPLOY_VERSION` in `lib/common.sh` (CI enforces this). The release workflow
+builds the tarball + `SHA256SUMS` as a draft release for the maintainer to
+verify and publish.
+
+## Sign-off
+
+No DCO/sign-off required. By submitting a PR you license your contribution
+under the repository's MIT license.

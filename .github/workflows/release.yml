@@ -1,0 +1,76 @@
+name: Release
+
+# Tag-triggered release: run the FULL CI gate, then build the source tarball +
+# SHA256SUMS and attach both to a DRAFT GitHub release. Publishing stays a
+# manual maintainer step, as does tag signing (git tag -s — see CONTRIBUTING).
+on:
+  push:
+    tags: ['v*']
+
+# contents: write is scoped to THIS workflow only (CI stays read-only) — it is
+# required to create the release and upload assets.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a half-published release
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install shellcheck v0.11.0 (pinned + sha256-verified)
+        run: |
+          ver=v0.11.0
+          tarball="shellcheck-${ver}.linux.x86_64.tar.xz"
+          sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          curl -fsSL -o "$tarball" "https://github.com/koalaman/shellcheck/releases/download/${ver}/${tarball}"
+          echo "${sha256}  ${tarball}" | sha256sum -c -
+          tar -xJf "$tarball"
+          sudo install -m755 "shellcheck-${ver}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Gate — bash -n + shellcheck + suites
+        run: |
+          for f in deeploy.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+          shellcheck -x deeploy.sh lib/*.sh tests/*.sh
+          rc=0
+          for t in tests/test_*.sh; do
+            echo "=== $t ==="
+            bash "$t" || rc=1
+          done
+          exit $rc
+
+      - name: Gate — tag matches DEEPLOY_VERSION
+        run: |
+          ver=$(sed -n 's/^DEEPLOY_VERSION="\${DEEPLOY_VERSION:-\([^}]*\)}"$/\1/p' lib/common.sh)
+          test -n "$ver" || { echo "could not parse DEEPLOY_VERSION from lib/common.sh"; exit 1; }
+          if [ "${GITHUB_REF_NAME}" != "v${ver}" ]; then
+            echo "tag ${GITHUB_REF_NAME} != v${ver} (lib/common.sh) — refusing to release"
+            exit 1
+          fi
+
+      - name: Build tarball + SHA256SUMS
+        # git archive of the TAG (not the checkout dir): reproducible content,
+        # respects .gitattributes, and can never scoop untracked files.
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          git archive --format=tar.gz --prefix="deeploy-${tag}/" -o "deeploy-${tag}.tar.gz" "${tag}"
+          sha256sum "deeploy-${tag}.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create DRAFT release with assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "${tag}" \
+            --draft \
+            --verify-tag \
+            --title "DeePloy ${tag}" \
+            --notes "Draft — see CHANGELOG.md. Verify: sha256sum -c SHA256SUMS" \
+            "deeploy-${tag}.tar.gz" SHA256SUMS
