@@ -5,6 +5,83 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc2] - 2026-07-02
+
+Server-free hardening: resume reliability, key-invariant enforcement, SSH/GRUB
+read-write coherence, and the release mechanics for the public flip. The last
+static batch before the next hardware run.
+
+### Security
+- The DoubleZero ID migration now **refuses to install the staked validator
+  keypair** (pubkey comparison on both copy paths) — closing the one code path
+  where the tool itself could duplicate staked key material or register the
+  staked pubkey as a DZ ID on-chain.
+- The two env-only render vectors are gated fail-closed before they land in
+  systemd units: `SOLANA_METRICS_CONFIG` (no shell/unit metacharacters) and
+  `DZ_ENV` (strict `mainnet-beta|testnet|devnet` enum).
+- The post-reboot resume unit refuses a non-root-owned or group/world-writable
+  checkout (a boot-time root-persistence vector) and quotes its ExecStart path.
+- Test fixtures use synthetic identifiers (throwaway base58 ids, RFC 5737
+  TEST-NET IPs); the internal ops journal (HANDOFF.md) is no longer tracked.
+- The private-overlay directory is anchored to the checkout — a run started
+  from any other cwd used to silently miss it and build vanilla — and
+  `**/mostly_confirmed_threshold` is git-ignored anywhere in the tree.
+
+### Reliability
+- A failed DoubleZero restore can no longer kill the post-reboot resume
+  service before the validator starts: `fail`/exit inside `dz_resume` is
+  isolated in a subshell — warn and continue to phase 8 (the staked node must
+  come up unattended even if the tunnel does not).
+- `--only` validates its phase (0-8): an unmatched value used to run nothing
+  and still print the success banner. `--only`/`--config` without a value fail
+  cleanly, and the generated validator.sh header now advertises the runnable
+  `install --only 6` form.
+- sshd port handling is read/write coherent: the effective port(s) are read
+  via `sshd -T` (which sees `sshd_config.d` Include drop-ins) with a file-parse
+  fallback; the write leaves exactly ONE `Port` directive; multiple effective
+  ports hit an explicit typed-`yes` gate (ignores `--yes`) before any change,
+  and the firewall opens every port sshd will actually listen on.
+- The SSH verify-or-rollback listener check now requires the listener to BE
+  sshd when process info is readable — any daemon parked on the port used to
+  pass the check. Port-only fallback when `-p` yields nothing; still
+  fail-closed when `ss` is absent.
+- GRUB cmdline read/write symmetry: both quote styles are parsed (single-quoted
+  provider values used to lose `console=...`), and duplicate
+  `GRUB_CMDLINE_LINUX_DEFAULT` lines collapse to one on write.
+- The boot sysctl unit runs `sysctl -e -p`: kernels without
+  `net.ipv4.tcp_low_latency` (removed in 4.14) or the `westwood` module no
+  longer fail the unit on every boot.
+- A malformed config now applies **nothing** (atomic parse-then-commit) — the
+  "ignoring malformed config" message is finally true.
+- `COMMISSION_BPS` is bounded 0-10000 (new `bps` type) at the prompt, the
+  config parser, and the render gate.
+- `state_set` writes atomically (temp file + rename — a mid-write kill can no
+  longer truncate a state entry); the fail2ban sshd jail follows the realized
+  SSH port; a missing data mount now fails the phase-8 free-space precheck
+  closed (warn + 0 GB) instead of silently skipping it.
+- A run lock (`flock`, auto-released on exit) serializes mutating commands: a
+  second concurrent `install`/`upgrade`/`dz-connect` fails fast naming the
+  holder; `verify`/`export`/`--dry-run` bypass.
+- `performance-tweaks.service` is ordered `Before=solana.service`.
+
+### Tests / CI / Release
+- Destructive-path coverage: negative eligibility on an OS-on-NVMe topology
+  (the mutation-testing escapee — the system-mount filter now has independent
+  negative coverage), the raid-volume destructive path, `require_yes` ignoring
+  `--yes`, the preflight hard gate, the `_load_config` trust split, the
+  `--only 8` isolation gate driven through the real `start_run`, and an
+  `_upgrade_fetch_tags` release-JSON fixture. Suite 843 → 1008.
+- CI: least-privilege `permissions`, concurrency cancellation, timeouts, the
+  checkout action pinned to a full commit SHA, and a pinned + sha256-verified
+  gitleaks full-history secret scan.
+- Release mechanics: SECURITY.md (private disclosure, scope, supported
+  versions), CONTRIBUTING.md (the gate, per-finding commits, signed tags), and
+  a tag-triggered release workflow that re-runs the full gate, builds
+  `deeploy-<tag>.tar.gz` + `SHA256SUMS` (the README's verification step now has
+  a producer), and creates a draft release. CI asserts the tag matches
+  `DEEPLOY_VERSION`, and the integration test derives its version pin from the
+  source instead of hardcoding it.
+
 ## [0.1.0-rc1] - 2026-06-25
 
 Security & release-hardening pass — the config-execution cluster + safe-static

@@ -173,7 +173,12 @@ check "resume service written (would install)"   "$(grep -c 'install --resume --
 check "resume service enabled (mocked systemctl)" "$(grep -c 'systemctl enable deeploy-resume.service' "$CALLS")" "1"
 check "would reboot (mocked, not executed)"       "$(grep -c 'systemctl reboot' "$CALLS")" "1"
 check "phase 8 NOT run before reboot"             "$(state_has phase-8 && echo y || echo n)" "n"
-check "install recorded deeploy_version in state" "$(sget deeploy_version)" "0.1.0"
+# The expected version is DERIVED from the source assignment (not hardcoded) so
+# this pin can never drift from lib/common.sh again — rc1 shipped 0.1.0 in the
+# code with a v0.1.0-rc1 tag, and the old hardcoded pin here matched the bug.
+SRC_VERSION=$(sed -n 's/^DEEPLOY_VERSION="\${DEEPLOY_VERSION:-\([^}]*\)}"$/\1/p' "$ROOT/lib/common.sh")
+check_true "version parses out of lib/common.sh"  "[[ -n \"$SRC_VERSION\" ]]"
+check "install recorded deeploy_version in state" "$(sget deeploy_version)" "$SRC_VERSION"
 
 echo ""
 echo "############ POST-REBOOT RESUME -> verify isolation -> phase 8 ############"

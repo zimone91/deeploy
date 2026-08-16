@@ -57,6 +57,19 @@ jobs:
           done
           exit $rc
 
+      - name: Tag == DEEPLOY_VERSION (release integrity)
+        # A tagged build must carry the version it claims: vX.Y.Z must equal the
+        # DEEPLOY_VERSION baked into lib/common.sh (rc1 shipped with a mismatch).
+        if: github.ref_type == 'tag'
+        run: |
+          ver=$(sed -n 's/^DEEPLOY_VERSION="\${DEEPLOY_VERSION:-\([^}]*\)}"$/\1/p' lib/common.sh)
+          test -n "$ver" || { echo "could not parse DEEPLOY_VERSION from lib/common.sh"; exit 1; }
+          if [ "${GITHUB_REF_NAME}" != "v${ver}" ]; then
+            echo "tag ${GITHUB_REF_NAME} != v${ver} (lib/common.sh) — fix the version or the tag"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches DEEPLOY_VERSION ${ver}"
+
   secrets:
     name: gitleaks (secret scan)
     runs-on: ubuntu-24.04
