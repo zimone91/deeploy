@@ -96,7 +96,34 @@ _isolation_grub_params() {
 _grub_current_cmdline() {
     local grub=$1
     [[ -f "$grub" ]] || return 0
-    sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$grub" | tail -1
+    # Both quote styles (N13): provider images ship single-quoted values too;
+    # the old double-quote-only parse returned EMPTY for those, silently
+    # DROPPING the provider's base params (console=ttyS0, ...) on the rewrite.
+    sed -n -e 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' \
+           -e "s/^GRUB_CMDLINE_LINUX_DEFAULT='\(.*\)'\$/\1/p" "$grub" | tail -1
+}
+
+# N13 (write side): leave EXACTLY ONE GRUB_CMDLINE_LINUX_DEFAULT line. The old
+# ensure_line edit replaced only the FIRST match while the read takes the LAST
+# — on a file with duplicate lines the two sides acted on different lines, and
+# the stale duplicate is what GRUB would actually honor. Replace ALL of them
+# with the single new line at the FIRST one's position (append if none).
+# Routed through _commit: a content-identical rewrite is a no-op, so the
+# canonical single-line file stays byte-identical.
+_grub_write_cmdline() {                           # <grub-file> <full-new-line>
+    local grub=$1 newline=$2 tmp
+    _ensure_parent "$grub"
+    tmp=$(_mktemp)
+    if [[ -e "$grub" ]]; then
+        awk -v repl="$newline" '
+            /^GRUB_CMDLINE_LINUX_DEFAULT=/ { if (!done) { print repl; done=1 }; next }
+            { print }
+            END { if (!done) print repl }
+        ' "$grub" >"$tmp"
+    else
+        printf '%s\n' "$newline" >"$tmp"
+    fi
+    _commit "$grub" "$tmp" "GRUB_CMDLINE_LINUX_DEFAULT (single line)"
 }
 # Drop DeePloy-managed tokens, keep everything else (vendor console=, mpt3sas, …).
 _grub_strip_managed() {
@@ -164,7 +191,7 @@ tuning_grub() {
     info "irqaffinity:                  $_ISO_IRQ"
     info "GRUB_CMDLINE_LINUX_DEFAULT=\"$new\""
     backup_file "$grub"
-    ensure_line "$grub" "GRUB_CMDLINE_LINUX_DEFAULT=\"$new\"" '^GRUB_CMDLINE_LINUX_DEFAULT='
+    _grub_write_cmdline "$grub" "GRUB_CMDLINE_LINUX_DEFAULT=\"$new\""   # exactly ONE line (N13)
     run update-grub
     state_set isolated_set "$_ISO_SET"
     state_set irqaffinity  "$_ISO_IRQ"
@@ -191,7 +218,11 @@ echo 0 > /proc/sys/kernel/numa_balancing
     write_file "${PERF_SERVICE_FILE:-/etc/systemd/system/performance-tweaks.service}" \
 '[Unit]
 Description=Apply performance tuning parameters
-After=multi-user.target
+# Before=solana.service (H3): governor/THP/KSM/numa must be applied before the
+# validator starts. Replaces After=multi-user.target, which both let solana
+# start first AND would form an ordering cycle combined with Before= (solana
+# is itself pulled in by multi-user.target). Matches the shape of the NIC units.
+Before=solana.service
 
 [Service]
 Type=oneshot
@@ -262,7 +293,10 @@ After=network.target local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/sysctl -p '"$f"'
+# -e: ignore keys this kernel does not know (net.ipv4.tcp_low_latency was
+# removed in 4.14; the westwood module may be absent) — a plain -p made this
+# unit FAIL on every boot on such kernels. (N10)
+ExecStart=/usr/sbin/sysctl -e -p '"$f"'
 RemainAfterExit=true
 
 [Install]

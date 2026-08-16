@@ -119,6 +119,35 @@ check "exactly one irqaffinity= token"  "$(grep -o 'irqaffinity=' <<<"$GLINE" | 
 check "isolcpus has NEW value 10,34"    "$(grep -c 'isolcpus=domain,managed_irq,10,34' "$GC")"      "1"
 check "old value 2,26 fully gone"       "$(grep -c '2,26' "$GC")"                                   "0"
 
+echo "== N13: GRUB read/write symmetry — both quote styles, duplicates collapse =="
+# single-quoted provider file: base params must survive the rewrite (the old
+# double-quote-only read returned empty -> console=ttyS0 was silently dropped).
+GS="$WORK/grub_squote"
+printf '%s\n' "GRUB_CMDLINE_LINUX_DEFAULT='quiet console=ttyS0,115200n8'" >"$GS"
+MOCK_TOTAL=48; TUNE_TOTAL=48; POH_CORE=2; XDP_CORES_COUNT=0; GRUB_FILE="$GS"
+tuning_grub >/dev/null 2>&1
+check "single-quoted: provider params preserved + merged" "$(grep -c 'quiet console=ttyS0,115200n8 amd_pstate=passive' "$GS")" "1"
+check "single-quoted: exactly one cmdline line"           "$(grep -c '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GS")" "1"
+check "single-quoted: rewritten double-quoted"            "$(grep -c '^GRUB_CMDLINE_LINUX_DEFAULT="' "$GS")" "1"
+# duplicate-lines file: the read takes the LAST line (what GRUB honors); the
+# write collapses ALL lines to ONE at the FIRST line's position.
+GD="$WORK/grub_dup"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' 'GRUB_TIMEOUT=5' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=ttyS0"' >"$GD"
+GRUB_FILE="$GD"
+tuning_grub >/dev/null 2>&1
+check "duplicates: collapsed to exactly one line"   "$(grep -c '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GD")" "1"
+check "duplicates: LAST line's provider params won" "$(grep -c 'console=ttyS0' "$GD")" "1"
+check "duplicates: line sits at the FIRST position" "$(head -1 "$GD" | grep -c '^GRUB_CMDLINE_LINUX_DEFAULT=')" "1"
+check "duplicates: unrelated line preserved"        "$(grep -c '^GRUB_TIMEOUT=5' "$GD")" "1"
+# PROVEN-PATH GUARDRAIL: the canonical single-line double-quoted fixture must
+# produce a BYTE-IDENTICAL file to what the old ensure_line edit produced.
+GB="$WORK/grub_canon"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=ttyS0,115200n8 console=tty0"' 'GRUB_TIMEOUT=5' >"$GB"
+GRUB_FILE="$GB"
+tuning_grub >/dev/null 2>&1
+printf '%s\n' "$EXPECT" 'GRUB_TIMEOUT=5' >"$WORK/grub_expected"
+check_true "canonical fixture: byte-identical file" "cmp -s \"$GB\" \"$WORK/grub_expected\""
+
 echo "== writers produce expected content =="
 PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
 check "perf script governor"   "$(grep -c 'scaling_governor' "$WORK/perf.sh")" "1"
@@ -130,6 +159,17 @@ check "sysctl congestion"      "$(grep -c 'tcp_congestion_control=westwood' "$WO
 check "sysctl nr_open"         "$(grep -c 'fs.nr_open=2000000' "$WORK/21.conf")" "1"
 # Phase 2 must contain ONLY always-valid keys — no fs.xfs.* (moved to Phase 3).
 check "Phase 2 has NO fs.xfs key (moved to disk.sh)" "$(grep -c 'fs.xfs' "$WORK/21.conf")" "0"
+
+echo "== N10: the boot sysctl unit tolerates kernel-absent keys (-e) =="
+# plain 'sysctl -p' fails the unit on EVERY boot on kernels without
+# tcp_low_latency (removed >=4.14) or the westwood module.
+check "sysctl unit ExecStart uses -e -p"    "$(grep -c 'ExecStart=/usr/sbin/sysctl -e -p' "$WORK/sysctl.service")" "1"
+check "sysctl unit: no plain '-p' ExecStart" "$(grep -c 'ExecStart=/usr/sbin/sysctl -p' "$WORK/sysctl.service")" "0"
+
+echo "== H3: performance-tweaks runs Before=solana.service =="
+check "perf unit Before=solana.service"              "$(grep -c '^Before=solana.service' "$WORK/perf.service")" "1"
+check "perf unit dropped After=multi-user.target (would cycle)" "$(grep -c '^After=multi-user.target' "$WORK/perf.service")" "0"
+check "perf unit enable semantics unchanged (WantedBy)" "$(grep -c 'WantedBy=multi-user.target' "$WORK/perf.service")" "1"
 
 echo "== Phase 2 sysctl: tolerant apply does NOT abort under set -Eeuo on a box w/o XFS =="
 # Reproduce the real-box crash conditions: production flags + a sysctl that
