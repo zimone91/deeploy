@@ -140,7 +140,9 @@ rm -f "$WORK/mainnet-validator-keypair.json"
 ( dz_connect_run ) >/dev/null 2>&1; check "connect no staked key -> fail" "$?" "1"
 
 echo "== F1/R16: leader-schedule gate parses in_leader_schedule JSON (polarity-safe) =="
-# Real captured fixtures (host000001): primary=true vs backup=false. The old
+# Shape-faithful SYNTHETIC fixtures (host000001: throwaway base58 ids + RFC 5737
+# TEST-NET IPs — the parser reads only the JSON boolean, never the identity):
+# primary=true vs backup=false. The old
 # substring 'leader schedul' matched BOTH ("leader scheduled" / "not leader
 # scheduled"), and ✅ shows for a backup too. The JSON boolean is the clean anchor;
 # fail closed on anything not exactly true.
