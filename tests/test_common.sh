@@ -106,6 +106,19 @@ ask_choice "MEV mode" "bam" bam relayer none; check "ask_choice default" "$REPLY
 confirm "proceed?" "Y";                      check "confirm default Y"  "$?" "0"
 require_yes "wipe disk?" && rc=0 || rc=1;    check "require_yes refuses non-interactive" "$rc" "1"
 
+echo "== 7c: require_yes IGNORES --yes/ASSUME_YES=1 (the README's central claim) =="
+RY=$( ASSUME_YES=1 NONINTERACTIVE=0 require_yes "wipe?" <<<"no" >/dev/null && echo PROCEEDED || echo blocked )
+check "7c: --yes + typed 'no' -> still blocked"      "$RY" "blocked"
+RY2=$( ASSUME_YES=1 NONINTERACTIVE=0 require_yes "wipe?" <<<"" >/dev/null && echo PROCEEDED || echo blocked )
+check "7c: --yes + bare Enter -> still blocked"      "$RY2" "blocked"
+RY3=$( ASSUME_YES=1 NONINTERACTIVE=0 require_yes "wipe?" <<<"yes" >/dev/null && echo proceeded || echo BLOCKED )
+check "7c: a TYPED 'yes' still proceeds"             "$RY3" "proceeded"
+RY4=$( ASSUME_YES=1 NONINTERACTIVE=1 require_yes "wipe?" </dev/null >/dev/null && echo PROCEEDED || echo blocked )
+check "7c: --yes + non-interactive -> refused"       "$RY4" "blocked"
+# the intended asymmetry: ordinary confirm() DOES honor --yes
+RY5=$( ASSUME_YES=1 NONINTERACTIVE=0 confirm "ordinary?" </dev/null >/dev/null && echo proceeded || echo BLOCKED )
+check "7c: confirm still honors --yes (asymmetry intact)" "$RY5" "proceeded"
+
 echo "== dry-run changes nothing =="
 D="$WORK/dry.conf"
 DRY_RUN=1

@@ -93,6 +93,23 @@ state_clear previous_release
 ( upgrade_rollback ) >/dev/null 2>&1
 check "no previous release -> rollback fails" "$?" "1"
 
+echo "== 7f: _upgrade_fetch_tags — canned GitHub JSON parse; malformed/empty tolerated =="
+# Restore the REAL parser (the release-check section mocked it wholesale), then
+# drive it with a curl mock returning real-shaped release JSON.
+_DEEPLOY_UPGRADE_SOURCED="" source "$ROOT/lib/upgrade.sh"
+curl() { printf '[{"tag_name": "v4.0.1-jito", "name": "x"},{"tag_name":"v4.0.0-jito"},{"tag_name":"v3.1.14-jito"}]'; }
+check "7f: parses tag_name list from release JSON" "$(_upgrade_fetch_tags jito-foundation/jito-solana | tr '\n' ' ')" "v4.0.1-jito v4.0.0-jito v3.1.14-jito "
+curl() { printf 'Not Found'; }                       # GitHub error body, no JSON
+OUT7F=$( set -Eeuo pipefail; _upgrade_fetch_tags x/y ); RC7F=$?
+check "7f: malformed body -> clean empty, rc0 under -Eeuo" "${RC7F}/${OUT7F}" "0/"
+curl() { printf ''; }                                # dead network / empty reply
+OUT7F2=$( set -Eeuo pipefail; _upgrade_fetch_tags x/y ); RC7F2=$?
+check "7f: empty reply -> clean empty, rc0"                "${RC7F2}/${OUT7F2}" "0/"
+# and the tag chooser still defaults to CURRENT when the lists are empty
+state_set jito_tag v4.0.0-jito
+upgrade_check_releases >/dev/null 2>&1
+check "7f: empty tag lists -> chooser defaults to current" "$UPGRADE_TAG" "v4.0.0-jito"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

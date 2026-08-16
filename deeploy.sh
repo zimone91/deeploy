@@ -286,7 +286,9 @@ _deeploy_acquire_lock() {
 
 # --- config + args -----------------------------------------------------------
 _load_config() {
-    local cfg="${CONFIG_FILE:-${DEEPLOY_CONF:-/opt/deeploy/deeploy.conf}}"
+    # DEEPLOY_DEFAULT_CONF is a TEST SEAM only (lets the suite exercise the
+    # default-path warn branch in a sandbox); the production default is fixed.
+    local cfg="${CONFIG_FILE:-${DEEPLOY_CONF:-${DEEPLOY_DEFAULT_CONF:-/opt/deeploy/deeploy.conf}}}"
     [[ -f "$cfg" ]] || return 0
     # Parse, NEVER source (S2): this runs on EVERY command, before dispatch, so a
     # poisoned conf at any of these paths must not execute as root.

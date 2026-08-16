@@ -121,21 +121,39 @@ check "N4: --only 6 runs exactly phase 6"         "$(tr '\n' ' ' <"$RAN")" "vali
 # drift-proof: the header constant must keep naming the ValidatorConfig phase
 check "N4: VALIDATORCFG_PHASE names ValidatorConfig" "$(phase_name "${VALIDATORCFG_PHASE:?}")" "ValidatorConfig"
 
-echo "== I2: install --only 8 is isolation-gated (it bypasses the reboot boundary) =="
-# --only 8 runs start_run directly, skipping _install_reboot_boundary. The gate now
-# lives in start_run, so a mismatch must still refuse to start. Use a start_run that
-# runs the REAL gate (the suite's stub doesn't), then restore the stub.
+echo "== I2: install --only 8 is isolation-gated — driven through the REAL start_run =="
+# --only 8 runs start_run directly, skipping _install_reboot_boundary. The gate
+# lives in the real start_run (start.sh); drive THAT, mocking only its
+# externals — so neutering the gate in start.sh fails this suite too. (The old
+# test's stub called the gate itself, i.e. it tested the stub.)
+_DEEPLOY_START_SOURCED="" source "$ROOT/lib/start.sh"     # restore the real start_run
+start_resolve_config() { :; }; start_precheck_disk() { :; }
+start_enable_service() { echo 'ENABLE' >>"$RAN"; }
+start_wait_catchup() { :; }; start_pin_poh() { :; }
+verify_run() { :; }; start_print_summary() { :; }
 reset_state; state_set isolated_set "1-2,10,25-26,34"
-start_run() { _install_verify_isolation || fail "iso gate"; echo 'start_run' >>"$RAN"; }
 _install_read_isolated() { echo "10,34"; }                          # MISMATCH (GRUB didn't apply)
 _install_read_cmdline()  { echo "isolcpus=domain,managed_irq,10,34"; }
 : >"$RAN"; ( ONLY_PHASE=8 install_run ) >/dev/null 2>&1; RC=$?
-check "I2: --only 8 mismatch -> aborts"        "$RC" "1"
-check "I2: --only 8 mismatch -> start NOT run" "$(grep -c '^start_run$' "$RAN")" "0"
+check "I2: --only 8 mismatch -> aborts"                "$RC" "1"
+check "I2: --only 8 mismatch -> service NEVER enabled" "$(grep -c '^ENABLE$' "$RAN")" "0"
 _install_read_isolated() { echo "1-2,10,25-26,34"; }               # MATCH
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
 : >"$RAN"; ONLY_PHASE=8 install_run >/dev/null 2>&1; ONLY_PHASE=""
-check "I2: --only 8 match -> start runs"        "$(grep -c '^start_run$' "$RAN")" "1"
+check "I2: --only 8 match -> real start_run proceeds"  "$(grep -c '^ENABLE$' "$RAN")" "1"
 start_run() { echo 'start_run' >>"$RAN"; }   # restore the suite stub
+
+echo "== 7d: _load_config trust split — explicit config aborts, default path warns on =="
+printf 'SSH_PORT="70000"\n' >"$WORK/badconf"        # whitelisted key, invalid value
+( CONFIG_FILE="$WORK/badconf" DEEPLOY_CONF="" _load_config ) >/dev/null 2>&1
+check "7d: explicit --config malformed -> abort"       "$?" "1"
+( CONFIG_FILE="" DEEPLOY_CONF="$WORK/badconf" _load_config ) >/dev/null 2>&1
+check "7d: explicit \$DEEPLOY_CONF malformed -> abort" "$?" "1"
+LDOUT=$( CONFIG_FILE="" DEEPLOY_CONF="" DEEPLOY_DEFAULT_CONF="$WORK/badconf" _load_config 2>&1 ); LDRC=$?
+check "7d: default-path malformed -> continues (rc0)"  "$LDRC" "0"
+check "7d: default-path malformed -> warns 'ignoring'" "$(grep -c 'ignoring malformed config' <<<"$LDOUT")" "1"
+( CONFIG_FILE="" DEEPLOY_CONF="$WORK/absent.conf" _load_config ) >/dev/null 2>&1
+check "7d: absent config -> quiet no-op (rc0)"         "$?" "0"
 
 echo "== DZ Phase 7 dispatch: runs doublezero_run (pointer) iff state dz_enabled=true =="
 # The enable DECISION is made EARLY in Phase 1 (base -> dz_should_enable), which

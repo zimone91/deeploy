@@ -245,6 +245,57 @@ _disk_classify;  check "_disk_classify returns 0"                         "$?" "
 ( set -Eeuo pipefail; unset ACCOUNTS_DISK LEDGER_DISK; DRY_RUN=1 disk_run ) >/dev/null 2>&1
 check "full disk_run completes under set -Eeuo pipefail" "$?" "0"
 
+echo "== 7a: NVMe-OS topology — the system-MOUNT filter alone must refuse (X2 feeder) =="
+# OS on nvme0n1 (/ + ESP partitions), two CLEAN data NVMe. Every prior negative
+# fixture was SATA (/dev/sd*), which the independent NVMe filter already
+# rejects — so the system-mount filter itself had ZERO negative coverage on an
+# NVMe-OS box (the escaped mutation). Root is passed as 'sda' below so ONLY the
+# subtree-has-system check can trip the refusal.
+LSBLK_ENUM='nvme0n1 512110190592 disk 0 OS_NVMe
+nvme1n1 2000398934016 disk 0 Samsung_PM9A3
+nvme2n1 2000398934016 disk 0 Samsung_PM9A3'
+_mp_for() { case "$1" in */nvme0n1) printf '/\n/boot/efi\n';; *) printf '';; esac; }
+findmnt() { echo "/dev/nvme0n1p2"; }
+export PROC_MDSTAT="$WORK/no_md_7a"    # absent -> no arrays
+blkid() { local d=${!#}; echo "U-${d##*/}"; }
+ask_choice() { REPLY="$2"; }
+_disk_scan_raid; _disk_classify
+check "7a: OS NVMe classified as SYSTEM"           "${_DISK_SYSTEM[*]}" "nvme0n1"
+check "7a: menu eligible = only the clean NVMe"    "${_DISK_ELIGIBLE[*]}" "nvme1n1 nvme2n1"
+( _disk_assert_eligible /dev/nvme0n1 sda ) >/dev/null 2>&1
+check "7a: assert_eligible REFUSES the OS NVMe (system-mount filter, not root/NVMe)" "$?" "1"
+( _disk_assert_eligible /dev/nvme1n1 sda ) >/dev/null 2>&1
+check "7a: a clean NVMe is still accepted"         "$?" "0"
+unset ACCOUNTS_DISK LEDGER_DISK
+( ACCOUNTS_DISK=/dev/nvme0n1 LEDGER_DISK=/dev/nvme1n1 _disk_resolve ) >/dev/null 2>&1
+check "7a: --config path naming the OS NVMe refused end-to-end" "$?" "1"
+
+echo "== 7b: raid-volume destructive path — gate, mkfs argv, mounted-elsewhere =="
+_DISK_RAID_MD="md1"; _DISK_RAID_MOUNT="$WORK/data7b"
+MP_A=""; MP_L=""
+_mp_for() { printf ''; }
+# declined (or non-interactive): require_yes blocks BEFORE any mkfs
+require_yes() { return 1; }
+: >"$CALLS"
+( SOLANA_HOME="$WORK/data7b/solana" _disk_raid_volume ) >/dev/null 2>&1
+check "7b: declined -> aborts"                "$?" "1"
+check "7b: declined -> NO mkfs issued"        "$(grep -c 'mkfs.xfs' "$CALLS")" "0"
+# confirmed: mkfs argv targets the md DEVICE, fstab + mount follow
+require_yes() { echo "GATE7B" >>"$CALLS"; return 0; }
+: >"$CALLS"; : >"$FSTAB_FILE"
+SOLANA_HOME="$WORK/data7b/solana" _disk_raid_volume >/dev/null 2>&1
+check "7b: gate consulted before mkfs"        "$(grep -c GATE7B "$CALLS")" "1"
+check "7b: mkfs argv = the md device"         "$(grep -c 'mkfs.xfs -f /dev/md1' "$CALLS")" "1"
+check "7b: mount -a issued"                   "$(grep -c 'mount -a' "$CALLS")" "1"
+check "7b: fstab entry for the data mount"    "$(grep -c "UUID=U-md1 $WORK/data7b xfs " "$FSTAB_FILE")" "1"
+check_true "7b: home dirs prepared"           "[[ -d \"$WORK/data7b/solana/ledger\" && -d \"$WORK/data7b/solana/accounts\" ]]"
+# array mounted somewhere ELSE -> warn + no wipe (manual resolution)
+_mp_for() { case "$1" in */md1) printf '/somewhere\n';; *) printf '';; esac; }
+: >"$CALLS"
+OUT7B=$( SOLANA_HOME="$WORK/data7b/solana" _disk_raid_volume 2>&1 )
+check "7b: mounted-elsewhere -> warns"        "$(grep -c 'mounted elsewhere' <<<"$OUT7B")" "1"
+check "7b: mounted-elsewhere -> NO mkfs"      "$(grep -c 'mkfs.xfs' "$CALLS")" "0"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

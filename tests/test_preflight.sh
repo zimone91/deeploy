@@ -144,6 +144,21 @@ state_set current-phase "3:Disk"
 reset; _pf_check_existing >/dev/null 2>&1; counts "mid-phase resume warn" 0 1
 state_clear current-phase
 
+echo "== 7d: preflight_run HARD-GATES (_PF_HARD>0 -> abort; warns alone pass) =="
+require_root() { :; }
+for f in _pf_check_platform _pf_check_cpu _pf_check_memory _pf_check_storage _pf_check_nic \
+         _pf_check_time _pf_check_cluster _pf_check_region _pf_check_ports _pf_check_bandwidth \
+         _pf_check_existing; do
+    eval "${f}() { :; }"
+done
+_pf_check_platform() { pf_bad "synthetic blocking issue"; }
+PFOUT=$( ( preflight_run ) 2>&1 ); PFRC=$?
+check "7d: one hard issue -> preflight aborts (rc1)" "$PFRC" "1"
+check "7d: abort message counts the blockers"        "$(grep -c 'Preflight found 1 blocking issue' <<<"$PFOUT")" "1"
+_pf_check_platform() { pf_warn "soft issue only"; }
+( preflight_run ) >/dev/null 2>&1
+check "7d: warnings alone -> preflight passes (rc0)" "$?" "0"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
