@@ -373,8 +373,11 @@ main() {
     deeploy_init_traps
     _load_config
     # N11: mutating subcommands are serialized; verify/export/--dry-run bypass.
+    # import IS mutating (it state_sets every whitelisted key, + region keys
+    # under --rescore), so it takes the lock too — an import racing the resume
+    # service's catchup wait was exactly the interleaving this closes.
     case "$SUBCMD" in
-        install|upgrade|dz-connect|dz-finalize) _deeploy_acquire_lock ;;
+        install|upgrade|import|dz-connect|dz-finalize) _deeploy_acquire_lock ;;
     esac
     case "$SUBCMD" in
         install)     install_run ;;

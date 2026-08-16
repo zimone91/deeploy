@@ -62,8 +62,9 @@ _dz_staked_pubkey() { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null || tru
 # on-chain. Derive the candidate's pubkey (read-only, the same solana-keygen
 # mechanism keys_validate uses) and hard-refuse on a match with the staked key.
 # Staked keypair absent (normal pre-swap box) -> proceed, warn that the check
-# was skipped. Pubkeys underivable -> proceed with a warn (dz-connect's own
-# staked-pubkey read fails loudly right after if the toolchain is broken).
+# was skipped. Staked PRESENT but pubkeys underivable (broken/missing
+# toolchain) -> FAIL-CLOSED: refuse to copy a key we cannot identity-check —
+# this guard protects the central invariant and must not degrade to a warn.
 _dz_assert_not_staked_key() {                    # <candidate-file>
     local cand=$1 staked cand_pk staked_pk
     staked="${STAKED_KEYPAIR:-$(state_get staked_keypair "")}"
@@ -74,8 +75,7 @@ _dz_assert_not_staked_key() {                    # <candidate-file>
     cand_pk="$(_dz_staked_pubkey "$cand")"
     staked_pk="$(_dz_staked_pubkey "$staked")"
     if [[ -z "$cand_pk" || -z "$staked_pk" ]]; then
-        warn "could not derive pubkeys to compare '${cand}' against the staked keypair — identity check skipped"
-        return 0
+        fail "cannot verify '${cand}' against the staked keypair (pubkey derivation failed — is the solana toolchain installed?) — refusing to copy a key that cannot be identity-checked. Nothing was copied."
     fi
     [[ "$cand_pk" != "$staked_pk" ]] || fail "REFUSED: '${cand}' is your STAKED validator keypair (${cand_pk}) — it must never be copied or registered as a DoubleZero ID. Point at your DoubleZero keypair (dz-keypair.json) instead; nothing was copied."
     return 0

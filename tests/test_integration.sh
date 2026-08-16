@@ -34,7 +34,7 @@ export MLX5_IRQ_SCRIPT="$WORK/root/solana/mlx5-irq.sh" MLX5_IRQ_SERVICE="$WORK/m
 export SOLANA_INSTALL_DIR="$WORK/install" MOSTLY_THRESHOLD_ROOT="$WORK/mct" RESUME_SERVICE_FILE="$WORK/deeploy-resume.service"
 export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo" PROC_MDSTAT="$WORK/mdstat"
 export SSHD_CONFIG="$WORK/etc/sshd_config" NIC_TUNING_SCRIPT="$WORK/nic-tuning.sh" NIC_TUNING_SERVICE="$WORK/nic-tuning.service"
-export FAIL2BAN_JAIL_LOCAL="$WORK/etc/fail2ban-jail.local"
+export FAIL2BAN_JAIL_DROPIN="$WORK/etc/fail2ban-deeploy-sshd.local"
 # F3/F4: redirect the swapfile into the sandbox AND make it unremovable (a non-empty
 # dir, so `rm -f` fails) — this keeps the -e assertions OFF the host's real /swapfile
 # (which may be active -> EPERM) AND exercises the non-fatal swapfile-rm path: the
@@ -87,6 +87,10 @@ blkid()       { local d=${!#}; echo "UUID-${d##*/}"; }
 mountpoint()  { return 1; }
 timedatectl() { echo yes; }
 ss()          { printf 'LISTEN 0 128 0.0.0.0:2222 0.0.0.0:*\n'; return 0; }   # sshd listening on the new port
+# Hermetic: _sshd_effective_ports runs a real `sshd -T` when unmocked — as
+# root on a box with openssh-server it would return the HOST's ports instead
+# of the sandbox fixture. Force the file-parse fallback (same as test_base).
+sshd()        { return 1; }
 df()          { printf 'FS 1G Used Avail Use Mounted\n/dev/x 1800G 10G 1790G 1%% /m\n'; }
 ping()        { local h=${!#}; case "$h" in *frankfurt*) printf '%s\n' "0% packet loss" "rtt min/avg/max/mdev = 7/8.0/9/0.3 ms";; *) printf '%s\n' "100% packet loss"; return 1;; esac; }
 curl()        { case "$*" in *getGenesisHash*) printf '{"result":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"}';;

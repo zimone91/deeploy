@@ -81,6 +81,8 @@ _deeploy_acquire_lock() { echo "LOCK" >>"$LOCKLOG"; }
 check "N11: 'install' takes the lock"           "$(grep -c LOCK "$LOCKLOG")" "1"
 : >"$LOCKLOG"; ( upgrade_cmd() { :; };    main upgrade )    >/dev/null 2>&1
 check "N11: 'upgrade' takes the lock"           "$(grep -c LOCK "$LOCKLOG")" "1"
+: >"$LOCKLOG"; ( import_cmd() { :; };     main import )     >/dev/null 2>&1
+check "N11: 'import' takes the lock (it writes state)" "$(grep -c LOCK "$LOCKLOG")" "1"
 : >"$LOCKLOG"; ( dz_connect_cmd() { :; }; main dz-connect ) >/dev/null 2>&1
 check "N11: 'dz-connect' takes the lock"        "$(grep -c LOCK "$LOCKLOG")" "1"
 : >"$LOCKLOG"; ( verify_cmd() { :; };     main verify )     >/dev/null 2>&1

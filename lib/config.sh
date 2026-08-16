@@ -149,7 +149,11 @@ _cfg_t_portrange() {
 }
 _cfg_t_cores()     { [[ "$1" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; }
 _cfg_t_int()       { [[ "$1" =~ ^[0-9]+$ ]]; }
-_cfg_t_bps()       { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 10000 )); }   # basis points: 0-10000 (N9)
+# basis points: 0-10000 (N9). The digit cap is load-bearing: bash arithmetic
+# wraps silently at 2^64, so an uncapped `10#$1 <= 10000` accepts e.g.
+# 18446744073709561616 (= 2^64+10000 -> wraps to 10000) and the raw 20-digit
+# string would render into validator.sh — the exact crash-loop N9 prevents.
+_cfg_t_bps()       { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 <= 10000 )); }
 _cfg_t_bool()      { [[ "$1" =~ ^(true|false)$ ]]; }
 _cfg_t_flag()      { [[ "$1" =~ ^[01]$ ]]; }
 _cfg_t_url()       { [[ "$1" =~ ^https?://[A-Za-z0-9._:/-]+$ ]]; }

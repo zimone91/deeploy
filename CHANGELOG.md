@@ -57,11 +57,12 @@ static batch before the next hardware run.
   config parser, and the render gate.
 - `state_set` writes atomically (temp file + rename — a mid-write kill can no
   longer truncate a state entry); the fail2ban sshd jail follows the realized
-  SSH port; a missing data mount now fails the phase-8 free-space precheck
+  SSH port via a `jail.d` drop-in (never clobbering an operator-owned
+  jail.local); a missing data mount now fails the phase-8 free-space precheck
   closed (warn + 0 GB) instead of silently skipping it.
 - A run lock (`flock`, auto-released on exit) serializes mutating commands: a
-  second concurrent `install`/`upgrade`/`dz-connect` fails fast naming the
-  holder; `verify`/`export`/`--dry-run` bypass.
+  second concurrent `install`/`upgrade`/`import`/`dz-connect` fails fast
+  naming the holder; `verify`/`export`/`--dry-run` bypass.
 - `performance-tweaks.service` is ordered `Before=solana.service`.
 
 ### Tests / CI / Release
@@ -70,7 +71,7 @@ static batch before the next hardware run.
   negative coverage), the raid-volume destructive path, `require_yes` ignoring
   `--yes`, the preflight hard gate, the `_load_config` trust split, the
   `--only 8` isolation gate driven through the real `start_run`, and an
-  `_upgrade_fetch_tags` release-JSON fixture. Suite 843 → 1008.
+  `_upgrade_fetch_tags` release-JSON fixture. Suite 843 → 1016.
 - CI: least-privilege `permissions`, concurrency cancellation, timeouts, the
   checkout action pinned to a full commit SHA, and a pinned + sha256-verified
   gitleaks full-history secret scan.

@@ -170,6 +170,10 @@ type_reject "portrange bad port" 'DYNAMIC_PORT_RANGE="10-70000"'
 type_reject "bps over 10000"     'COMMISSION_BPS="10001"'
 type_reject "bps negative"       'COMMISSION_BPS="-1"'
 type_reject "bps junk"           'COMMISSION_BPS="1e9"'
+# 64-bit wraparound (adversarial-review find): bash arithmetic wraps at 2^64,
+# so 2^64+10000 would pass an uncapped `<= 10000` — the digit cap must hold.
+type_reject "bps 2^64 wrap"      'COMMISSION_BPS="18446744073709561616"'
+type_reject "bps 6 digits"       'COMMISSION_BPS="100000"'
 
 echo "== S2: VALID values of every type ACCEPTED (incl. portrange under set -u) =="
 type_accept() {   # <desc> <conf line> <KEY> <expected-global>
@@ -201,10 +205,15 @@ echo "== N12: a malformed config applies NOTHING (atomic parse-then-commit) =="
 # sides of the bad line: neither may be applied.
 unset SSH_PORT POH_CORE 2>/dev/null || true
 printf '%s\n' 'SSH_PORT="2222"' 'BAM_URL="http://x y"' 'POH_CORE="10"' >"$WORK/n12.conf"
-N12OUT=$(_config_parse_safe "$WORK/n12.conf" 2>&1); N12RC=$?
+# Run in the CURRENT shell (adversarial-review fix): a $() capture is a
+# subshell, so printf -v assignments could never reach these probes and the
+# test passed even against the old apply-as-you-parse code. Output is captured
+# in a separate run below.
+_config_parse_safe "$WORK/n12.conf" >/dev/null 2>&1; N12RC=$?
 check "N12: malformed file -> rc1"                        "$N12RC" "1"
 check "N12: key BEFORE the bad line NOT applied"          "${SSH_PORT:-<unset>}" "<unset>"
 check "N12: key AFTER the bad line NOT applied"           "${POH_CORE:-<unset>}" "<unset>"
+N12OUT=$(_config_parse_safe "$WORK/n12.conf" 2>&1 || true)
 check "N12: warn says nothing applied (message now true)" "$(grep -c 'nothing applied' <<<"$N12OUT")" "1"
 # a clean file behaves exactly as before: rc0, globals set
 printf '%s\n' 'SSH_PORT="2222"' 'POH_CORE="10"' >"$WORK/n12ok.conf"

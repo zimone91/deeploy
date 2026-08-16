@@ -155,6 +155,13 @@ N6ABS=$( DZ_KEYPAIR="$N6_BAD" STAKED_KEYPAIR="" dz_keypair_migrate 2>&1 ); N6ARC
 check "N6: staked ABSENT -> proceeds (pre-swap box)"   "$N6ARC" "0"
 check "N6: staked ABSENT -> warns check skipped"       "$(grep -c 'identity check skipped' <<<"$N6ABS")" "1"
 printf '[9]' >"$N6_STAKED"   # restore for later sections
+# staked PRESENT but pubkeys underivable (broken toolchain) -> FAIL-CLOSED:
+# refuse the copy rather than skip the check (adversarial-review fix).
+mkdir -p "$WORK/nobin"; rm -f "$WORK/dzconfig/id.json"; : >"$CALLS"
+N6UND=$( DZ_KEYPAIR="$N6_OK" STAKED_KEYPAIR="" SOLANA_BIN="$WORK/nobin" dz_keypair_migrate 2>&1 ); N6URC=$?
+check "N6: underivable pubkeys -> fail-closed (rc1)"   "$N6URC" "1"
+check "N6: underivable -> NO install issued"           "$(grep -c 'install -m 600' "$CALLS")" "0"
+check "N6: underivable -> names the toolchain"         "$(grep -c 'pubkey derivation failed' <<<"$N6UND")" "1"
 
 echo "== dz-connect GUARD: enabled + binaries installed + staked key (replaces dz_prepared) =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
@@ -371,8 +378,12 @@ check "N16: unknown env word -> fails (enum, not charset)" "$?" "1"
 check "N16: testnet accepted"                        "$?" "0"
 ( DZ_ENV=mainnet-beta dz_env_override ) >/dev/null 2>&1
 check "N16: shipped default mainnet-beta accepted"   "$?" "0"
-( DZ_ENV=bogus dz_connect_run ) >/dev/null 2>&1
-check "N16: dz-connect entry validates DZ_ENV too"   "$?" "1"
+# Assert on the MESSAGE, not just rc — dz_connect_run fails later for other
+# reasons in this harness, so a bare rc check couldn't pin THIS gate
+# (adversarial-review fix: the assertion was mutation-insensitive).
+N16CONN=$( DZ_ENV=bogus dz_connect_run 2>&1 ); N16CRC=$?
+check "N16: dz-connect entry validates DZ_ENV too (rc1)" "$N16CRC" "1"
+check "N16: dz-connect names the DZ_ENV rejection"       "$(grep -c "DZ_ENV 'bogus' invalid" <<<"$N16CONN")" "1"
 
 echo "== dz_resume: gated on dz_connected (NOT dz_enabled); no-op until connected =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
