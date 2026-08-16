@@ -5,8 +5,12 @@
 
 # Private build overlay (optional custom patches + their threshold) — the only
 # path by which a non-vanilla build is produced. Excluded so it cannot leak.
+# The threshold file is blocked ANYWHERE in the tree (not only under private/):
+# toolchain_write_threshold also copies it to $SOLANA_HOME, and a stray copy in
+# a checkout must never be committable. (P13)
 private/
 *.patch
+**/mostly_confirmed_threshold
 
 # Real configs and key material (only the .example is tracked)
 deeploy.conf

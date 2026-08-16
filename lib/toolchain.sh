@@ -27,7 +27,10 @@ JITO_SRC="${JITO_SRC:-$HOME/jito-solana}"
 JITO_REPO="${JITO_REPO:-https://github.com/jito-foundation/jito-solana.git}"
 RUST_TARGET_CPU="${RUST_TARGET_CPU:-native}"
 # Generic optional overlay directory (git-ignored). No specific filename here.
-OVERLAY_DIR="${DEEPLOY_OVERLAY_DIR:-private}"
+# Anchored to the CHECKOUT (DEEPLOY_DIR, set by deeploy.sh before sourcing), NOT
+# the cwd: a run started from any other directory used to resolve "private"
+# relative to $PWD, silently miss the overlay, and build VANILLA (R10).
+OVERLAY_DIR="${DEEPLOY_OVERLAY_DIR:-${DEEPLOY_DIR:-.}/private}"
 # Root threshold path (overridable for tests). The per-home one comes from state.
 MOSTLY_THRESHOLD_ROOT="${MOSTLY_THRESHOLD_ROOT:-/mostly_confirmed_threshold}"
 

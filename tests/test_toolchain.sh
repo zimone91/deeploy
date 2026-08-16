@@ -60,6 +60,32 @@ toolchain_apply_overlay >/dev/null 2>&1
 check "drift: _OVERLAY_APPLIED=0" "$_OVERLAY_APPLIED" "0"
 check "drift: no git apply"       "$(grep -c 'apply ' "$CALLS")" "0"
 
+echo "== R10: OVERLAY_DIR anchors to the checkout (DEEPLOY_DIR), never the cwd =="
+# The old default ("private", cwd-relative) silently built VANILLA when DeePloy
+# was invoked from any directory other than the checkout. The default must now
+# resolve under DEEPLOY_DIR regardless of $PWD.
+mkdir -p "$WORK/checkout/private" "$WORK/elsewhere"
+echo "diff" >"$WORK/checkout/private/some.patch"
+OVOUT="$(cd "$WORK/elsewhere" && DEEPLOY_DIR="$WORK/checkout" bash -c '
+    unset DEEPLOY_OVERLAY_DIR OVERLAY_DIR
+    source "'"$ROOT"'/lib/common.sh"
+    source "'"$ROOT"'/lib/toolchain.sh"
+    printf "%s\n" "$OVERLAY_DIR"
+    _toolchain_find_overlay || echo NOTFOUND')"
+check "R10: default OVERLAY_DIR = \$DEEPLOY_DIR/private"  "$(sed -n 1p <<<"$OVOUT")" "$WORK/checkout/private"
+check "R10: overlay patch found from an unrelated cwd"    "$(sed -n 2p <<<"$OVOUT")" "$WORK/checkout/private/some.patch"
+# Explicit DEEPLOY_OVERLAY_DIR still wins over the anchored default.
+OVEXP="$(DEEPLOY_DIR="$WORK/checkout" DEEPLOY_OVERLAY_DIR="$WORK/explicit-ov" bash -c '
+    unset OVERLAY_DIR
+    source "'"$ROOT"'/lib/common.sh"
+    source "'"$ROOT"'/lib/toolchain.sh"
+    printf "%s" "$OVERLAY_DIR"')"
+check "R10: explicit DEEPLOY_OVERLAY_DIR override wins"   "$OVEXP" "$WORK/explicit-ov"
+
+echo "== P13: .gitignore blocks the threshold file anywhere in the tree =="
+check "gitignore has **/mostly_confirmed_threshold" "$(grep -cxF '**/mostly_confirmed_threshold' "$ROOT/.gitignore")" "1"
+check "gitignore still ignores private/"            "$(grep -cx 'private/' "$ROOT/.gitignore")" "1"
+
 echo "== threshold written ONLY when overlay applied =="
 state_set solana_home "$WORK/home"; mkdir -p "$WORK/home"
 _OVERLAY_APPLIED=0; rm -f "$MOSTLY_THRESHOLD_ROOT" "$WORK/home/mostly_confirmed_threshold"
