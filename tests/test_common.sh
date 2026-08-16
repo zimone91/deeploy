@@ -84,6 +84,22 @@ check       "state_get default" "$(state_get phase-9 MISSING)" "MISSING"
 mark_phase_done 4
 check_true "mark/is_phase_done" "is_phase_done 4"
 
+echo "== N15: state_set is atomic (temp-in-state-dir + rename, never truncate) =="
+state_set atomkey "v1"
+check "atomic: value round-trips"           "$(state_get atomkey)" "v1"
+state_set atomkey "v2"
+check "atomic: overwrite round-trips"       "$(state_get atomkey)" "v2"
+# perms match the old plain-redirect creation (default umask -> 644)
+# shellcheck disable=SC2012
+check "atomic: file mode 644 (as before)"   "$(ls -l "$DEEPLOY_STATE_DIR/state.d/atomkey" | cut -c1-10)" "-rw-r--r--"
+# a simulated mid-write kill: the RENAME fails -> the OLD value must survive
+# intact (proves tmp-then-rename; an in-place '>file' would have truncated it)
+mv() { return 1; }
+state_set atomkey "v3" >/dev/null 2>&1 || true
+unset -f mv
+check "atomic: failed rename leaves the OLD value" "$(state_get atomkey)" "v2"
+check "atomic: no temp litter left behind"  "$(find "$DEEPLOY_STATE_DIR/state.d" -name '.atomkey.*' | wc -l | tr -d ' ')" "0"
+
 echo "== non-interactive prompts use defaults =="
 ask "PoH core" "2";                         check "ask default"        "$REPLY" "2"
 ask_choice "MEV mode" "bam" bam relayer none; check "ask_choice default" "$REPLY" "bam"

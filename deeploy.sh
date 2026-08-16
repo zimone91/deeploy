@@ -236,6 +236,31 @@ upgrade_cmd()     { require_root; debug "upgrade (rollback=${ROLLBACK:-0})"; upg
 export_cmd()      { require_root; config_export; }
 import_cmd()      { require_root; debug "import (rescore=${RESCORE:-0})"; config_import; }
 
+# --- run lock (N11) ----------------------------------------------------------
+# One MUTATING DeePloy at a time: the resume service can sit in the catchup
+# wait for up to an hour while an impatient operator starts a manual
+# `install --resume` or an `upgrade` — previously both interleaved freely over
+# the same state dir. flock is held on fd 9 for the process lifetime and
+# auto-released on any exit/crash (no stale-lock handling needed); the resume
+# service goes through `main install` and therefore the same lock. Non-blocking:
+# a second mutating run fails FAST, naming the holder. Read-only subcommands
+# (verify/export) and --dry-run bypass. Degrades to a no-op when flock is
+# unavailable (not POSIX; absent on macOS dev boxes) or the state dir is
+# unwritable (common_init already warned loudly about that).
+_deeploy_acquire_lock() {
+    local lockfile="${DEEPLOY_LOCK_FILE:-$STATE_DIR/.lock}"
+    is_dry_run && return 0
+    have flock || { debug "flock not available — run lock skipped"; return 0; }
+    mkdir -p "$(dirname "$lockfile")" 2>/dev/null || return 0
+    exec 9>>"$lockfile" || return 0     # append-open: never clobber the holder info
+    if ! flock -n 9; then
+        fail "another DeePloy run holds the lock ($(cat "$lockfile" 2>/dev/null || echo 'pid unknown')) — wait for it to finish. Lock: ${lockfile}"
+    fi
+    printf 'pid %s (%s) since %s' "$$" "${SUBCMD:-?}" "$(_ts)" >"$lockfile" 2>/dev/null || true
+    debug "run lock acquired (${lockfile})"
+    return 0
+}
+
 # --- config + args -----------------------------------------------------------
 _load_config() {
     local cfg="${CONFIG_FILE:-${DEEPLOY_CONF:-/opt/deeploy/deeploy.conf}}"
@@ -322,6 +347,10 @@ main() {
     debug "flags: dry_run=${DRY_RUN:-0} net_test=${NET_TEST:-0} force=${FORCE:-0} post_reboot=${POST_REBOOT:-0}"
     deeploy_init_traps
     _load_config
+    # N11: mutating subcommands are serialized; verify/export/--dry-run bypass.
+    case "$SUBCMD" in
+        install|upgrade|dz-connect|dz-finalize) _deeploy_acquire_lock ;;
+    esac
     case "$SUBCMD" in
         install)     install_run ;;
         upgrade)     upgrade_cmd ;;

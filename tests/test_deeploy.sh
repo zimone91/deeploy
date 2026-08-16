@@ -51,6 +51,39 @@ check "no --net-test leaves NET_TEST as-is" "$( NET_TEST=0; parse_args install; 
 ( parse_args install --bogus-flag ) >/dev/null 2>&1
 check "unknown flag still fails (fail-closed parse)" "$?" "1"
 
+echo "== N11: run lock — a second mutating run fails fast; read-only/dry-run bypass =="
+# flock mocked (absent on macOS; have() resolves functions): $WORK/lockheld
+# simulates another live holder.
+FLOCKCALLS="$WORK/flockcalls"; : >"$FLOCKCALLS"
+flock() { echo "flock $*" >>"$FLOCKCALLS"; [[ -e "$WORK/lockheld" ]] && return 1; return 0; }
+rm -f "$WORK/lockheld"
+( _deeploy_acquire_lock ) >/dev/null 2>&1
+check "N11: free lock -> acquired (rc0)"        "$?" "0"
+touch "$WORK/lockheld"
+NLOUT=$( ( _deeploy_acquire_lock ) 2>&1 ); NLRC=$?
+check "N11: held lock -> fails fast (rc1)"      "$NLRC" "1"
+check "N11: failure names the holder + lock"    "$(grep -c 'holds the lock' <<<"$NLOUT")" "1"
+: >"$FLOCKCALLS"
+( DRY_RUN=1 _deeploy_acquire_lock ) >/dev/null 2>&1
+check "N11: dry-run bypasses (flock not consulted)" "$(wc -l <"$FLOCKCALLS" | tr -d ' ')" "0"
+rm -f "$WORK/lockheld"
+# sequential runs are unaffected: acquire, 'exit', acquire again
+( _deeploy_acquire_lock ) >/dev/null 2>&1; ( _deeploy_acquire_lock ) >/dev/null 2>&1
+check "N11: sequential runs both acquire"       "$?" "0"
+# dispatch wiring: mutating subcommands lock; verify/export do not
+LOCKLOG="$WORK/locklog"
+_deeploy_acquire_lock() { echo "LOCK" >>"$LOCKLOG"; }
+: >"$LOCKLOG"; ( install_run() { :; };    main install )    >/dev/null 2>&1
+check "N11: 'install' takes the lock"           "$(grep -c LOCK "$LOCKLOG")" "1"
+: >"$LOCKLOG"; ( upgrade_cmd() { :; };    main upgrade )    >/dev/null 2>&1
+check "N11: 'upgrade' takes the lock"           "$(grep -c LOCK "$LOCKLOG")" "1"
+: >"$LOCKLOG"; ( dz_connect_cmd() { :; }; main dz-connect ) >/dev/null 2>&1
+check "N11: 'dz-connect' takes the lock"        "$(grep -c LOCK "$LOCKLOG")" "1"
+: >"$LOCKLOG"; ( verify_cmd() { :; };     main verify )     >/dev/null 2>&1
+check "N11: 'verify' does NOT lock"             "$(grep -c LOCK "$LOCKLOG")" "0"
+: >"$LOCKLOG"; ( export_cmd() { :; };     main export )     >/dev/null 2>&1
+check "N11: 'export' does NOT lock"             "$(grep -c LOCK "$LOCKLOG")" "0"
+
 echo "== full run (no reboot needed): all phases, then re-run skips done =="
 reset_state; ONLY_PHASE=""; FORCE=0; POST_REBOOT=0; DZ_ENABLED=false
 : >"$RAN"; install_run >/dev/null 2>&1

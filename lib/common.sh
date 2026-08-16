@@ -323,9 +323,19 @@ require_yes() {
 _state_file() { printf '%s/state.d/%s' "$STATE_DIR" "$1"; }
 
 state_set() {
-    local key=$1 val=$2 f; f=$(_state_file "$key")
+    local key=$1 val=$2 f tmp; f=$(_state_file "$key")
     is_dry_run && { debug "[dry-run] state_set $key=$val"; return 0; }
-    mkdir -p "$(dirname "$f")" && printf '%s' "$val" >"$f"
+    mkdir -p "$(dirname "$f")" || return 1
+    # Atomic (N15): write a temp file IN the state dir (same filesystem) then
+    # rename — a mid-write kill (power loss, OOM during the resume service)
+    # leaves either the old or the new value, never a truncated file. The
+    # chmod matches the plain '>file' creation this replaces (default-umask
+    # 644; mktemp files are born 0600), so read semantics are unchanged.
+    tmp=$(mktemp "$(dirname "$f")/.${key}.XXXXXX") \
+        || { warn "state_set: cannot create a temp file in $(dirname "$f")"; return 1; }
+    printf '%s' "$val" >"$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "state_set: rename to ${f} failed"; return 1; }
     debug "state_set $key=$val"
 }
 state_get() { local key=$1 def=${2:-} f; f=$(_state_file "$key"); [[ -f "$f" ]] && cat "$f" || printf '%s' "$def"; }
