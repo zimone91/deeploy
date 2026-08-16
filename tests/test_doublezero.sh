@@ -361,6 +361,19 @@ doublezero() { echo "doublezero $*" >>"$CALLS"; case "$*" in address) echo "DZid
                  latency) printf '%s\n' ' Code | Avg | reachable ' ' dz-syn1-sw01 | 0.24 ms | true ';;
                  status)  printf '%s\n' ' Tunnel Status | Tunnel Name | Current Device | Metro | Multicast Groups ' ' BGP Session Up | doublezero0 | dz-syn1-sw01 | metro-a | ' ' BGP Session Up | doublezero1 | dz-syn1-sw01 | metro-a | P:edge-solana-shreds ';; esac; }
 
+echo "== N16: DZ_ENV enum-gated before rendering the doublezerod override =="
+( DZ_ENV='mainnet-beta; rm -rf /' dz_env_override ) >/dev/null 2>&1
+check "N16: hostile DZ_ENV -> dz_env_override fails" "$?" "1"
+check_true "N16: hostile value NOT rendered into the unit" "! grep -q 'rm -rf' \"$DZ_OVERRIDE_CONF\" 2>/dev/null"
+( DZ_ENV=bogus dz_env_override ) >/dev/null 2>&1
+check "N16: unknown env word -> fails (enum, not charset)" "$?" "1"
+( DZ_ENV=testnet dz_env_override ) >/dev/null 2>&1
+check "N16: testnet accepted"                        "$?" "0"
+( DZ_ENV=mainnet-beta dz_env_override ) >/dev/null 2>&1
+check "N16: shipped default mainnet-beta accepted"   "$?" "0"
+( DZ_ENV=bogus dz_connect_run ) >/dev/null 2>&1
+check "N16: dz-connect entry validates DZ_ENV too"   "$?" "1"
+
 echo "== dz_resume: gated on dz_connected (NOT dz_enabled); no-op until connected =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
 state_set solana_home /root/solana; state_set dz_enabled true   # enabled but NOT connected

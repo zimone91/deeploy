@@ -80,6 +80,11 @@ validatorcfg_resolve_config() {
         ask "Validator MEV commission in bps (0 is required by many pools)" "$commission_default"
         COMMISSION_BPS="$REPLY"
     fi
+    # N9: bounded 0-10000 whether prompted, env-, or conf-provided (shared bps
+    # type). An out-of-range value (e.g. 20000) used to render fine and only
+    # surface as an unattended post-reboot agave crash-loop.
+    _cfg_validate_type bps "$COMMISSION_BPS" \
+        || fail "COMMISSION_BPS '${COMMISSION_BPS}' invalid — must be an integer 0-10000 (basis points)"
     # The 2nd shred-receiver address (DZ multicast) is gated on the SINGLE
     # "Enable DoubleZero?" decision made EARLY in Phase 1 (dz_should_enable) and
     # recorded to state. Phase 6 only READS it — no prompt here (the old in-phase
@@ -96,6 +101,14 @@ validatorcfg_resolve_config() {
 
     # Metrics (BAM community endpoint by default).
     SOLANA_METRICS_CONFIG="${SOLANA_METRICS_CONFIG:-$SOLANA_METRICS_BAM}"
+    # N16: env-only render vector (deliberately NOT in the conf whitelist) that
+    # lands raw in a systemd Environment= line. Its legit shape carries ',' and
+    # '=' (host=...,db=...,u=...,p=...), so no strict type fits — assert no
+    # shell/unit metacharacters instead, fail-closed like the X1 render gate.
+    case "$SOLANA_METRICS_CONFIG" in
+        *'"'*|*"'"*|*'$'*|*'`'*|*';'*|*$'\n'*)
+            fail "SOLANA_METRICS_CONFIG contains a forbidden character (quote/backtick/\$/;/newline) — refusing to render it into solana.service" ;;
+    esac
 
     # Output paths.
     VALIDATOR_SH="${VALIDATOR_SH:-$SOLANA_HOME/validator.sh}"
@@ -140,7 +153,7 @@ _vcfg_assert_render_safe() {
     _cfg_validate_type int      "$FULL_SNAPSHOT_INTERVAL_SLOTS"     || bad+=" FULL_SNAPSHOT_INTERVAL_SLOTS"
     _cfg_validate_type int      "$INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS" || bad+=" INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS"
     _cfg_validate_type hostport "$SHRED_RECEIVER_ADDRESS"          || bad+=" SHRED_RECEIVER_ADDRESS"
-    _cfg_validate_type int      "$COMMISSION_BPS"                  || bad+=" COMMISSION_BPS"
+    _cfg_validate_type bps      "$COMMISSION_BPS"                  || bad+=" COMMISSION_BPS"
     _cfg_validate_type url      "$BLOCK_ENGINE_URL"                || bad+=" BLOCK_ENGINE_URL"
     if [[ "$MEV_MODE" == "relayer" ]]; then
         _cfg_validate_type url  "$RELAYER_URL"                     || bad+=" RELAYER_URL"

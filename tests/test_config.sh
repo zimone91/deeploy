@@ -167,6 +167,9 @@ type_reject "url with space"     'BAM_URL="http://x y"'
 type_reject "ip non-numeric"     'RPC_BIND_ADDRESS="localhost"'
 type_reject "portrange reversed" 'DYNAMIC_PORT_RANGE="9000-8900"'
 type_reject "portrange bad port" 'DYNAMIC_PORT_RANGE="10-70000"'
+type_reject "bps over 10000"     'COMMISSION_BPS="10001"'
+type_reject "bps negative"       'COMMISSION_BPS="-1"'
+type_reject "bps junk"           'COMMISSION_BPS="1e9"'
 
 echo "== S2: VALID values of every type ACCEPTED (incl. portrange under set -u) =="
 type_accept() {   # <desc> <conf line> <KEY> <expected-global>
@@ -182,6 +185,8 @@ type_accept "cores"      'XDP_CORES="1-2,10,25-26,34"'      XDP_CORES           
 type_accept "hostport"   'SHRED_RECEIVER_ADDRESS="1.2.3.4:1002"' SHRED_RECEIVER_ADDRESS "1.2.3.4:1002"
 type_accept "url"        'BAM_URL="https://a.b.jito.wtf"'   BAM_URL             "https://a.b.jito.wtf"
 type_accept "bool"       'DZ_ENABLED="true"'                DZ_ENABLED          "true"
+type_accept "bps 0"      'COMMISSION_BPS="0"'               COMMISSION_BPS      "0"
+type_accept "bps 10000"  'COMMISSION_BPS="10000"'           COMMISSION_BPS      "10000"
 
 echo "== S2: unknown key ignored — sets no global, parse still succeeds =="
 unset EVIL 2>/dev/null || true
@@ -189,6 +194,23 @@ printf 'EVIL="x"\n' > "$WORK/u.conf"
 _config_parse_safe "$WORK/u.conf" >/dev/null 2>&1; rc=$?
 check "unknown key -> rc 0 (ignored)"          "$rc" "0"
 check_true "unknown key creates NO global"     "[[ -z \"\${EVIL+set}\" ]]"
+
+echo "== N12: a malformed config applies NOTHING (atomic parse-then-commit) =="
+# The old parser set each valid global AS IT PARSED, then returned 1 — so the
+# caller's "ignoring malformed config" message was false. Probe keys on BOTH
+# sides of the bad line: neither may be applied.
+unset SSH_PORT POH_CORE 2>/dev/null || true
+printf '%s\n' 'SSH_PORT="2222"' 'BAM_URL="http://x y"' 'POH_CORE="10"' >"$WORK/n12.conf"
+N12OUT=$(_config_parse_safe "$WORK/n12.conf" 2>&1); N12RC=$?
+check "N12: malformed file -> rc1"                        "$N12RC" "1"
+check "N12: key BEFORE the bad line NOT applied"          "${SSH_PORT:-<unset>}" "<unset>"
+check "N12: key AFTER the bad line NOT applied"           "${POH_CORE:-<unset>}" "<unset>"
+check "N12: warn says nothing applied (message now true)" "$(grep -c 'nothing applied' <<<"$N12OUT")" "1"
+# a clean file behaves exactly as before: rc0, globals set
+printf '%s\n' 'SSH_PORT="2222"' 'POH_CORE="10"' >"$WORK/n12ok.conf"
+_config_parse_safe "$WORK/n12ok.conf" >/dev/null 2>&1; N12OKRC=$?
+check "N12: clean file -> rc0"                            "$N12OKRC" "0"
+check "N12: clean file applies both keys"                 "${SSH_PORT:-x}/${POH_CORE:-x}" "2222/10"
 
 echo "== P2: empty value SKIPPED (preserves default), export omits empties =="
 DZ_ENV="mainnet-beta"                                   # a default already in the global

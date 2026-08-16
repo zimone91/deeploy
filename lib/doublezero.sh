@@ -89,6 +89,14 @@ run_capture() {
     "$@"
 }
 
+# N16: DZ_ENV is env-only-overridable and is rendered into the doublezerod
+# systemd override's ExecStart line — enum-validate it fail-closed before any
+# render/use. Accepted set per the DoubleZero docs: mainnet-beta|testnet|devnet.
+_dz_validate_env() {
+    [[ "$DZ_ENV" =~ ^(mainnet-beta|testnet|devnet)$ ]] \
+        || fail "DZ_ENV '${DZ_ENV}' invalid — must be mainnet-beta|testnet|devnet (it is rendered into a systemd unit; refusing)"
+}
+
 # The DZ keypair path (state > home default). Shared by the soft check + migrate.
 _dz_keypair_path() {
     local home; home="$(state_get solana_home /root/solana)"
@@ -123,6 +131,7 @@ dz_should_enable() {
 
 # --- config (used by dz-connect / dz_resume) ---------------------------------
 dz_resolve_config() {
+    _dz_validate_env                          # N16: dz-connect/resume entry point
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (dz-connect/resume run standalone)
     SOLANA_HOME="$(state_get solana_home /root/solana)"
     DZ_KEYPAIR="$(_dz_keypair_path)"
@@ -159,6 +168,7 @@ dz_install_packages() {
 # doublezerod systemd override -> mainnet-beta (+ metrics, per docs). Enabled on
 # boot so the tunnel can restore after the isolation reboot.
 dz_env_override() {
+    _dz_validate_env                          # N16: gate BEFORE rendering the unit
     step "DoubleZero env override -> ${DZ_ENV}"
     write_file "$DZ_OVERRIDE_CONF" \
 "[Service]

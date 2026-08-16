@@ -128,6 +128,47 @@ COMMISSION_BPS=700; MEV_MODE=bam; validatorcfg_resolve_config
 check "explicit commission 700 kept" "$COMMISSION_BPS" "700"
 unset COMMISSION_BPS
 
+echo "== N9: COMMISSION_BPS bounded 0-10000 — at prompt, env, and the render gate =="
+seed; state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
+state_set dz_enabled false
+( COMMISSION_BPS=20000 MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N9: env 20000 -> resolve fails"    "$?" "1"
+( COMMISSION_BPS=1e9 MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N9: junk '1e9' -> resolve fails"   "$?" "1"
+( COMMISSION_BPS=10000 MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N9: boundary 10000 accepted"       "$?" "0"
+( COMMISSION_BPS=0 MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N9: boundary 0 accepted"           "$?" "0"
+# the PROMPT path is validated too (operator typo at the ask)
+ask() { REPLY=99999; }
+( unset COMMISSION_BPS; NONINTERACTIVE=0 MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N9: prompted 99999 -> fails"       "$?" "1"
+unset -f ask
+# render gate: a hostile value seeded straight into the global after resolve
+unset COMMISSION_BPS; MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1
+COMMISSION_BPS=10001
+N9V=$(_vcfg_render_validator_sh 2>/dev/null); N9RC=$?
+check_true "N9: render gate refuses 10001 (rc!=0, no script)" "[[ \"$N9RC\" != \"0\" && -z \"$N9V\" ]]"
+unset COMMISSION_BPS
+
+echo "== N16: SOLANA_METRICS_CONFIG (env-only) gated before any render =="
+seed
+( SOLANA_METRICS_CONFIG='host=x;touch /tmp/pwn' MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N16: ';' refused"                  "$?" "1"
+# SC2016: literal $(...) payload on purpose.
+# shellcheck disable=SC2016
+( SOLANA_METRICS_CONFIG='host=x"$(id)"' MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N16: quote+\$ refused"             "$?" "1"
+rm -f "$WORK/n16.sh"
+# SC2030/SC2031: the VALIDATOR_SH override is deliberately subshell-local.
+# shellcheck disable=SC2030,SC2031
+( export VALIDATOR_SH="$WORK/n16.sh" SOLANA_METRICS_CONFIG='a;b' MEV_MODE=bam
+  validatorcfg_resolve_config && validatorcfg_generate ) >/dev/null 2>&1
+check "N16: hostile metrics -> no artifact written" "$([[ -e "$WORK/n16.sh" ]] && echo y || echo n)" "n"
+( MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "N16: shipped default (commas + =) passes"    "$?" "0"
+MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1   # restore clean globals
+
 echo "== R3: empty MEV endpoints FAIL resolve (no valueless flags rendered) =="
 # A failed region scan + no override leaves BAM/BLOCK_ENGINE/SHRED empty; the
 # renderer would emit bare flags (argv misalignment) -> unattended Phase 8
@@ -234,6 +275,8 @@ L=$(_vcfg_render_logrotate)
 check "logrotate USR1 solana"   "$(grep -c 'systemctl kill -s USR1 solana.service' <<<"$L")" "1"
 
 echo "== full generate writes files + bash -n =="
+# SC2031: the earlier N16 subshell-local VALIDATOR_SH override is intentional.
+# shellcheck disable=SC2031
 export VALIDATOR_SH="$WORK/validator.sh" SOLANA_SERVICE="$WORK/solana.service" \
     SET_POH_SCRIPT="$WORK/set_poh.sh" WAIT_PIN_SCRIPT="$WORK/wait_pin.sh" \
     LOGROTATE_FILE="$WORK/logrotate" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"

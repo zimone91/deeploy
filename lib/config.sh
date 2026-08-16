@@ -109,7 +109,7 @@ MEV_MODE mev
 BAM_URL url
 BLOCK_ENGINE_URL url
 SHRED_RECEIVER_ADDRESS hostport
-COMMISSION_BPS int
+COMMISSION_BPS bps
 RELAYER_URL url
 GOSSIP_PORT port
 RPC_PORT port
@@ -149,6 +149,7 @@ _cfg_t_portrange() {
 }
 _cfg_t_cores()     { [[ "$1" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; }
 _cfg_t_int()       { [[ "$1" =~ ^[0-9]+$ ]]; }
+_cfg_t_bps()       { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 10000 )); }   # basis points: 0-10000 (N9)
 _cfg_t_bool()      { [[ "$1" =~ ^(true|false)$ ]]; }
 _cfg_t_flag()      { [[ "$1" =~ ^[01]$ ]]; }
 _cfg_t_url()       { [[ "$1" =~ ^https?://[A-Za-z0-9._:/-]+$ ]]; }
@@ -167,6 +168,7 @@ _cfg_validate_type() {
         portrange) _cfg_t_portrange "$2" ;;
         cores)     _cfg_t_cores     "$2" ;;
         int)       _cfg_t_int       "$2" ;;
+        bps)       _cfg_t_bps       "$2" ;;
         bool)      _cfg_t_bool      "$2" ;;
         flag)      _cfg_t_flag      "$2" ;;
         url)       _cfg_t_url       "$2" ;;
@@ -189,7 +191,14 @@ _cfg_validate_type() {
 _config_parse_safe() {
     local file=$1
     [[ -f "$file" ]] || { warn "config not found: $file"; return 1; }
-    local line key val t errs=""
+    local line key val t errs="" i
+    # N12: parsed pairs are STAGED here and committed to globals only after the
+    # WHOLE file validates. Previously each valid key was applied as it parsed,
+    # so a file that failed halfway had already mutated globals while the
+    # caller then claimed the config was "ignored". Atomic now: a malformed
+    # file applies NOTHING. (Parallel indexed arrays, not an associative map —
+    # the suite also runs on bash 3.2.)
+    local -a stage_keys=() stage_vals=()
     # quoted:   KEY="value"   (anything after the closing quote — trailing
     #           whitespace / inline # comment — is ignored, matching the
     #           quote-aware _config_validate)
@@ -206,16 +215,19 @@ _config_parse_safe() {
         [[ -z "$t"   ]] && { debug "config: ignoring non-whitelisted key $key"; continue; }
         [[ -z "$val" ]] && { debug "config: skipping empty $key (preserves default)"; continue; }   # P2
         if _cfg_validate_type "$t" "$val"; then
-            printf -v "$key" '%s' "$val"                          # set global WITHOUT eval
+            stage_keys+=("$key"); stage_vals+=("$val")
         else
             errs+=" $key"
             warn "config: rejecting $key — not a valid ${t}"
         fi
     done < "$file"
     if [[ -n "$errs" ]]; then
-        warn "config: ${file} has invalid value(s):${errs} — not applied"
+        warn "config: ${file} has invalid value(s):${errs} — nothing applied"
         return 1
     fi
+    for i in ${stage_keys[@]+"${!stage_keys[@]}"}; do
+        printf -v "${stage_keys[$i]}" '%s' "${stage_vals[$i]}"    # set global WITHOUT eval
+    done
     return 0
 }
 
