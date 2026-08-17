@@ -292,6 +292,37 @@ check_true "footer: names phase"  "grep -q 'phase 5 (Toolchain)' <<<\"\$trapout\
 check_true "footer: resume hint"  "grep -q 'Resume:' <<<\"\$trapout\""
 check_true "footer: backups hint" "grep -q 'Backups:' <<<\"\$trapout\""
 
+echo "== N8: deeploy_checkout_unsafe_reason — the ONE predicate both callers share =="
+# Shared by preflight (phase 0) and the install-time gate; duplicating it is the
+# N5/N13 drift class, so it is tested once, here, against every branch.
+deeploy_path_uid()  { echo 0; }
+deeploy_path_mode() { echo 755; }
+CKW=$(deeploy_checkout_unsafe_reason /some/dir /some/dir/deeploy.sh); CKRC=$?
+check "safe checkout -> rc0, says nothing"   "${CKRC}/${CKW}" "0/"
+deeploy_path_uid() { echo 501; }
+CKW=$(deeploy_checkout_unsafe_reason /some/dir); CKRC=$?
+check "non-root -> rc1"                      "$CKRC" "1"
+check "non-root -> names path + uid"         "$(grep -c "^/some/dir is not root-owned (uid 501)$" <<<"$CKW")" "1"
+deeploy_path_uid() { echo 0; }
+deeploy_path_mode() { echo 775; }
+CKW=$(deeploy_checkout_unsafe_reason /some/dir); CKRC=$?
+check "group-writable -> rc1"                "$CKRC" "1"
+check "group-writable -> names mode"         "$(grep -c 'group/world-writable (mode 775)' <<<"$CKW")" "1"
+deeploy_path_mode() { echo 757; }            # world-writable
+( deeploy_checkout_unsafe_reason /some/dir ) >/dev/null 2>&1
+check "world-writable -> rc1"                "$?" "1"
+deeploy_path_mode() { echo ""; }             # stat unreadable -> fail CLOSED
+CKW=$(deeploy_checkout_unsafe_reason /some/dir); CKRC=$?
+check "unreadable mode -> rc1 (fail-closed)" "$CKRC" "1"
+check "unreadable mode -> reported as ?"     "$(grep -c 'mode ?' <<<"$CKW")" "1"
+# every path is checked, not just the first
+deeploy_path_mode() { echo 755; }
+deeploy_path_uid() { case "$1" in *bad*) echo 501;; *) echo 0;; esac; }
+CKW=$(deeploy_checkout_unsafe_reason /good/dir /good/bad-file); CKRC=$?
+check "second path is checked too"           "$CKRC" "1"
+check "second path is the one named"         "$(grep -c '/good/bad-file' <<<"$CKW")" "1"
+unset -f deeploy_path_uid deeploy_path_mode
+
 echo "== statedir-unavailable: root loud, non-root quiet =="
 rootmsg=$(_common_statedir_unavailable 1 2>&1)
 nonrootmsg=$(_common_statedir_unavailable 0 2>&1)

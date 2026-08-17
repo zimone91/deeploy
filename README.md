@@ -77,13 +77,21 @@ cd deeploy
 # 2) (release tarballs) verify the checksum before you trust it
 #    sha256sum -c SHA256SUMS
 
-# 3) READ it, then dry-run it (prints the whole plan, changes nothing)
+# 3) READ it (this is the point of not having a curl|sh one-liner)
 less deeploy.sh lib/*.sh
-sudo ./deeploy.sh install --dry-run
 
-# 4) Run it for real
+# 4) Hand it to root. The post-reboot resume service runs THIS checkout as root
+#    at boot, so a user-writable path would let any local user swap the script
+#    between install and the reboot. DeePloy refuses to install that service
+#    from an unsafe checkout — preflight says so in the first seconds.
+sudo chown -R root:root . && sudo chmod -R go-w .
+
+# 5) Dry-run it (prints the whole plan, changes nothing), then run it for real
+sudo ./deeploy.sh install --dry-run
 sudo ./deeploy.sh install
 ```
+
+> After step 4 the checkout belongs to root, so later updates need `sudo git pull`.
 
 ---
 

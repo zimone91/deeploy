@@ -144,11 +144,36 @@ state_set current-phase "3:Disk"
 reset; _pf_check_existing >/dev/null 2>&1; counts "mid-phase resume warn" 0 1
 state_clear current-phase
 
+echo "== N8 follow-up: the checkout gate fires at PHASE 0, not at the reboot boundary =="
+# The install-time gate sat in _install_setup_resume_service — reached only after
+# the disk wipe and the 30-90 min build. The README's own path (clone as a user,
+# then sudo) produces exactly the uid it refuses, so the documented flow used to
+# hard-fail an hour in. Same predicate, now in the first seconds.
+deeploy_path_uid()  { echo 0; }
+deeploy_path_mode() { echo 755; }
+reset; _pf_check_checkout >/dev/null 2>&1; counts "safe checkout -> no issue" 0 0
+deeploy_path_uid() { echo 501; }             # the README's clone-as-user case
+# Counter assertion runs in the CURRENT shell: a $( ) capture is a subshell, so
+# the pf_bad increment would never reach _PF_HARD here and the check would pass
+# against a no-op too (the same trap the N12 test fell into). Message captured
+# in a separate run below.
+reset; _pf_check_checkout >/dev/null 2>&1; counts "user-owned checkout -> BLOCKING" 1 0
+CKOUT=$(_pf_check_checkout 2>&1 || true)
+check "names the fix (chown -R root:root)" "$(grep -c 'chown -R root:root' <<<"$CKOUT")" "1"
+check "explains the boot-time risk"        "$(grep -c 'as root at boot' <<<"$CKOUT")"   "1"
+deeploy_path_uid() { echo 0; }
+deeploy_path_mode() { echo 775; }
+reset; _pf_check_checkout >/dev/null 2>&1; counts "group-writable checkout -> BLOCKING" 1 0
+deeploy_path_mode() { echo 755; }
+# and it is wired into preflight_run BEFORE anything else runs
+check "wired first in preflight_run" \
+    "$(grep -A2 '_PF_HARD=0; _PF_WARN=0' "$ROOT/lib/preflight.sh" | grep -c '_pf_check_checkout')" "1"
+
 echo "== 7d: preflight_run HARD-GATES (_PF_HARD>0 -> abort; warns alone pass) =="
 require_root() { :; }
-for f in _pf_check_platform _pf_check_cpu _pf_check_memory _pf_check_storage _pf_check_nic \
-         _pf_check_time _pf_check_cluster _pf_check_region _pf_check_ports _pf_check_bandwidth \
-         _pf_check_existing; do
+for f in _pf_check_checkout _pf_check_platform _pf_check_cpu _pf_check_memory _pf_check_storage \
+         _pf_check_nic _pf_check_time _pf_check_cluster _pf_check_region _pf_check_ports \
+         _pf_check_bandwidth _pf_check_existing; do
     eval "${f}() { :; }"
 done
 _pf_check_platform() { pf_bad "synthetic blocking issue"; }

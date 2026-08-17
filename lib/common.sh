@@ -110,6 +110,38 @@ require_cmds() {
 
 _mktemp() { mktemp "${TMPDIR:-/tmp}/deeploy.XXXXXX"; }
 
+# --- checkout safety (N8) ----------------------------------------------------
+# The post-reboot resume unit executes THIS checkout as root at boot, so an
+# unsafe checkout is a root-persistence vector: any local user who can write the
+# path could swap the script between install and the reboot. Two consumers share
+# this ONE predicate — preflight (fails in the first seconds) and the install-
+# time gate right before the unit is written (fails closed no matter how the run
+# got there). Deliberately not duplicated: a read/write pair that drifts apart is
+# exactly the N5/N13 bug class.
+# Split out as mockable helpers; GNU stat first, then BSD.
+deeploy_path_uid()  { stat -c %u  "$1" 2>/dev/null || stat -f %u  "$1" 2>/dev/null || true; }
+deeploy_path_mode() { stat -c %a  "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || true; }
+
+# Prints WHY the given paths are unsafe and returns 1; prints nothing and
+# returns 0 when every path is root-owned and not group/world-writable. An
+# unreadable/unparsable mode counts as unsafe (fail-closed).
+deeploy_checkout_unsafe_reason() {                # <path>...
+    local f uid mode
+    for f in "$@"; do
+        uid="$(deeploy_path_uid "$f")"
+        mode="$(deeploy_path_mode "$f")"
+        if [[ "$uid" != "0" ]]; then
+            printf '%s is not root-owned (uid %s)' "$f" "${uid:-?}"
+            return 1
+        fi
+        if [[ ! "$mode" =~ ^[0-7]+$ ]] || (( (8#$mode & 8#022) != 0 )); then
+            printf '%s is group/world-writable (mode %s)' "$f" "${mode:-?}"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # ensure_cargo_env — make the rustup-installed cargo/rustc resolvable for THIS
 # process. rustup installs to $HOME/.cargo/bin and writes $HOME/.cargo/env, but a
 # fresh install only affects PATH if that env is sourced — and it must reach

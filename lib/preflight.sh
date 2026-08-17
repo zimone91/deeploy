@@ -43,6 +43,22 @@ _pf_base_disk() {
     else printf '%s' "$s"; fi
 }
 
+# --- checkout: safe to hand a boot-time root unit? (N8) -----------------------
+# The install-time gate refuses an unsafe checkout only when the resume unit is
+# written — at the reboot boundary, i.e. AFTER the disk wipe and the 30-90 min
+# build. The README's own path (clone as a user, then sudo) produces exactly the
+# uid mismatch it refuses, so the documented flow used to hard-fail an hour in.
+# Same predicate, run in the first seconds instead. Blocking, not a warning: an
+# install cannot complete without the resume unit.
+_pf_check_checkout() {
+    local why
+    if why="$(deeploy_checkout_unsafe_reason "${DEEPLOY_DIR:-.}" "${DEEPLOY_SELF:-./deeploy.sh}")"; then
+        pf_ok "Checkout is root-owned and not group/world-writable"
+    else
+        pf_bad "Checkout unusable for the boot-time resume service: ${why}. It would run as root at boot, so a writable path lets any local user swap the script before the reboot. Fix: sudo chown -R root:root '${DEEPLOY_DIR:-.}' && sudo chmod -R go-w '${DEEPLOY_DIR:-.}'"
+    fi
+}
+
 # --- platform: arch, OS, virtualization --------------------------------------
 _pf_check_platform() {
     local arch osr id ver virt
@@ -285,6 +301,7 @@ _pf_check_existing() {
 preflight_run() {
     require_root
     _PF_HARD=0; _PF_WARN=0
+    _pf_check_checkout          # N8: cheapest possible failure, before anything is touched
     _pf_check_platform
     _pf_check_cpu
     _pf_check_memory

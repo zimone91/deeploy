@@ -107,19 +107,14 @@ _install_verify_isolation() {
 # writable — a writable path is a root-persistence vector (any local user could
 # swap the script between install and the reboot). Full relocation to
 # /opt/deeploy is a recorded post-rc2 design decision; this is the minimal gate.
-_install_path_uid()  { stat -c %u  "$1" 2>/dev/null || stat -f %u  "$1" 2>/dev/null || true; }   # GNU then BSD stat (mockable)
-_install_path_mode() { stat -c %a  "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || true; }   # octal perms (mockable)
+# The predicate itself lives in common.sh so preflight's early check (phase 0)
+# and this last-moment gate can never disagree; this one stays fail-closed for
+# every path that reaches the unit write, including --resume runs that skip
+# preflight entirely.
 _install_assert_resume_source_safe() {
-    local f uid mode
-    for f in "$DEEPLOY_DIR" "$DEEPLOY_SELF"; do
-        uid="$(_install_path_uid "$f")"; mode="$(_install_path_mode "$f")"
-        [[ "$uid" == "0" ]] \
-            || fail "refusing to install the resume service: ${f} is not root-owned (uid ${uid:-?}) — it would execute as root at boot. Run DeePloy from a root-owned checkout (chown -R root:root <checkout>)."
-        if [[ ! "$mode" =~ ^[0-7]+$ ]] || (( (8#$mode & 8#022) != 0 )); then
-            fail "refusing to install the resume service: ${f} is group/world-writable (mode ${mode:-?}) — a writable path is a root-persistence vector. chmod go-w it and re-run."
-        fi
-    done
-    return 0
+    local why
+    why="$(deeploy_checkout_unsafe_reason "$DEEPLOY_DIR" "$DEEPLOY_SELF")" && return 0
+    fail "refusing to install the resume service: ${why} — it would execute as root at boot. Run DeePloy from a root-owned checkout: chown -R root:root '${DEEPLOY_DIR}' (and chmod go-w it)."
 }
 
 _install_setup_resume_service() {

@@ -35,8 +35,8 @@ require_root() { :; }
 systemctl()    { echo "systemctl $*" >>"$CALLS"; return 0; }
 # N8: the resume-unit ownership gate stats the real checkout, which is
 # user-owned in this sandbox — give it safe answers (specific tests override).
-_install_path_uid()  { echo 0; }
-_install_path_mode() { echo 755; }
+deeploy_path_uid()  { echo 0; }
+deeploy_path_mode() { echo 755; }
 # Replace phase functions with a run-log.
 for f in preflight_run base_run tuning_run disk_run toolchain_build keys_run \
          validatorcfg_run nic_run doublezero_run start_run; do
@@ -192,20 +192,20 @@ reset_state
 ( DEEPLOY_SELF="/tmp/dee ploy/deeploy.sh" DEEPLOY_DIR="/tmp/dee ploy" _install_setup_resume_service ) >/dev/null 2>&1
 check "ExecStart argv0 double-quoted (space-safe)" "$(grep -c 'ExecStart="/tmp/dee ploy/deeploy.sh" install --resume --post-reboot' "$RESUME_SERVICE_FILE")" "1"
 # non-root-owned checkout -> REFUSED, no unit written (root-persistence vector)
-_install_path_uid() { echo 501; }
+deeploy_path_uid() { echo 501; }
 reset_state
 N8OUT=$( ( _install_setup_resume_service ) 2>&1 ); N8RC=$?
 check "non-root checkout -> fail"                   "$N8RC" "1"
 check_false "non-root checkout -> unit NOT written" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
 check "message demands a root-owned checkout"       "$(grep -c 'root-owned' <<<"$N8OUT")" "1"
-_install_path_uid() { echo 0; }
+deeploy_path_uid() { echo 0; }
 # group/world-writable checkout -> REFUSED
-_install_path_mode() { echo 775; }
+deeploy_path_mode() { echo 775; }
 reset_state
 ( _install_setup_resume_service ) >/dev/null 2>&1
 check "group-writable checkout -> fail"             "$?" "1"
 check_false "group-writable -> unit NOT written"    "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
-_install_path_mode() { echo 755; }
+deeploy_path_mode() { echo 755; }
 # safe checkout (root, 0755) -> unit installs as before
 reset_state
 _install_setup_resume_service >/dev/null 2>&1
