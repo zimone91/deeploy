@@ -136,12 +136,19 @@ toolchain_apply_overlay() {
     fi
     abspatch="$(cd "$(dirname "$patch")" && pwd)/$(basename "$patch")"
     # The git apply --check fork: apply ONLY if it cleanly applies to this tag.
+    # A present-but-inapplicable overlay is a HARD STOP, not a warn. "The overlay
+    # is absent" and "the overlay is here but does not apply" are different
+    # facts: the first is the public path, the second means the operator put a
+    # patch here deliberately and would silently get a binary that does not
+    # contain it. Same shape as N6 — the staked keypair exists but its pubkey
+    # cannot be derived, so refuse rather than proceed on an assumption. Tag
+    # drift across two minors is exactly when this fires.
     if git -C "$repo" apply --check "$abspatch" >/dev/null 2>&1; then
         run git -C "$repo" apply "$abspatch"
         _OVERLAY_APPLIED=1
         ok "Applied private overlay (clean git apply --check)"
     else
-        warn "Private overlay does NOT apply to ${JITO_TAG} (tag drift) — SKIPPING it, building VANILLA"
+        fail "private overlay ${abspatch} does NOT apply to ${JITO_TAG} (git apply --check failed) — refusing to build silently WITHOUT it. Either update the patch for ${JITO_TAG}, or move it out of ${OVERLAY_DIR} to build vanilla on purpose."
     fi
 }
 

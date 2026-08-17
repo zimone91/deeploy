@@ -77,11 +77,27 @@ toolchain_apply_overlay >/dev/null 2>&1
 check "applied: _OVERLAY_APPLIED=1" "$_OVERLAY_APPLIED" "1"
 check "applied: git apply issued"   "$(grep -c 'git -C .* apply ' "$CALLS")" "1"
 
-echo "== overlay seam: patch does NOT apply (tag drift) -> loud skip, vanilla =="
+echo "== overlay seam: patch present but does NOT apply -> HARD STOP (was: silent vanilla) =="
+# "No overlay" and "an overlay that does not apply" are different facts. The
+# second means the operator deliberately placed a patch and would otherwise get
+# a binary without it — the N6 shape (present but unverifiable -> refuse).
+GIT_APPLY_CHECK_RC=1; _OVERLAY_APPLIED=9; : >"$CALLS"
+DRIFT=$( ( toolchain_apply_overlay ) 2>&1 ); DRIFTRC=$?
+check "drift: aborts (rc1)"           "$DRIFTRC" "1"
+check "drift: no git apply issued"    "$(grep -c 'apply ' "$CALLS")" "0"
+check "drift: names the patch file"   "$(grep -c "$OVERLAY_DIR/anything.patch" <<<"$DRIFT")" "1"
+check "drift: names the tag"          "$(grep -c "$JITO_TAG" <<<"$DRIFT")" "1"
+check "drift: offers update-the-patch" "$(grep -c 'update the patch' <<<"$DRIFT")" "1"
+check "drift: offers build-vanilla-on-purpose" "$(grep -c 'build vanilla on purpose' <<<"$DRIFT")" "1"
+# the threshold must NOT be written on the aborted path (it is overlay-gated)
+check "drift: _OVERLAY_APPLIED not set to 1" "$([[ "$_OVERLAY_APPLIED" == "1" ]] && echo y || echo n)" "n"
+# ...while a genuinely ABSENT overlay stays a silent, supported vanilla build
+OVERLAY_DIR="$WORK/empty"
 GIT_APPLY_CHECK_RC=1; _OVERLAY_APPLIED=9; : >"$CALLS"
 toolchain_apply_overlay >/dev/null 2>&1
-check "drift: _OVERLAY_APPLIED=0" "$_OVERLAY_APPLIED" "0"
-check "drift: no git apply"       "$(grep -c 'apply ' "$CALLS")" "0"
+check "absent overlay: still rc0 (public path)" "$?" "0"
+check "absent overlay: _OVERLAY_APPLIED=0"      "$_OVERLAY_APPLIED" "0"
+OVERLAY_DIR="$WORK/ov"   # restore the populated dir for the sections below
 
 echo "== R10: OVERLAY_DIR anchors to the checkout (DEEPLOY_DIR), never the cwd =="
 # The old default ("private", cwd-relative) silently built VANILLA when DeePloy
