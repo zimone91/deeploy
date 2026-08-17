@@ -5,7 +5,7 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-rc3] - 2026-08-17
 
 Client version bump to `v4.2.1-jito`, and the compatibility work that bump
 forces. Not yet hardware-validated.
