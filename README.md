@@ -190,9 +190,14 @@ installer.
 Self-contained, mocked, no live node required:
 
 ```bash
-for t in tests/test_*.sh; do bash "$t"; done
-shellcheck -x deeploy.sh lib/*.sh
+./run_tests.sh                                   # every suite; non-zero on any failure
+shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.0
 ```
+
+`run_tests.sh` is used instead of a `for` loop on purpose: a loop reports the exit
+status of the *last* suite, and a suite that dies mid-run prints no `RESULT` line
+at all, so a naive tally counts it as zero failures. The runner treats a suite as
+passing only if it exits 0 **and** prints its `RESULT` with no failures.
 
 ## References
 

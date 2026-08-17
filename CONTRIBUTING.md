@@ -6,10 +6,15 @@ real stake. Contributions are held to the same bar: small, auditable, tested.
 ## The gate (run before every PR)
 
 ```bash
-for f in deeploy.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
-shellcheck -x deeploy.sh lib/*.sh tests/*.sh     # shellcheck 0.11.0 — see below
-for t in tests/test_*.sh; do bash "$t" || echo "FAILED: $t"; done
+for f in deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.0 — see below
+./run_tests.sh                                   # exits non-zero if anything failed
 ```
+
+- **Use `run_tests.sh`, not a `for` loop.** The loop that printed `FAILED: $t`
+  still exited 0, so it was green to any CI or pre-commit hook wrapping it. The
+  runner fails a suite that exits non-zero, reports failures, *or* never prints
+  its `RESULT` line (a suite that dies mid-run is silence, not success).
 
 - **shellcheck is pinned to 0.11.0** (what CI installs). Older versions (e.g.
   Ubuntu 24.04's apt 0.9.0) emit false positives this repo does not carry

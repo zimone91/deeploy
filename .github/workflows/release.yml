@@ -36,14 +36,9 @@ jobs:
 
       - name: Gate — bash -n + shellcheck + suites
         run: |
-          for f in deeploy.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
-          shellcheck -x deeploy.sh lib/*.sh tests/*.sh
-          rc=0
-          for t in tests/test_*.sh; do
-            echo "=== $t ==="
-            bash "$t" || rc=1
-          done
-          exit $rc
+          for f in deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+          shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh
+          ./run_tests.sh
 
       - name: Gate — tag matches DEEPLOY_VERSION
         run: |
