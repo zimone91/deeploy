@@ -142,6 +142,47 @@ deeploy_checkout_unsafe_reason() {                # <path>...
     return 0
 }
 
+# --- client tag parsing + version floor --------------------------------------
+# jito-solana tags are vMAJOR.MINOR.PATCH[-prerelease]-jito. Three consumers
+# need the same answer — the build (toolchain), the upgrade path, and the
+# RENDER (validatorcfg emits flags whose existence depends on the version) — so
+# the parser and the floor comparison live here, once. Same convention as
+# deeploy_checkout_unsafe_reason: the predicate reports WHAT is wrong, each
+# caller adds the remedy that fits its context.
+
+# Prints "MAJOR MINOR PATCH"; returns 1 (silent) on anything that is not a
+# version tag. Prerelease shapes parse on their numeric head, so
+# v4.2.0-beta.2-jito.1 -> "4 2 0"; 'latest', 'v4.2' and '' do not parse at all
+# (they used to be substituted straight into the anza CLI URL by ${TAG%-jito}).
+deeploy_tag_version() {                           # <tag>
+    [[ "${1:-}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
+    printf '%s %s %s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+# Prints WHY <tag> cannot be used and returns 1; prints nothing and returns 0
+# when it parses and is >= the floor (default: DEEPLOY_MIN_JITO_TAG).
+deeploy_tag_floor_problem() {                     # <tag> [<floor-tag>]
+    local tag=${1:-} floor=${2:-${DEEPLOY_MIN_JITO_TAG:-}} tv fv
+    local tmaj tmin tpat fmaj fmin fpat tnum fnum
+    if ! tv="$(deeploy_tag_version "$tag")"; then
+        printf "'%s' is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH-jito)" "$tag"
+        return 1
+    fi
+    if ! fv="$(deeploy_tag_version "$floor")"; then
+        printf "internal: version floor '%s' is not a version tag" "$floor"
+        return 1
+    fi
+    read -r tmaj tmin tpat <<<"$tv"
+    read -r fmaj fmin fpat <<<"$fv"
+    # 10# so a zero-padded component (v4.08.0) is decimal, not octal. Components
+    # are assumed < 1000, which every Solana client release has honored.
+    tnum=$(( 10#$tmaj * 1000000 + 10#$tmin * 1000 + 10#$tpat ))
+    fnum=$(( 10#$fmaj * 1000000 + 10#$fmin * 1000 + 10#$fpat ))
+    (( tnum >= fnum )) && return 0
+    printf "%s is older than the minimum supported %s" "$tag" "$floor"
+    return 1
+}
+
 # ensure_cargo_env — make the rustup-installed cargo/rustc resolvable for THIS
 # process. rustup installs to $HOME/.cargo/bin and writes $HOME/.cargo/env, but a
 # fresh install only affects PATH if that env is sourced — and it must reach

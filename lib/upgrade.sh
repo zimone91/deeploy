@@ -13,7 +13,7 @@
 #   * keep the previous release (toolchain_install_release never wipes
 #     releases/*), so rollback is one symlink flip.
 #
-# Requires: common.sh + toolchain.sh sourced. Network/identity probes mockable.
+# Requires: common.sh + constants.sh + toolchain.sh sourced. Probes mockable.
 # ============================================================================
 
 [[ -n "${_DEEPLOY_UPGRADE_SOURCED:-}" ]] && return 0
@@ -42,6 +42,12 @@ upgrade_check_releases() {
     [[ -n "$UPGRADE_TAG" ]] || fail "No tag chosen"
     [[ "$UPGRADE_TAG" == "$current" ]] && warn "Chosen tag equals current (${current}) — rebuilding the same version"
     [[ "$UPGRADE_TAG" == *-jito ]] || warn "Tag '${UPGRADE_TAG}' does not end in -jito — double-check it"
+    # Same floor as the install path (constants.sh): upgrading DOWN to a client
+    # that predates --no-xdp / --poh-pinned-cpu-core would rebuild fine and then
+    # fail to start against the validator.sh already on the box.
+    local why
+    why="$(deeploy_tag_floor_problem "$UPGRADE_TAG")" \
+        || fail "refusing to upgrade to '${UPGRADE_TAG}': ${why}. The validator.sh on this box passes --no-xdp and --poh-pinned-cpu-core, which only exist from ${DEEPLOY_MIN_JITO_TAG} on. Choose ${DEEPLOY_MIN_JITO_TAG} or newer."
 }
 
 # --- staked-identity guard (mockable probes) ---------------------------------

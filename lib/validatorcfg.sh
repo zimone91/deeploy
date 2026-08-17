@@ -40,6 +40,21 @@ validatorcfg_resolve_config() {
     RETRANSMIT_ZERO_COPY="$(state_get retransmit_zero_copy 0)"
     XDP_CORES="$(state_get xdp_cores "")"
 
+    # Version floor for the RENDER, not just the build (phase 4 has its own).
+    # This phase is reachable without phase 4 — the generated validator.sh's own
+    # header tells the operator to regenerate with `install --only 6`, so a box
+    # built on an older client can land here and get flags its binary rejects.
+    # Env/conf wins over the recorded build tag, so an explicit JITO_TAG is
+    # validated even on a box with no build recorded yet.
+    local _vcfg_tag _vcfg_why
+    _vcfg_tag="${JITO_TAG:-$(state_get jito_tag "")}"
+    if [[ -z "$_vcfg_tag" ]]; then
+        warn "no recorded jito-solana build tag — assuming >= ${DEEPLOY_MIN_JITO_TAG}; validator.sh is rendered with flags that require it"
+    else
+        _vcfg_why="$(deeploy_tag_floor_problem "$_vcfg_tag")" \
+            || fail "refusing to render validator.sh for '${_vcfg_tag}': ${_vcfg_why}. The rendered flags (--no-xdp, --poh-pinned-cpu-core) first exist in ${DEEPLOY_MIN_JITO_TAG}, so this binary would reject them and the validator would not start. Upgrade the client first — '${DEEPLOY_CMD} upgrade' to ${DEEPLOY_MIN_JITO_TAG} or newer — then regenerate."
+    fi
+
     # Network / threads / snapshot knobs (memo defaults).
     GOSSIP_PORT="${GOSSIP_PORT:-8001}"
     RPC_PORT="${RPC_PORT:-8899}"

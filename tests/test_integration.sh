@@ -114,7 +114,7 @@ _vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 
 _install_read_isolated(){ sget isolated_set; }; _install_read_cmdline(){ echo "isolcpus=domain,managed_irq,$(sget isolated_set)"; }
 
 # --- config the operator would supply ----------------------------------------
-export SSH_PORT=2222 JITO_TAG=v4.0.0-jito DZ_ENABLED=false ASSUME_YES=1
+export SSH_PORT=2222 JITO_TAG=v4.2.1-jito DZ_ENABLED=false ASSUME_YES=1
 export VOTE_ACCOUNT_PUBKEY=Vote1111111111111111111111111111111111111111
 
 echo "############ FULL-FLOW WALKTHROUGH (phases 0 -> 7, state threading) ############"

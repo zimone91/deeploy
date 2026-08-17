@@ -56,6 +56,14 @@ JITO_TIP_DISTRIBUTION_PROGRAM="4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
 JITO_MERKLE_ROOT_AUTHORITY="8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt"
 ALT_PROGRAM_KEY="AddressLookupTab1e1111111111111111111111111"
 
+# Oldest jito-solana tag DeePloy can build and render for. Not a taste call: the
+# generated validator.sh uses --no-xdp and --poh-pinned-cpu-core, and BOTH first
+# exist in 4.2.0 (the XDP flags landed in 4.1.0, --no-xdp and the PoH rename in
+# 4.2.0). On anything older the validator rejects the argv and never starts —
+# after a 30-90 minute build. One constant, three checks (build, upgrade,
+# render) so the floor cannot drift between them.
+DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
+
 # Public community metrics endpoints (NOT secrets). BAM is the default to pair
 # with BAM-default MEV; the mainnet-beta one is the switchable alternative.
 SOLANA_METRICS_BAM="host=http://bam-public-metrics.jito.wtf:8086,db=mainnet-bam-validators,u=mainnet-bam-validator,p=wambamdamn"

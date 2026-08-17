@@ -21,6 +21,9 @@ export DEEPLOY_COLOR=never       # plain output for greppable assertions
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# constants.sh carries DEEPLOY_MIN_JITO_TAG, the default floor for the tag predicate
+# shellcheck source-path=SCRIPTDIR source=../lib/constants.sh
+source "$ROOT/lib/constants.sh"
 
 PASS=0; FAIL=0
 check() { # check <desc> <actual> <expected>
@@ -322,6 +325,44 @@ CKW=$(deeploy_checkout_unsafe_reason /good/dir /good/bad-file); CKRC=$?
 check "second path is checked too"           "$CKRC" "1"
 check "second path is the one named"         "$(grep -c '/good/bad-file' <<<"$CKW")" "1"
 unset -f deeploy_path_uid deeploy_path_mode
+
+echo "== tag parsing: vMAJOR.MINOR.PATCH out of jito-solana tag shapes =="
+check "stable tag"          "$(deeploy_tag_version v4.2.1-jito)"          "4 2 1"
+check "floor tag"           "$(deeploy_tag_version v4.2.0-jito)"          "4 2 0"
+check "old tag"             "$(deeploy_tag_version v4.0.0-jito)"          "4 0 0"
+check "prerelease shape"    "$(deeploy_tag_version v4.2.0-beta.2-jito.1)" "4 2 0"
+check "rc shape"            "$(deeploy_tag_version v4.2.0-rc.1-jito)"     "4 2 0"
+# garbage does NOT parse — it used to be substituted straight into the anza URL
+for bad in latest v4.2 4.2.1-jito "" vX.Y.Z-jito; do
+    ( deeploy_tag_version "$bad" ) >/dev/null 2>&1
+    check "rejects '${bad:-<empty>}'" "$?" "1"
+done
+
+echo "== version floor: the ONE predicate behind all three checks =="
+check_true "floor constant is itself a version tag" "deeploy_tag_version \"\$DEEPLOY_MIN_JITO_TAG\" >/dev/null"
+for good in v4.2.0-jito v4.2.1-jito v4.3.0-jito v5.0.0-jito; do
+    ( deeploy_tag_floor_problem "$good" ) >/dev/null 2>&1
+    check "accepts $good" "$?" "0"
+done
+for old in v4.1.2-jito v4.1.0-jito v4.0.0-jito v3.1.14-jito; do
+    ( deeploy_tag_floor_problem "$old" ) >/dev/null 2>&1
+    check "refuses $old" "$?" "1"
+done
+FLOORWHY=$(deeploy_tag_floor_problem v4.0.0-jito); FLOORRC=$?
+check "old tag -> rc1"                   "$FLOORRC" "1"
+check "reason names tag AND the floor"   "$(grep -c "v4.0.0-jito is older than the minimum supported ${DEEPLOY_MIN_JITO_TAG}" <<<"$FLOORWHY")" "1"
+GARBWHY=$(deeploy_tag_floor_problem latest); GARBRC=$?
+check "garbage -> rc1"                   "$GARBRC" "1"
+check "reason says it is not a tag"      "$(grep -c 'is not a jito-solana version tag' <<<"$GARBWHY")" "1"
+# boundary: one patch below the floor is refused, the floor itself is not
+( deeploy_tag_floor_problem v4.1.99-jito ) >/dev/null 2>&1; check "4.1.99 < 4.2.0" "$?" "1"
+( deeploy_tag_floor_problem v4.2.0-jito )  >/dev/null 2>&1; check "4.2.0 == floor -> ok" "$?" "0"
+# zero-padded components are decimal, not octal (would be a syntax error)
+( deeploy_tag_floor_problem v4.08.0-jito ) >/dev/null 2>&1; check "v4.08.0 parses as 4.8.0 -> ok" "$?" "0"
+# an unusable floor is reported as internal, never silently passed
+UWHY=$(deeploy_tag_floor_problem v4.2.1-jito "not-a-tag"); URC=$?
+check "bad floor -> rc1"                 "$URC" "1"
+check "bad floor -> named internal"      "$(grep -c 'internal: version floor' <<<"$UWHY")" "1"
 
 echo "== statedir-unavailable: root loud, non-root quiet =="
 rootmsg=$(_common_statedir_unavailable 1 2>&1)

@@ -13,7 +13,8 @@
 # in the overlay dir, or DEEPLOY_MOSTLY_CONFIRMED_THRESHOLD) and is written ONLY
 # when the patch applied.
 #
-# Requires: common.sh sourced. Heavy/network steps honor --dry-run; paths are
+# Requires: common.sh + constants.sh sourced (the latter carries the version
+# floor DEEPLOY_MIN_JITO_TAG). Heavy/network steps honor --dry-run; paths are
 # env-overridable so tests never touch the real toolchain.
 # ============================================================================
 
@@ -57,6 +58,12 @@ toolchain_resolve_config() {
     fi
     [[ -n "$JITO_TAG" ]] || fail "JITO_TAG is required"
     [[ "$JITO_TAG" == *-jito ]] || warn "JITO_TAG '$JITO_TAG' does not end in -jito — double-check it"
+    # Version floor, checked BEFORE the 30-90 minute build (this is the whole
+    # point): the generated validator.sh passes flags that do not exist on older
+    # clients, so an old tag builds fine and then refuses to start.
+    local why
+    why="$(deeploy_tag_floor_problem "$JITO_TAG")" \
+        || fail "refusing to build '${JITO_TAG}': ${why}. DeePloy generates a validator.sh that passes --no-xdp and --poh-pinned-cpu-core, and both first exist in ${DEEPLOY_MIN_JITO_TAG} — an older client rejects the argv and never starts, after the entire build. Set JITO_TAG to ${DEEPLOY_MIN_JITO_TAG} or newer."
     state_set jito_tag "$JITO_TAG"
 }
 

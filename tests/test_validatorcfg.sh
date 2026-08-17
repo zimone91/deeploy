@@ -38,6 +38,7 @@ DRY_RUN=0 common_init
 systemctl() { :; }; ln() { :; }
 
 seed() {
+    state_set jito_tag v4.2.1-jito          # a box that has built a supported client
     state_set solana_home /root/solana
     state_set sync_identity /root/solana/unstaked-identity.json
     state_set vote_account_pubkey Vote1111111111111111111111111111111111111111
@@ -301,6 +302,32 @@ check_true "X1: validatorcfg_generate ABORTS on hostile state" "[[ \"$rc\" != \"
 check_true "X1: generate wrote NO validator.sh"                "[[ ! -e \"$WORK/nope.sh\" ]]"
 check_true "X1: generate executed nothing"                     "[[ ! -e \"$WORK/pwned\" ]]"
 seed; validatorcfg_resolve_config   # restore clean state
+
+echo "== version floor at RENDER: phase 6 is reachable without phase 4 =="
+# The generated validator.sh's own header tells the operator to regenerate with
+# `install --only 6`, which skips phase 4 entirely — so a box built on an older
+# client can land here and be handed flags its binary rejects.
+seed; state_set dz_enabled false
+state_set jito_tag v4.0.0-jito
+VFOUT=$( ( unset JITO_TAG; MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 ); VFRC=$?
+check "recorded 4.0.0 -> render refused"        "$VFRC" "1"
+check "refusal names the render, not the build" "$(grep -c 'refusing to render validator.sh' <<<"$VFOUT")" "1"
+check "refusal points at the upgrade path"      "$(grep -c 'upgrade' <<<"$VFOUT")" "1"
+state_set jito_tag v4.2.1-jito
+( unset JITO_TAG; MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "recorded 4.2.1 -> proceeds"              "$?" "0"
+# env/conf tag WINS over the recorded one (same precedence as everywhere else)
+( JITO_TAG=v4.0.0-jito MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "env tag below floor overrides good state -> refused" "$?" "1"
+state_set jito_tag v4.0.0-jito
+( JITO_TAG=v4.2.1-jito MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "env tag above floor overrides old state -> ok"       "$?" "0"
+# nothing known at all -> proceed, but SAY what is being assumed
+state_clear jito_tag
+VFW=$( ( unset JITO_TAG; MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 ); VFWRC=$?
+check "no tag anywhere -> proceeds"             "$VFWRC" "0"
+check "no tag -> warns and names the assumption" "$(grep -c 'assuming >=' <<<"$VFW")" "1"
+state_set jito_tag v4.2.1-jito   # leave a supported tag for any later section
 
 echo ""
 echo "==================================="

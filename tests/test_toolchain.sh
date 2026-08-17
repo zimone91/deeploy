@@ -21,6 +21,8 @@ export JITO_SRC="$WORK/repo"
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/constants.sh
+source "$ROOT/lib/constants.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/toolchain.sh
 source "$ROOT/lib/toolchain.sh"
 
@@ -39,6 +41,27 @@ git()    { case "$*" in *"apply --check"*) return "$GIT_APPLY_CHECK_RC";; *) ech
 setcap() { echo "setcap $*" >>"$CALLS"; }
 getcap() { echo "getcap $*" >>"$CALLS"; }
 JITO_TAG="v3.1.14-jito"
+
+echo "== version floor: refuse to BUILD below the minimum client (phase 4, pre-build) =="
+# The whole point of checking here: an old tag builds for 30-90 minutes and only
+# then produces a binary that rejects the rendered argv.
+state_clear jito_tag
+( JITO_TAG=v4.0.0-jito toolchain_resolve_config ) >/dev/null 2>&1
+check "4.0.0 -> resolve fails"                 "$?" "1"
+check "refusal records NO tag to state"        "$(state_get jito_tag '<none>')" "<none>"
+TCOUT=$( ( JITO_TAG=v4.1.2-jito toolchain_resolve_config ) 2>&1 ); TCRC=$?
+check "4.1.2 (last pre-floor) -> fails"        "$TCRC" "1"
+check "message refuses by name"                "$(grep -c 'refusing to build' <<<"$TCOUT")" "1"
+check "message names the floor"                "$(grep -c "$DEEPLOY_MIN_JITO_TAG" <<<"$TCOUT")" "1"
+TCG=$( ( JITO_TAG=latest toolchain_resolve_config ) 2>&1 ); TCGRC=$?
+check "garbage tag -> fails (not \${TAG%-jito})" "$TCGRC" "1"
+check "garbage named as not-a-version-tag"     "$(grep -c 'is not a jito-solana version tag' <<<"$TCG")" "1"
+JITO_TAG=v4.2.0-jito toolchain_resolve_config >/dev/null 2>&1
+check "floor tag itself -> ok"                 "$?" "0"
+JITO_TAG=v4.2.1-jito toolchain_resolve_config >/dev/null 2>&1
+check "current pin -> ok"                      "$?" "0"
+check "accepted tag recorded to state"         "$(state_get jito_tag)" "v4.2.1-jito"
+JITO_TAG="v3.1.14-jito"    # restore the suite-wide fixture for the sections below
 
 echo "== overlay seam: no patch -> vanilla =="
 OVERLAY_DIR="$WORK/empty"; mkdir -p "$OVERLAY_DIR"

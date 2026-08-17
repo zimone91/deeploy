@@ -34,11 +34,32 @@ CALLS="$WORK/calls"; : >"$CALLS"
 systemctl() { echo "systemctl $*" >>"$CALLS"; }
 
 echo "== check_releases: default = current tag (no auto-jump to latest) =="
-_upgrade_fetch_tags() { case "$1" in *jito-solana*) printf 'v4.0.1-jito\nv4.0.0-jito\nv3.1.14-jito\n';;
-                                     *agave*)       printf 'v4.0.1\nv4.0.0\n';; esac; }
-state_set jito_tag v4.0.0-jito
+_upgrade_fetch_tags() { case "$1" in *jito-solana*) printf 'v4.2.1-jito\nv4.2.0-jito\nv4.1.2-jito\n';;
+                                     *agave*)       printf 'v4.2.1\nv4.2.0\n';; esac; }
+state_set jito_tag v4.2.0-jito
 upgrade_check_releases >/dev/null 2>&1
-check "tag defaults to CURRENT, not latest" "$UPGRADE_TAG" "v4.0.0-jito"
+check "tag defaults to CURRENT, not latest" "$UPGRADE_TAG" "v4.2.0-jito"
+
+echo "== version floor: refuse to upgrade BELOW the minimum client =="
+# An upgrade DOWN to a pre-4.2 client rebuilds fine and then fails to start
+# against the validator.sh already on the box (--no-xdp / --poh-pinned-cpu-core).
+state_set jito_tag v4.2.1-jito
+ask() { REPLY="v4.0.0-jito"; }
+UPOUT=$( ( upgrade_check_releases ) 2>&1 ); UPRC=$?
+check "below-floor tag -> upgrade aborts"     "$UPRC" "1"
+check "message refuses by name"               "$(grep -c 'refusing to upgrade' <<<"$UPOUT")" "1"
+check "message names the floor + the flags"    "$(grep -c "only exist from ${DEEPLOY_MIN_JITO_TAG} on" <<<"$UPOUT")" "1"
+ask() { REPLY="v4.1.2-jito"; }                # last pre-floor release: also refused
+( upgrade_check_releases ) >/dev/null 2>&1
+check "4.1.2 -> refused too"                  "$?" "1"
+ask() { REPLY="not-a-tag"; }
+UPG=$( ( upgrade_check_releases ) 2>&1 ); UPGRC=$?
+check "garbage tag -> aborts"                 "$UPGRC" "1"
+check "garbage named as not-a-version-tag"    "$(grep -c 'is not a jito-solana version tag' <<<"$UPG")" "1"
+ask() { REPLY="v4.2.1-jito"; }
+( upgrade_check_releases ) >/dev/null 2>&1
+check "supported tag proceeds"                "$?" "0"
+unset -f ask
 
 echo "== STAKED-identity guard =="
 # Staked + non-interactive: require_yes refuses -> ABORT (no restart of a staked node).
@@ -106,9 +127,9 @@ curl() { printf ''; }                                # dead network / empty repl
 OUT7F2=$( set -Eeuo pipefail; _upgrade_fetch_tags x/y ); RC7F2=$?
 check "7f: empty reply -> clean empty, rc0"                "${RC7F2}/${OUT7F2}" "0/"
 # and the tag chooser still defaults to CURRENT when the lists are empty
-state_set jito_tag v4.0.0-jito
+state_set jito_tag v4.2.0-jito
 upgrade_check_releases >/dev/null 2>&1
-check "7f: empty tag lists -> chooser defaults to current" "$UPGRADE_TAG" "v4.0.0-jito"
+check "7f: empty tag lists -> chooser defaults to current" "$UPGRADE_TAG" "v4.2.0-jito"
 
 echo ""
 echo "==================================="
