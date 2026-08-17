@@ -5,6 +5,41 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Client version bump to `v4.2.1-jito`, and the compatibility work that bump
+forces. Not yet hardware-validated.
+
+### Breaking
+- **The minimum supported client is now `v4.2.0-jito`.** Anything older is
+  refused at three points — the build (phase 4), `deeploy upgrade`, and the
+  phase-6 render — instead of failing at validator start after a 30-90 minute
+  build. If your `deeploy.conf` pins an older tag (e.g. `v4.0.0-jito`), the
+  install now stops in phase 4 with an explicit message. On a box already
+  running an older client: run `deeploy upgrade` to `v4.2.0-jito` or newer,
+  then regenerate `validator.sh` (`deeploy install --only 6`).
+  The floor is not a preference — the rendered flags below do not exist earlier.
+- **A private overlay that does not apply is now a hard stop, not a warning.**
+  Previously a patch broken by tag drift was skipped with a warning and the
+  build continued VANILLA, producing a binary the operator believed was patched.
+  Either update the patch for the new tag, or move it out of the overlay
+  directory to build vanilla on purpose. No overlay at all is unchanged: that is
+  the normal public path and stays silent.
+
+### Changed
+- Pinned client: `v4.0.0-jito` → **`v4.2.1-jito`** (Agave 4.2 is the
+  mainnet-recommended line; the 4.2 feature activation has landed).
+- The generated `validator.sh` now **always states the XDP decision** —
+  `--xdp-cpu-cores` (+ `--xdp-zero-copy`), or `--no-xdp`. Agave 4.2.0 inverted
+  the default from opt-in to opt-out, so emitting nothing no longer means
+  "disabled": it would silently enable XDP on a box where DeePloy decided
+  against it.
+- Current flag spellings replace the deprecated `experimental-*` ones:
+  `--poh-pinned-cpu-core`, `--xdp-cpu-cores`, `--xdp-zero-copy`. The old names
+  still work in 4.2.x but are slated for removal in 4.3.
+- `JITO_TAG` is now parsed and validated (`vMAJOR.MINOR.PATCH`); values like
+  `latest` or `v4.2` used to be substituted straight into the anza CLI URL.
+
 ## [0.1.0-rc2] - 2026-07-02
 
 Server-free hardening: resume reliability, key-invariant enforcement, SSH/GRUB

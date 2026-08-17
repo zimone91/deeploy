@@ -48,6 +48,11 @@ slots. Read the source.
 Target: a fresh Ubuntu 24.04 x86-64 box (built and proven on AMD EPYC,
 377 GiB RAM, 2× ~1.92 TB data NVMe + a separate system disk).
 
+**Client:** DeePloy pins `JITO_TAG="v4.2.1-jito"` and supports **v4.2.0-jito or
+newer**. Older clients are refused before the build: the generated `validator.sh`
+passes `--no-xdp` and `--poh-pinned-cpu-core`, neither of which exists before
+4.2.0, so an older binary would build for 30-90 minutes and then refuse to start.
+
 - **Ideal:** **two separate data NVMe** — `accounts` and `ledger` on *different*
   physical disks. This keeps snapshot packaging and accountsdb writes from
   competing for the same spindle/queue. DeePloy formats them XFS and mounts

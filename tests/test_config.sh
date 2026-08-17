@@ -16,6 +16,9 @@ export CONFIG_FILE="$WORK/deeploy.conf"
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# constants.sh: the shipped example must satisfy our own DEEPLOY_MIN_JITO_TAG
+# shellcheck source-path=SCRIPTDIR source=../lib/constants.sh
+source "$ROOT/lib/constants.sh"
 # base.sh / keys.sh provide _valid_port and _keys_valid_pubkey, reused by the
 # config type-validators (production sources all modules; mirror that here).
 # shellcheck source-path=SCRIPTDIR source=../lib/base.sh
@@ -246,7 +249,12 @@ check "example: all keys validate (rc 0)"      "$rc" "0"
 check "example: SSH_PORT parsed, comment ignored"  "$SSH_PORT" "22"
 check "example: SHRED hostport parsed"             "$SHRED_RECEIVER_ADDRESS" "203.0.113.7:1002"
 check "example: MEV_MODE parsed"                   "$MEV_MODE" "bam"
-check "example: JITO_TAG parsed"                   "$JITO_TAG" "v4.0.0-jito"
+# Not pinned to a literal tag (that pin drifted every bump and the test just
+# followed): assert the shipped example carries a tag that PARSES and clears our
+# own floor — i.e. `install` with the untouched example cannot stop in phase 4.
+check "example: JITO_TAG parsed"                   "$(deeploy_tag_version "$JITO_TAG" >/dev/null && echo parses || echo NO)" "parses"
+check_true "example: JITO_TAG meets our own floor" "deeploy_tag_floor_problem \"\$JITO_TAG\" >/dev/null"
+check "example: JITO_TAG matches the file"         "$JITO_TAG" "$(sed -n 's/^JITO_TAG="\([^"]*\)".*/\1/p' "$EX")"
 
 echo "== X6: _config_keys <-> _config_key_type are in lockstep =="
 sync_missing=0

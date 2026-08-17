@@ -7,11 +7,12 @@
 #
 # PUBLIC BUILD IS VANILLA. A non-vanilla build is produced ONLY if an optional
 # patch is present under private/ (git-ignored). The seam is generic: "if a
-# patch exists, git apply --check it; on success apply, else loud-skip and build
-# vanilla." Nothing here names that patch, reveals its purpose, or hardcodes the
-# mostly_confirmed_threshold value — that value rides with the overlay (a file
-# in the overlay dir, or DEEPLOY_MOSTLY_CONFIRMED_THRESHOLD) and is written ONLY
-# when the patch applied.
+# patch exists, git apply --check it; on success apply, else STOP — a patch that
+# was placed deliberately must never be skipped silently." No patch at all is the
+# normal public path and builds vanilla quietly. Nothing here names that patch,
+# reveals its purpose, or hardcodes the mostly_confirmed_threshold value — that
+# value rides with the overlay (a file in the overlay dir, or
+# DEEPLOY_MOSTLY_CONFIRMED_THRESHOLD) and is written ONLY when the patch applied.
 #
 # Requires: common.sh + constants.sh sourced (the latter carries the version
 # floor DEEPLOY_MIN_JITO_TAG). Heavy/network steps honor --dry-run; paths are
@@ -43,9 +44,14 @@ TOOLCHAIN_BUILD_DEPS=(
 # The 5 capabilities the validator needs (matches solana.service AmbientCapabilities).
 TOOLCHAIN_CAPS="cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon,cap_sys_nice"
 
-# scripts/cargo-install-all.sh flags (v4.0.0-jito mainnet recipe):
-#   --release-with-lto         build with the injected LTO profile
-#   --no-build-platform-tools  skip the SBF platform-tools build (required on v4.0.0)
+# scripts/cargo-install-all.sh flags — both re-confirmed present in the 4.2.x
+# script (v4.2.1-jito, the current pin):
+#   --release-with-lto         build with the release-with-lto profile. Upstream
+#                              now ships both the profile and this flag, so the
+#                              two guards below are no-ops on 4.2.x; they stay
+#                              for older tags.
+#   --no-build-platform-tools  skip the SBF platform-tools build (not needed for
+#                              a validator; still accepted in 4.2.x)
 TOOLCHAIN_BUILD_FLAGS=(--release-with-lto --no-build-platform-tools)
 
 _OVERLAY_APPLIED=0
@@ -53,7 +59,7 @@ _OVERLAY_APPLIED=0
 # --- config ------------------------------------------------------------------
 toolchain_resolve_config() {
     if [[ -z "${JITO_TAG:-}" ]]; then
-        ask "jito-solana build tag (e.g. v3.1.14-jito)" "${JITO_TAG:-}"
+        ask "jito-solana build tag (e.g. v4.2.1-jito)" "${JITO_TAG:-}"
         JITO_TAG="$REPLY"
     fi
     [[ -n "$JITO_TAG" ]] || fail "JITO_TAG is required"

@@ -33,7 +33,9 @@ ACCOUNTS_PATH="/mnt/accounts/solana/accounts"
 SNAPSHOTS_PATH="/root/solana/snapshots"   # rides with the LEDGER disk (I/O isolation)
 
 # --- Build (jito-solana from source) ---
-JITO_TAG="v4.0.0-jito"                 # see github.com/jito-foundation/jito-solana/releases
+JITO_TAG="v4.2.1-jito"                 # see github.com/jito-foundation/jito-solana/releases
+#                                      # MINIMUM SUPPORTED: v4.2.0-jito (older
+#                                      # clients lack --no-xdp / --poh-pinned-cpu-core)
 
 # --- Keys: PATHS ONLY (no key material). Vote is a PUBLIC pubkey. ---
 UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"   # the unstaked SYNC identity the node runs under until the swap
