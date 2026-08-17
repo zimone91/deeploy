@@ -64,7 +64,7 @@ check "5 entrypoints"          "$(grep -c -- '--entrypoint "entrypoint' <<<"$V")
 check "4 known-validators"     "$(grep -c -- '--known-validator' <<<"$V")" "4"
 check "no blank before ) after known" "$(awk '/--known-validator "CakcnaRD/{getline; print}' <<<"$V")" ")"
 check "private-rpc + bind 127" "$(grep -c -- '--rpc-bind-address "127.0.0.1"' <<<"$V")" "1"
-check "poh pinned core = 10"   "$(grep -c -- '--experimental-poh-pinned-cpu-core "10"' <<<"$V")" "1"
+check "poh pinned core = 10"   "$(grep -c -- '--poh-pinned-cpu-core "10"' <<<"$V")" "1"
 check "unified-scheduler 14"   "$(grep -c -- '--unified-scheduler-handler-threads "14"' <<<"$V")" "1"
 check "ledger path"            "$(grep -c -- '--ledger "/root/solana/ledger"' <<<"$V")" "1"
 check "accounts on accounts disk" "$(grep -c -- '--accounts "/mnt/accounts/solana/accounts"' <<<"$V")" "1"
@@ -75,7 +75,8 @@ check "tip-payment program"    "$(grep -c -- "--tip-payment-program-pubkey \"$JI
 check "merkle authority"       "$(grep -c -- "--merkle-root-upload-authority \"$JITO_MERKLE_ROOT_AUTHORITY\"" <<<"$V")" "1"
 check "bam-url present"        "$(grep -c -- '--bam-url "http://amsterdam.mainnet.bam.jito.wtf"' <<<"$V")" "1"
 check "commission-bps 0 (bam)" "$(grep -c -- '--commission-bps "0"' <<<"$V")" "1"
-check "RETRANSMIT omitted"     "$(grep -c 'RETRANSMIT' <<<"$V")" "0"
+check "RETRANSMIT block present anyway (states the choice)" "$(grep -c 'RETRANSMIT=(' <<<"$V")" "1"
+check "unsupported NIC -> explicit --no-xdp"  "$(grep -c -- '--no-xdp' <<<"$V")" "1"
 check "shred single address"   "$(grep -c -- '--shred-receiver-address "74.118.140.240:1002"$' <<<"$V")" "1"
 check "every interpolated value is double-quoted (no bare --ledger)" "$(grep -c -- '--ledger /' <<<"$V")" "0"
 
@@ -87,8 +88,9 @@ echo "== RETRANSMIT: mlx5 = cpu-cores + zero-copy, in order =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores 1-2
 validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "cpu-cores 1-2 present"        "$(grep -c -- '--experimental-retransmit-xdp-cpu-cores "1-2"' <<<"$V")" "1"
-check "zero-copy present (mlx5)"     "$(grep -c -- '--experimental-retransmit-xdp-zero-copy' <<<"$V")" "1"
+check "cpu-cores 1-2 present"        "$(grep -c -- '--xdp-cpu-cores "1-2"' <<<"$V")" "1"
+check "zero-copy present (mlx5)"     "$(grep -c -- '--xdp-zero-copy' <<<"$V")" "1"
+check "XDP enabled -> NO --no-xdp"   "$(grep -c -- '--no-xdp' <<<"$V")" "0"
 check "cpu-cores BEFORE zero-copy"   "$(awk '/xdp-cpu-cores/{c=NR} /xdp-zero-copy/{z=NR} END{print (c<z)?"yes":"no"}' <<<"$V")" "yes"
 check "RETRANSMIT in exec list"      "$(grep -c 'RETRANSMIT\[@\]' <<<"$V")" "1"
 
@@ -96,14 +98,38 @@ echo "== RETRANSMIT: bnxt = cpu-cores, NO zero-copy =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 0; state_set xdp_cores 1-2
 validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "bnxt cpu-cores present"  "$(grep -c -- '--experimental-retransmit-xdp-cpu-cores "1-2"' <<<"$V")" "1"
-check "bnxt zero-copy ABSENT"   "$(grep -c -- '--experimental-retransmit-xdp-zero-copy' <<<"$V")" "0"
+check "bnxt cpu-cores present"  "$(grep -c -- '--xdp-cpu-cores "1-2"' <<<"$V")" "1"
+check "bnxt zero-copy ABSENT"   "$(grep -c -- '--xdp-zero-copy' <<<"$V")" "0"
+check "bnxt: NO --no-xdp"       "$(grep -c -- '--no-xdp' <<<"$V")" "0"
 
-echo "== RETRANSMIT omitted on unsupported driver =="
+echo "== 4.2 opt-out inversion: the render ALWAYS states the XDP choice =="
+# Agave 4.2.0 flipped XDP from opt-in to opt-out: emitting no flags now means
+# ENABLED (auto interface, auto core). Both paths that decide against XDP must
+# therefore say --no-xdp out loud.
 state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
 validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "no RETRANSMIT block"     "$(grep -c 'RETRANSMIT' <<<"$V")" "0"
+check "unsupported NIC -> --no-xdp"          "$(grep -c -- '--no-xdp' <<<"$V")" "1"
+check "unsupported NIC -> no xdp-cpu-cores"  "$(grep -c -- '--xdp-cpu-cores' <<<"$V")" "0"
+check "RETRANSMIT still in the exec list"    "$(grep -c 'RETRANSMIT\[@\]' <<<"$V")" "1"
+# the SECOND silent path: eligible NIC, but the operator reserved no cores in
+# phase 2 — include_retransmit=0 with RETRANSMIT_SUPPORTED=1
+state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores ""
+validatorcfg_resolve_config
+V=$(_vcfg_render_validator_sh)
+check "eligible NIC + no cores -> --no-xdp"  "$(grep -c -- '--no-xdp' <<<"$V")" "1"
+check "eligible NIC + no cores -> no cores flag" "$(grep -c -- '--xdp-cpu-cores' <<<"$V")" "0"
+check "eligible NIC + no cores -> no zero-copy"  "$(grep -c -- '--xdp-zero-copy' <<<"$V")" "0"
+# and the retired names appear NOWHERE, in any configuration
+check "no deprecated experimental-* names"   "$(grep -c 'experimental-' <<<"$V")" "0"
+# the RETRANSMIT block is now unconditional, so BOTH shapes must still parse
+printf '%s' "$V" >"$WORK/vsh_noxdp.sh"
+check_true "generated validator.sh (--no-xdp) passes bash -n" "bash -n \"$WORK/vsh_noxdp.sh\""
+state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores 1-2
+validatorcfg_resolve_config
+_vcfg_render_validator_sh >"$WORK/vsh_xdp.sh"
+check_true "generated validator.sh (xdp on) passes bash -n"   "bash -n \"$WORK/vsh_xdp.sh\""
+check "xdp-on shape has cores + zero-copy"   "$(grep -cE -- '--xdp-(cpu-cores|zero-copy)' "$WORK/vsh_xdp.sh")" "2"
 
 echo "== validator.sh: 2nd shred address GATED on dz_enabled (the single DZ decision) =="
 state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""

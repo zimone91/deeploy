@@ -7,7 +7,7 @@
 #
 # POH_CORE is the single source of truth: it drives isolcpus/nohz_full/
 # rcu_nocbs/irqaffinity here, and is recorded to state for validatorcfg
-# (--experimental-poh-pinned-cpu-core) and set_poh_affinity.sh — no drift.
+# (--poh-pinned-cpu-core) and set_poh_affinity.sh — no drift.
 #
 # Requires: common.sh sourced. Topology is read via _cpu_total/_cpu_siblings,
 # which tests override to inject a synthetic CPU layout; file paths are

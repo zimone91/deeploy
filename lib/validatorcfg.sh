@@ -7,8 +7,8 @@
 #   wait_and_pin_poh.sh, and the solana-poh-pin service+timer.
 #
 # POH_CORE flows in from state (single source of truth -> both the
-# --experimental-poh-pinned-cpu-core arg AND set_poh_affinity.sh). RETRANSMIT is
-# emitted only when the NIC is XDP-eligible AND XDP cores were reserved. JITO is
+# --poh-pinned-cpu-core arg AND set_poh_affinity.sh). RETRANSMIT ALWAYS states
+# the XDP decision (flags, or --no-xdp) — 4.2 made XDP opt-out. JITO is
 # BAM by default (commission-bps tied to mode); the DZ multicast shred is
 # appended as a 2nd --shred-receiver-address when enabled.
 #
@@ -220,19 +220,28 @@ _vcfg_render_validator_sh() {
     jito_lines+="  --account-index program-id"$'\n'
     jito_lines+="  --account-index-include-key \"${ALT_PROGRAM_KEY}\""
 
-    # RETRANSMIT only when the driver supports XDP retransmit AND cores were
-    # reserved. cpu-cores first, then the zero-copy flag (mlx5 only; bnxt is
-    # non-ZC). Matches the prod RETRANSMIT block exactly.
+    # RETRANSMIT is ALWAYS emitted — the block states the XDP decision out loud,
+    # either way. Agave 4.2.0 inverted the default: XDP used to be opt-in (no
+    # flags = off), and is now opt-OUT (no flags = ON, with an auto-detected
+    # interface and an auto-selected core). So "say nothing" no longer means
+    # "disabled" — on a box where DeePloy decided against XDP, silence would
+    # silently enable it. Two distinct paths reach that decision and both must
+    # end in --no-xdp: an ineligible/unknown NIC (RETRANSMIT_SUPPORTED=0), and
+    # an eligible NIC where the operator reserved no cores in phase 2
+    # (XDP_CORES empty). cpu-cores first, then zero-copy (mlx5 only; bnxt is
+    # non-ZC) — the prod block's order.
     local include_retransmit=0
     [[ "$RETRANSMIT_SUPPORTED" == "1" && -n "$XDP_CORES" ]] && include_retransmit=1
+    retransmit_section="RETRANSMIT=("$'\n'
     if (( include_retransmit )); then
-        retransmit_section="RETRANSMIT=("$'\n'"  --experimental-retransmit-xdp-cpu-cores \"${XDP_CORES}\""$'\n'
-        [[ "$RETRANSMIT_ZERO_COPY" == "1" ]] && retransmit_section+="  --experimental-retransmit-xdp-zero-copy"$'\n'
-        retransmit_section+=")"$'\n'
+        retransmit_section+="  --xdp-cpu-cores \"${XDP_CORES}\""$'\n'
+        [[ "$RETRANSMIT_ZERO_COPY" == "1" ]] && retransmit_section+="  --xdp-zero-copy"$'\n'
+    else
+        retransmit_section+="  --no-xdp"$'\n'
     fi
+    retransmit_section+=")"$'\n'
 
-    local blocks=(CONSENSUS GOSSIP RPC REPLAY POH)
-    (( include_retransmit )) && blocks+=(RETRANSMIT)
+    local blocks=(CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT)
     blocks+=(LEDGER SNAPSHOTS LOG REPORTING JITO)
     exec_lines="exec agave-validator"
     for b in "${blocks[@]}"; do exec_lines+=" \\"$'\n'"  \"\${${b}[@]}\""; done
@@ -273,7 +282,7 @@ REPLAY=(
 )
 
 POH=(
-  --experimental-poh-pinned-cpu-core "${POH_CORE}"
+  --poh-pinned-cpu-core "${POH_CORE}"
 )
 ${retransmit_section}
 LEDGER=(
