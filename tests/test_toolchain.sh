@@ -166,6 +166,65 @@ check "lto profile arg present"  "$(grep -c "buildProfile='release-with-lto'" "$
 toolchain_patch_cargo_script "$S" >/dev/null 2>&1
 check "elif not duplicated"      "$(grep -c 'elif.*--release-with-lto' "$S")" "1"
 
+echo "== build guards degenerate to no-ops against the UPSTREAM 4.2 structure =="
+# Both guards were written for 4.0.0, where neither the profile nor the flag
+# existed upstream. On 4.2.x upstream ships BOTH — the root Cargo.toml carries
+# [profile.release-with-lto] with the same three keys we inject, and
+# cargo-install-all.sh already has the --release-with-lto branch. The guards are
+# kept for older tags, so what needs proving is that on the current pin they
+# change NOTHING: a byte-identical file, not merely "no duplicate section".
+# Fixtures mirror the 4.2.1 shape (profile order and the arg-parse chain).
+U="$WORK/upstream42_Cargo.toml"
+cat >"$U" <<'EOT'
+[workspace]
+resolver = "2"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+
+[profile.release]
+split-debuginfo = "unpacked"
+lto = "thin"
+
+[profile.release-with-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+EOT
+cp "$U" "$U.pristine"
+toolchain_inject_lto_profile "$U" >/dev/null 2>&1
+check "upstream Cargo.toml: inject returns 0"        "$?" "0"
+check_true "upstream Cargo.toml: BYTE-IDENTICAL"     "cmp -s \"$U\" \"$U.pristine\""
+check "upstream Cargo.toml: still ONE lto profile"   "$(grep -c '^\[profile.release-with-lto\]$' "$U")" "1"
+check "upstream Cargo.toml: head untouched"          "$(head -1 "$U")" "[workspace]"
+
+US="$WORK/upstream42_cargo-install-all.sh"
+cat >"$US" <<'EOT'
+    elif [[ $1 = --release-with-debug ]]; then
+      buildProfileArg='--profile release-with-debug'
+      buildProfile='release-with-debug'
+      shift
+    elif [[ $1 = --release-with-lto ]]; then
+      buildProfileArg='--profile release-with-lto'
+      buildProfile='release-with-lto'
+      shift
+    elif [[ $1 = --no-build-platform-tools ]]; then
+      noBuildPlatformTools=true
+      shift
+    fi
+EOT
+cp "$US" "$US.pristine"
+toolchain_patch_cargo_script "$US" >/dev/null 2>&1
+check "upstream script: patch returns 0"             "$?" "0"
+check_true "upstream script: BYTE-IDENTICAL"         "cmp -s \"$US\" \"$US.pristine\""
+check "upstream script: still ONE lto branch"        "$(grep -c 'elif.*--release-with-lto' "$US")" "1"
+check "upstream script: platform-tools branch intact" "$(grep -c 'no-build-platform-tools' "$US")" "1"
+# and the flags DeePloy passes are the ones this structure accepts
+for flag in "${TOOLCHAIN_BUILD_FLAGS[@]}"; do
+    check "upstream script accepts ${flag}"          "$(grep -c -- "\$1 = ${flag} \]\]" "$US")" "1"
+done
+
 echo "== setcap: exactly the 5 caps =="
 : >"$CALLS"
 toolchain_setcap "/x/agave-validator" >/dev/null 2>&1
