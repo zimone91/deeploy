@@ -1,14 +1,44 @@
-# DeePloy
+<h1 align="center">DeePloy</h1>
 
-[![CI](https://github.com/zimone91/deeploy/actions/workflows/ci.yml/badge.svg)](https://github.com/zimone91/deeploy/actions/workflows/ci.yml)
+<p align="center">
+  <em>Bare Ubuntu box → synced Solana mainnet-beta validator, in one interactive run.</em>
+</p>
 
-An interactive, idempotent CLI that deploys, tunes, and upgrades a **Solana
-mainnet-beta** validator (Agave + Jito-BAM, built from source) on a fresh server
-— from bare box to `catchup 0`, ready for a manual staked-key transfer.
+<p align="center">
+  <a href="https://github.com/zimone91/deeploy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zimone91/deeploy/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="tests" src="https://img.shields.io/badge/tests-1117%20across%2017%20suites-brightgreen">
+  <img alt="shellcheck" src="https://img.shields.io/badge/shellcheck%200.11.0-clean-brightgreen">
+  <img alt="status" src="https://img.shields.io/badge/status-release%20candidate-orange">
+  <a href="https://github.com/zimone91/deeploy/releases"><img alt="release" src="https://img.shields.io/github/v/release/zimone91/deeploy?include_prereleases&sort=semver"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+DeePloy takes a fresh Ubuntu 24.04 server to a synced **Agave + Jito-BAM**
+mainnet-beta validator at `catchup 0`, built from source and tuned for it —
+then hands you the manual staked-key swap. Plain `bash`, no daemons, no magic.
 
 It is written to be **read before it is run as root on a box that will hold real
-money**: plain `bash`, modular, no magic, every system file backed up before it's
-touched, and a `--dry-run` that prints the whole plan and changes nothing.
+money**: modular, every system file backed up before it's touched, and a
+`--dry-run` that prints the whole plan and changes nothing.
+
+### What it does
+
+- **Phases 0–8, idempotent and resumable** — one `install`, a single GRUB-gated
+  reboot, and an unattended resume that finishes the job.
+- **Never touches your staked key.** The node syncs on a throwaway identity; you
+  swap the real key in yourself. See the section below — this is the core design.
+- **Builds the client from source** at a pinned tag (`v4.2.1-jito`), with a
+  minimum-supported floor so an incompatible client is refused *before* the
+  30–90 minute build, not after.
+- **Tunes the box for a validator:** CPU isolation via GRUB, PoH core pinning,
+  IRQ affinity, XFS data disks, NIC tuning (`bnxt_en` / `mlx5_core`), and an
+  explicit AF_XDP retransmit decision — never an implicit one.
+- **Fails closed.** Destructive steps require a typed `yes`; `--yes` never
+  auto-wipes. Preflight refuses an unsafe checkout in the first seconds.
+- **Optional DoubleZero** (GRE/BGP tunnels, passport, multicast shred).
+- **Lifecycle commands:** `verify`, `upgrade`, `export`, `import`, `dz-connect`.
+- **1117 assertions across 17 suites**, `shellcheck` clean, gated in CI on every
+  push — including a secret scan over the full history.
 
 ---
 
@@ -97,6 +127,27 @@ sudo ./deeploy.sh install
 ```
 
 > After step 4 the checkout belongs to root, so later updates need `sudo git pull`.
+
+---
+
+## Verify what you downloaded
+
+Release tarballs ship a `SHA256SUMS` next to them, produced by the tagged
+release workflow from `git archive` of that exact tag:
+
+```bash
+sha256sum -c SHA256SUMS        # must print: OK
+tar tzf deeploy-vX.Y.Z.tar.gz  # 44 files, no submodules, no binaries
+```
+
+The supply chain is pinned on purpose: GitHub Actions are pinned by commit SHA
+(not by tag), `shellcheck` is pinned to 0.11.0 and its download is
+SHA256-verified before it runs, and a secret scan runs over the **entire** git
+history on every push.
+
+**Tags are annotated but not yet GPG-signed** during the release-candidate
+series. Until they are, a checksum proves integrity, not provenance — clone over
+HTTPS/SSH from this repository rather than trusting a mirror.
 
 ---
 
@@ -208,6 +259,40 @@ passing only if it exits 0 **and** prints its `RESULT` with no failures.
 - BAM validators — https://bam.dev/validators/
 - DoubleZero setup — https://docs.malbeclabs.com/setup/
 
+---
+
+## Status & known limitations
+
+DeePloy is a **release candidate**. The full cycle — install → `catchup 0` →
+manual key swap → DoubleZero — has been proven end to end on two production
+boxes (`bnxt_en` and `mlx5_core`). What follows is an honest list of what is
+*not* yet proven. Read it before you point this at a box that matters.
+
+- **The current client bump is not yet hardware-validated.** Agave 4.2 inverted
+  the AF_XDP default from opt-in to opt-out, so the generated `validator.sh` had
+  to change on a path that *was* hardware-proven. The new form is covered by
+  tests and by reading the upstream source — but it has not yet run on metal.
+- **`upgrade` is beta.** It is exercised by tests, not by a real client upgrade
+  on a staked box. Treat it as such.
+- **DoubleZero passport signing invokes a third-party binary.** `dz-connect`
+  passes your staked keypair path to `doublezero-solana`, installed from an apt
+  repository and not pinned by DeePloy. It is the one place where a key file is
+  handed to software this repository does not control. If that trade-off is not
+  acceptable to you, skip DoubleZero — everything else works without it.
+- **Disk eligibility is validated on our topologies only.** The disk phase shows
+  a table and requires a typed `yes`, but hardening for unusual layouts (a
+  mounted non-OS NVMe carrying `/var` or `/home`, exotic RAID) is still open.
+  **Read the proposed table before you type `yes`.**
+- **The `mlx5` IRQ map is static**, not computed from the running topology.
+- **No warranty.** You are responsible for your keys, your stake, and your slots.
+
+Issues and findings are tracked in the repository; security reports go to the
+address in [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+Created and maintained by [zimone91](https://github.com/zimone91).
