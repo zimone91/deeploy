@@ -7,6 +7,14 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Manual rebuild of an EXISTING tag, so a release can be re-cut without
+  # moving a tag. The workflow body comes from the default branch; the tree
+  # being built comes from the tag in `inputs.tag`.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild, e.g. v0.1.0-rc4'
+        required: true
 
 # contents: write is scoped to THIS workflow only (CI stays read-only) — it is
 # required to create the release and upload assets.
@@ -14,7 +22,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # keyed on the tag being built, not on the triggering ref — two dispatches
+  # for different tags must not collapse into one group
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false   # never cancel a half-published release
 
 jobs:
@@ -23,6 +33,23 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # on dispatch this is the ONLY thing that puts the tag's tree in the
+          # runner; without it every later step would operate on the branch
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve the tag under build
+        # inputs reach the shell as env, never as inline ${{ }} inside run:
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          tag="${INPUT_TAG:-$PUSH_TAG}"
+          case "$tag" in
+            v*) ;;
+            *) echo "refusing to release: '${tag}' is not a v* tag"; exit 1 ;;
+          esac
+          echo "TAG=${tag}" >> "$GITHUB_ENV"
 
       - name: Install shellcheck v0.11.0 (pinned + sha256-verified)
         run: |
@@ -45,28 +72,40 @@ jobs:
         run: |
           ver=$(sed -n 's/^DEEPLOY_VERSION="\${DEEPLOY_VERSION:-\([^}]*\)}"$/\1/p' lib/common.sh)
           test -n "$ver" || { echo "could not parse DEEPLOY_VERSION from lib/common.sh"; exit 1; }
-          if [ "${GITHUB_REF_NAME}" != "v${ver}" ]; then
-            echo "tag ${GITHUB_REF_NAME} != v${ver} (lib/common.sh) — refusing to release"
+          if [ "${TAG}" != "v${ver}" ]; then
+            echo "tag ${TAG} != v${ver} (lib/common.sh) — refusing to release"
             exit 1
           fi
 
       - name: Build tarball + SHA256SUMS
-        # git archive of the TAG (not the checkout dir): reproducible content,
-        # respects .gitattributes, and can never scoop untracked files.
+        # git archive of the COMMIT, not the checkout dir: reproducible content,
+        # respects .gitattributes, and can never scoop untracked files. HEAD is
+        # the tag's commit (checkout above pinned it), so this does not depend
+        # on the tag object having been fetched into the runner.
         run: |
-          tag="${GITHUB_REF_NAME}"
-          git archive --format=tar.gz --prefix="deeploy-${tag}/" -o "deeploy-${tag}.tar.gz" "${tag}"
-          sha256sum "deeploy-${tag}.tar.gz" > SHA256SUMS
+          git archive --format=tar.gz --prefix="deeploy-${TAG}/" -o "deeploy-${TAG}.tar.gz" HEAD
+          sha256sum "deeploy-${TAG}.tar.gz" > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Create DRAFT release with assets
+      - name: Create the DRAFT release, or refresh an existing draft's assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          gh release create "${tag}" \
-            --draft \
-            --verify-tag \
-            --title "DeePloy ${tag}" \
-            --notes "Draft — see CHANGELOG.md. Verify: sha256sum -c SHA256SUMS" \
-            "deeploy-${tag}.tar.gz" SHA256SUMS
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            if [ "$(gh release view "${TAG}" --json isDraft --jq '.isDraft')" != "true" ]; then
+              echo "release ${TAG} is already PUBLISHED — refusing to touch its assets."
+              echo "gzip output is not byte-reproducible, so re-uploading would change"
+              echo "SHA256SUMS under everyone who already downloaded and recorded it."
+              echo "Publish a new version instead of rewriting a published one."
+              exit 1
+            fi
+            echo "draft ${TAG} already exists — replacing its assets"
+            gh release upload "${TAG}" "deeploy-${TAG}.tar.gz" SHA256SUMS --clobber
+          else
+            gh release create "${TAG}" \
+              --draft \
+              --verify-tag \
+              --title "DeePloy ${TAG}" \
+              --notes "Draft — see CHANGELOG.md. Verify: sha256sum -c SHA256SUMS" \
+              "deeploy-${TAG}.tar.gz" SHA256SUMS
+          fi

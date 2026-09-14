@@ -50,7 +50,11 @@ series: the published `SHA256SUMS` proves integrity, not provenance — see
 separate, later step; do not document it as done until it is.
 
 The release workflow builds the tarball + `SHA256SUMS` as a draft release for
-the maintainer to verify and publish.
+the maintainer to verify and publish. It also takes a manual
+`workflow_dispatch` with an existing tag, so a draft can be rebuilt without
+moving a tag; it refuses to touch the assets of a release that is already
+published, because gzip is not byte-reproducible and the checksum would change
+under anyone who already recorded it.
 
 ## Sign-off
 
