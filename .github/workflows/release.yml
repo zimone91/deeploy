@@ -2,7 +2,8 @@ name: Release
 
 # Tag-triggered release: run the FULL CI gate, then build the source tarball +
 # SHA256SUMS and attach both to a DRAFT GitHub release. Publishing stays a
-# manual maintainer step, as does tag signing (git tag -s — see CONTRIBUTING).
+# manual maintainer step. Tags are annotated but NOT GPG-signed during the
+# release-candidate series — see CONTRIBUTING.
 on:
   push:
     tags: ['v*']

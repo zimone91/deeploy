@@ -16,6 +16,11 @@ shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.
   runner fails a suite that exits non-zero, reports failures, *or* never prints
   its `RESULT` line (a suite that dies mid-run is silence, not success).
 
+- **The test-count badge in the README is maintained by hand.** It reads
+  `1117 across 17 suites`. If you add or remove a suite or change the assertion
+  count, update the badge in the same commit — nothing checks it, so it will
+  drift silently otherwise.
+
 - **shellcheck is pinned to 0.11.0** (what CI installs). Older versions (e.g.
   Ubuntu 24.04's apt 0.9.0) emit false positives this repo does not carry
   exceptions for.
@@ -38,10 +43,14 @@ shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.
 
 ## Releases
 
-Tags are annotated, **signed** (`git tag -s vX.Y.Z`), and must match
-`DEEPLOY_VERSION` in `lib/common.sh` (CI enforces this). The release workflow
-builds the tarball + `SHA256SUMS` as a draft release for the maintainer to
-verify and publish.
+Tags are annotated and must match `DEEPLOY_VERSION` in `lib/common.sh` (CI
+enforces this). They are **not GPG-signed** during the release-candidate
+series: the published `SHA256SUMS` proves integrity, not provenance — see
+"Verify what you downloaded" in the README. Signing (`git tag -s vX.Y.Z`) is a
+separate, later step; do not document it as done until it is.
+
+The release workflow builds the tarball + `SHA256SUMS` as a draft release for
+the maintainer to verify and publish.
 
 ## Sign-off
 
