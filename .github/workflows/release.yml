@@ -22,8 +22,13 @@ permissions:
   contents: write
 
 concurrency:
-  # keyed on the tag being built, not on the triggering ref — two dispatches
-  # for different tags must not collapse into one group
+  # Keyed on the tag being built, not on the triggering ref, so two dispatches
+  # for different tags do not collapse into one group.
+  # NOTE: the expression is syntactically valid here (the workflow loads), but
+  # whether `inputs.tag` actually resolves in this position is UNMEASURED — the
+  # API does not expose the resolved group name. If it silently collapses, the
+  # effect is serialised rebuilds, never a wrong artifact: correctness rests on
+  # `ref:` and the tag==version gate, both of which are measured.
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false   # never cancel a half-published release
 
@@ -94,8 +99,9 @@ jobs:
           if gh release view "${TAG}" >/dev/null 2>&1; then
             if [ "$(gh release view "${TAG}" --json isDraft --jq '.isDraft')" != "true" ]; then
               echo "release ${TAG} is already PUBLISHED — refusing to touch its assets."
-              echo "gzip output is not byte-reproducible, so re-uploading would change"
-              echo "SHA256SUMS under everyone who already downloaded and recorded it."
+              echo "a rebuild is not guaranteed to be byte-identical (a different runner"
+              echo "image or git version changes the gzip stream), so re-uploading could"
+              echo "change SHA256SUMS under everyone who already recorded it."
               echo "Publish a new version instead of rewriting a published one."
               exit 1
             fi
