@@ -267,11 +267,15 @@ passing only if it exits 0 **and** prints its `RESULT` with no failures.
 ## Status & known limitations
 
 DeePloy is a **release candidate**. The full cycle — install → `catchup 0` →
-manual key swap → DoubleZero — has been proven end to end on two production
-boxes (`bnxt_en` and `mlx5_core`). What follows is an honest list of what is
-*not* yet proven. Read it before you point this at a box that matters.
+manual key swap → DoubleZero — was proven end to end on two production boxes
+(`bnxt_en` and `mlx5_core`) in June 2026. **Nothing since that run has been
+executed on hardware**, the revision you are reading included: the code has
+moved on considerably since, on the full-cycle path itself as much as
+anywhere. Every release candidate so far has carried that caveat and this one
+carries it too. What follows is an honest list of what is *not* proven. Read
+it before you point this at a box that matters.
 
-- **The current client bump is not yet hardware-validated.** Agave 4.2 inverted
+- **The 4.2 client bump is the sharpest instance of that.** Agave 4.2 inverted
   the AF_XDP default from opt-in to opt-out, so the generated `validator.sh` had
   to change on a path that *was* hardware-proven. The new form is covered by
   tests and by reading the upstream source — but it has not yet run on metal.
