@@ -5,6 +5,48 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc4] - 2026-09-15
+
+The public-release cut: the front page, the honest limitations list, and the
+release machinery needed to publish an artifact anyone can verify. No change to
+the deployment logic — the tree that ships is the tree rc3 tested.
+
+### Added
+- **README front page for a public repository** — a centered header with status
+  badges (CI, test count, `shellcheck`, release-candidate status, latest
+  release, licence) and a "What it does" list, so the first screen answers what
+  this is and whether it is maintained.
+- **"Verify what you downloaded"** — how to check a release tarball
+  (`sha256sum -c`, `tar tzf`), what is pinned in the supply chain (actions by
+  commit SHA, `shellcheck` 0.11.0 sha256-verified, a secret scan over the full
+  history), and the caveat that a checksum proves integrity, not provenance.
+- **"Status & known limitations"** — what is *not* proven: the 4.2 client bump
+  has not run on metal, `upgrade` is beta, `dz-connect` hands a keypair path to
+  a third-party binary DeePloy does not pin, disk eligibility is validated on
+  our topologies only, the `mlx5` IRQ map is static, no warranty. It is placed
+  where someone about to run this as root will see it.
+- **`workflow_dispatch` on the release workflow.** A tagged release can be
+  rebuilt without deleting and re-pushing its tag. The tag comes in as an
+  input, the tree is checked out from that tag, and the version gate still
+  decides whether the build may proceed — so a rebuild cannot attach one tag's
+  tarball to another tag's release. A release that is already published is
+  refused outright.
+
+### Fixed
+- **CONTRIBUTING no longer claims tags are GPG-signed.** They are annotated and
+  unsigned; the README now says so plainly, and the two documents would
+  otherwise have contradicted each other in public with the wrong one making
+  the stronger promise. Signing remains a separate, later task.
+- The README test-count badge is recorded as hand-maintained, so a change in
+  suite or assertion counts updates it in the same commit instead of drifting
+  silently.
+
+### Notes
+- This repository's history was rewritten before publication to remove operational
+  identifiers from test fixtures — device and metro names, a hostname, gossip IPs and
+  validator pubkeys captured from a production box. No functional code was changed:
+  the published tree is the tree that was tested.
+
 ## [0.1.0-rc3] - 2026-08-17
 
 Client version bump to `v4.2.1-jito`, and the compatibility work that bump
