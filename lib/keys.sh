@@ -3,9 +3,11 @@
 # DeePloy — lib/keys.sh   (Phase 5: identities)
 # Generate ONE throwaway "sync identity" (unstaked-identity.json), point the CLI
 # at mainnet, take the vote-account pubkey, and PRINT where the REAL staked key
-# goes. DeePloy NEVER generates, moves, or reads the real staked key — the node
-# SYNCS on this unstaked identity, the operator hot-swaps to the real staked key
-# manually after 'catchup 0', and failover later returns to this same key.
+# goes. DeePloy NEVER generates, copies, moves, or transmits the real staked
+# key; it reads that file only to derive the public key (and, in dz-connect, to
+# sign one passport message) — the node SYNCS on this unstaked identity, the
+# operator hot-swaps to the real staked key manually after 'catchup 0', and
+# failover later returns to this same key.
 #
 # One key, not two: the file is unstaked-identity.json (operator's terminology);
 # the role is the "sync identity" (what the node runs under until the swap), so
@@ -101,7 +103,7 @@ keys_validate() {
 
 # --- manual real-key instructions --------------------------------------------
 keys_print_manual() {
-    step "MANUAL: the real staked key (DeePloy will not touch it)"
+    step "MANUAL: the real staked key (DeePloy never generates, copies, or transmits it)"
     warn "DeePloy never generates, copies, or transmits your real staked validator key (read-only: to derive its pubkey, and to sign one DoubleZero passport message)."
     info "The node syncs on the unstaked sync identity. After 'catchup 0', you hot-swap manually."
     info ""

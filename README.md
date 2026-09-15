@@ -25,8 +25,11 @@ money**: modular, every system file backed up before it's touched, and a
 
 - **Phases 0–8, idempotent and resumable** — one `install`, a single GRUB-gated
   reboot, and an unattended resume that finishes the job.
-- **Never touches your staked key.** The node syncs on a throwaway identity; you
-  swap the real key in yourself. See the section below — this is the core design.
+- **Never generates, copies, moves, or transmits your staked key.** The node
+  syncs on a throwaway identity and you swap the real key in yourself. DeePloy
+  does read the keypair file — locally, read-only, in exactly two places: to
+  derive its public key, and to sign one DoubleZero passport message. See the
+  section below — this is the core design.
 - **Builds the client from source** at a pinned tag (`v4.2.1-jito`), with a
   minimum-supported floor so an incompatible client is refused *before* the
   30–90 minute build, not after.

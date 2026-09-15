@@ -139,7 +139,7 @@ start_print_summary() {
     ok "Node is synced (catchup 0) on the unstaked sync identity."
     [[ "$verify_rc" -ne 0 ]] && warn "Post-install verification reported issues — review them above and run '${DEEPLOY_CMD} verify' before the staked-key swap."
     info ""
-    info "MANUAL staked-key hot-swap (DeePloy never touches the real key):"
+    info "MANUAL staked-key hot-swap (DeePloy never generates, copies, or transmits it):"
     info "  1) Place the real staked keypair at:  ${STAKED_KEYPAIR}   (chmod 600)"
     info "  2) Swap identity (path-as-argument form):"
     info "       ${SOLANA_BIN}/agave-validator --ledger ${LEDGER_PATH} set-identity ${STAKED_KEYPAIR}"
