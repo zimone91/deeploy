@@ -5,7 +5,7 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-rc4] - 2026-09-15
+## [0.1.0-rc5] - 2026-09-16
 
 The public-release cut: the front page, the honest limitations list, and the
 release machinery needed to publish an artifact anyone can verify. No change to
@@ -40,6 +40,39 @@ the deployment logic — the tree that ships is the tree rc3 tested.
 - The README test-count badge is recorded as hand-maintained, so a change in
   suite or assertion counts updates it in the same commit instead of drifting
   silently.
+- **One honest staked-key claim everywhere it is made.** Four places said
+  DeePloy "will not touch" / "never touches" / "never reads" the staked key —
+  the README front page, the `step()` banner in `keys.sh` one line above an
+  already-corrected `warn()`, the swap banner in `start.sh`, and the `keys.sh`
+  module header, which denied reading the key 87 lines above the code that
+  reads it. It does read that file, locally and read-only, in exactly two
+  places: to derive the public key, and to sign one DoubleZero passport
+  message. All four now say that.
+- **The hardware claim is dated instead of implied.** The status section said
+  the full cycle "has been proven end to end on two production boxes" and then
+  named the 4.2 bump as the one thing unvalidated — which reads as "everything
+  else is metal-proven". The run was in June 2026; nothing since, this revision
+  included, has been executed on hardware, and the 4.2 bullet is now the
+  sharpest instance of that rather than the sole exception.
+- **The private-overlay paragraph described the previous release.** rc3 made a
+  present-but-inapplicable overlay a hard stop and listed it as breaking; the
+  README still promised a warning and a vanilla build. An operator with a
+  private patch was planning against behaviour that no longer existed.
+- **Two retracted claims that had survived elsewhere**: CONTRIBUTING still
+  carried "gzip is not byte-reproducible" after the workflow had retracted it,
+  and the release workflow header claimed a "FULL CI gate" it does not run
+  (the secret scan lives in `ci.yml`, which the same tag push triggers).
+- **README precision pass**: `tar tzf` printed 49 lines beside a comment
+  claiming 44; the security-contact line pointed at an address `SECURITY.md`
+  does not contain; "a pinned tag" was the shipped config's pin rather than
+  anything the code enforces (a floor is); and "no daemons" became what it
+  actually means — DeePloy leaves nothing of its own running.
+
+### Conventions
+- Commits in this repository carry **no `Co-Authored-By` trailers**, and
+  correcting a claim means grepping the whole tree for it rather than the file
+  it was noticed in. Both are recorded in `CONTRIBUTING.md`; the second is the
+  defect this repository has repeated most often.
 
 ### Notes
 - This repository's history was rewritten before publication to remove operational
