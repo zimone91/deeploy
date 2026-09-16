@@ -43,9 +43,8 @@ the deployment logic — the tree that ships is the tree rc3 tested.
 
 ### Notes
 - This repository's history was rewritten before publication to remove operational
-  identifiers from test fixtures — device and metro names, a hostname, gossip IPs and
-  validator pubkeys captured from a production box. No functional code was changed:
-  the published tree is the tree that was tested.
+  identifiers from test fixtures. No functional code was changed: the published
+  tree is the tree that was tested.
 
 ## [0.1.0-rc3] - 2026-08-17
 
