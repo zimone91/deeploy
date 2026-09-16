@@ -53,8 +53,9 @@ The release workflow builds the tarball + `SHA256SUMS` as a draft release for
 the maintainer to verify and publish. It also takes a manual
 `workflow_dispatch` with an existing tag, so a draft can be rebuilt without
 moving a tag; it refuses to touch the assets of a release that is already
-published, because gzip is not byte-reproducible and the checksum would change
-under anyone who already recorded it.
+published, because a rebuild is not guaranteed to be byte-identical (a
+different runner image or git version changes the gzip stream), so the checksum
+could change under anyone who already recorded it.
 
 ## Sign-off
 

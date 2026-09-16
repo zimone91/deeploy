@@ -1,9 +1,14 @@
 name: Release
 
-# Tag-triggered release: run the FULL CI gate, then build the source tarball +
-# SHA256SUMS and attach both to a DRAFT GitHub release. Publishing stays a
-# manual maintainer step. Tags are annotated but NOT GPG-signed during the
-# release-candidate series — see CONTRIBUTING.
+# Tag-triggered release: run the gate (bash -n, shellcheck, the suites, and the
+# tag == DEEPLOY_VERSION check), then build the source tarball + SHA256SUMS and
+# attach both to a DRAFT GitHub release. Publishing stays a manual maintainer
+# step. Tags are annotated but NOT GPG-signed during the release-candidate
+# series — see CONTRIBUTING.
+#
+# The secret scan is deliberately NOT duplicated here: ci.yml runs gitleaks over
+# the full history on the same tag push, and a workflow_dispatch rebuild packs a
+# tree that push already scanned.
 on:
   push:
     tags: ['v*']
