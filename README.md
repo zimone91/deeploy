@@ -15,7 +15,9 @@
 
 DeePloy takes a fresh Ubuntu 24.04 server to a synced **Agave + Jito-BAM**
 mainnet-beta validator at `catchup 0`, built from source and tuned for it —
-then hands you the manual staked-key swap. Plain `bash`, no daemons, no magic.
+then hands you the manual staked-key swap. Plain `bash`, no magic, and nothing
+of DeePloy left running afterwards — the systemd units it installs are the
+validator's own.
 
 It is written to be **read before it is run as root on a box that will hold real
 money**: modular, every system file backed up before it's touched, and a
@@ -30,9 +32,9 @@ money**: modular, every system file backed up before it's touched, and a
   does read the keypair file — locally, read-only, in exactly two places: to
   derive its public key, and to sign one DoubleZero passport message. See the
   section below — this is the core design.
-- **Builds the client from source** at a pinned tag (`v4.2.1-jito`), with a
-  minimum-supported floor so an incompatible client is refused *before* the
-  30–90 minute build, not after.
+- **Builds the client from source.** The shipped `deeploy.conf.example` pins
+  `JITO_TAG="v4.2.1-jito"`; the code enforces a floor of `v4.2.0-jito`, so an
+  incompatible client is refused *before* the 30–90 minute build, not after.
 - **Tunes the box for a validator:** CPU isolation via GRUB, PoH core pinning,
   IRQ affinity, XFS data disks, NIC tuning (`bnxt_en` / `mlx5_core`), and an
   explicit AF_XDP retransmit decision — never an implicit one.
@@ -81,10 +83,11 @@ slots. Read the source.
 Target: a fresh Ubuntu 24.04 x86-64 box (built and proven on AMD EPYC,
 377 GiB RAM, 2× ~1.92 TB data NVMe + a separate system disk).
 
-**Client:** DeePloy pins `JITO_TAG="v4.2.1-jito"` and supports **v4.2.0-jito or
-newer**. Older clients are refused before the build: the generated `validator.sh`
-passes `--no-xdp` and `--poh-pinned-cpu-core`, neither of which exists before
-4.2.0, so an older binary would build for 30-90 minutes and then refuse to start.
+**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.2.1-jito"`;
+the code enforces a floor of **v4.2.0-jito**. Older clients are refused before
+the build: the generated `validator.sh` passes `--no-xdp` and
+`--poh-pinned-cpu-core`, neither of which exists before 4.2.0, so an older
+binary would build for 30-90 minutes and then refuse to start.
 
 - **Ideal:** **two separate data NVMe** — `accounts` and `ledger` on *different*
   physical disks. This keeps snapshot packaging and accountsdb writes from
@@ -140,7 +143,8 @@ release workflow from `git archive` of that exact tag:
 
 ```bash
 sha256sum -c SHA256SUMS        # must print: OK
-tar tzf deeploy-vX.Y.Z.tar.gz  # 44 files, no submodules, no binaries
+tar tzf deeploy-vX.Y.Z.tar.gz | grep -vc '/$'   # 44 files
+tar tzf deeploy-vX.Y.Z.tar.gz                   # no submodules, no binaries
 ```
 
 The supply chain is pinned on purpose: GitHub Actions are pinned by commit SHA
@@ -290,15 +294,16 @@ it before you point this at a box that matters.
   repository and not pinned by DeePloy. It is the one place where a key file is
   handed to software this repository does not control. If that trade-off is not
   acceptable to you, skip DoubleZero — everything else works without it.
-- **Disk eligibility is validated on our topologies only.** The disk phase shows
-  a table and requires a typed `yes`, but hardening for unusual layouts (a
-  mounted non-OS NVMe carrying `/var` or `/home`, exotic RAID) is still open.
+- **Disk eligibility is validated only on the layouts this has been run
+  against.** The disk phase shows a table and requires a typed `yes`, but
+  hardening for unusual layouts (a mounted non-OS NVMe carrying `/var` or
+  `/home`, exotic RAID) is still open.
   **Read the proposed table before you type `yes`.**
 - **The `mlx5` IRQ map is static**, not computed from the running topology.
 - **No warranty.** You are responsible for your keys, your stake, and your slots.
 
-Issues and findings are tracked in the repository; security reports go to the
-address in [SECURITY.md](SECURITY.md).
+Issues and findings are tracked in the repository; vulnerabilities go through
+the private advisory link in [SECURITY.md](SECURITY.md) — not a public issue.
 
 ## License
 

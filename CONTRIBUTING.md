@@ -31,6 +31,12 @@ shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.
 
 - **Per-finding commits**, subject format `area: description (IDs)` — one
   logical fix per commit, with its tests in the same commit.
+- **No `Co-Authored-By` trailers.** Commits in this repository carry one author.
+- **When you correct a claim, grep the whole tree for it, not just the file you
+  noticed it in.** Statements here are repeated across the README, CONTRIBUTING,
+  module headers and the strings the tool prints; fixing one copy and leaving
+  another is the most common defect this repo has had, and it always leaves the
+  strongest version of the claim standing.
 - **Fixes come with tests.** A behavior fix without a regression test that
   fails on the old code is not done.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit

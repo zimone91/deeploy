@@ -22,9 +22,9 @@ the deployment logic — the tree that ships is the tree rc3 tested.
   history), and the caveat that a checksum proves integrity, not provenance.
 - **"Status & known limitations"** — what is *not* proven: the 4.2 client bump
   has not run on metal, `upgrade` is beta, `dz-connect` hands a keypair path to
-  a third-party binary DeePloy does not pin, disk eligibility is validated on
-  our topologies only, the `mlx5` IRQ map is static, no warranty. It is placed
-  where someone about to run this as root will see it.
+  a third-party binary DeePloy does not pin, disk eligibility is validated on a
+  limited set of layouts, the `mlx5` IRQ map is static, no warranty. It is
+  placed where someone about to run this as root will see it.
 - **`workflow_dispatch` on the release workflow.** A tagged release can be
   rebuilt without deleting and re-pushing its tag. The tag comes in as an
   input, the tree is checked out from that tag, and the version gate still
