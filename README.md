@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/zimone91/deeploy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zimone91/deeploy/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="tests" src="https://img.shields.io/badge/tests-1117%20across%2017%20suites-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-19%20suites-brightgreen">
   <img alt="shellcheck" src="https://img.shields.io/badge/shellcheck%200.11.0-clean-brightgreen">
   <img alt="status" src="https://img.shields.io/badge/status-release%20candidate-orange">
   <a href="https://github.com/zimone91/deeploy/releases"><img alt="release" src="https://img.shields.io/github/v/release/zimone91/deeploy?include_prereleases&sort=semver"></a>
@@ -42,8 +42,9 @@ money**: modular, every system file backed up before it's touched, and a
   auto-wipes. Preflight refuses an unsafe checkout in the first seconds.
 - **Optional DoubleZero** (GRE/BGP tunnels, passport, multicast shred).
 - **Lifecycle commands:** `verify`, `upgrade`, `export`, `import`, `dz-connect`.
-- **1117 assertions across 17 suites**, `shellcheck` clean, gated in CI on every
-  push — including a secret scan over the full history.
+- **Self-contained test suites** — no root, no network, no live validator —
+  `shellcheck` clean and gated in CI on every push, including a secret scan
+  over the full history.
 
 ---
 
@@ -143,9 +144,15 @@ release workflow from `git archive` of that exact tag:
 
 ```bash
 sha256sum -c SHA256SUMS        # must print: OK
-tar tzf deeploy-vX.Y.Z.tar.gz | grep -vc '/$'   # 44 files
-tar tzf deeploy-vX.Y.Z.tar.gz                   # no submodules, no binaries
+tar tzf deeploy-vX.Y.Z.tar.gz | grep -vc '/$'   # how many files, directories aside
+tar tzf deeploy-vX.Y.Z.tar.gz                   # then read the list itself
 ```
+
+What you are looking for in that list is what is **not** there: no submodules,
+no binaries, no build output, nothing whose name you cannot place. A number to
+compare against would be worse than none — it would have to be maintained by
+hand in a file nothing checks, and the first time it drifted it would be
+teaching you to ignore it.
 
 The supply chain is pinned on purpose: GitHub Actions are pinned by commit SHA
 (not by tag), `shellcheck` is pinned to 0.11.0 and its download is

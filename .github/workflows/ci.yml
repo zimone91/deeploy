@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   gate:
-    name: bash -n · shellcheck · 17 suites
+    name: bash -n · shellcheck · every suite
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

@@ -16,10 +16,13 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   runner fails a suite that exits non-zero, reports failures, *or* never prints
   its `RESULT` line (a suite that dies mid-run is silence, not success).
 
-- **The test-count badge in the README is maintained by hand.** It reads
-  `1117 across 17 suites`. If you add or remove a suite or change the assertion
-  count, update the badge in the same commit — nothing checks it, so it will
-  drift silently otherwise.
+- **The test badge in the README is maintained by hand**, and now carries the
+  number of suites and nothing else. It used to carry the assertion count too,
+  which changed in nearly every commit and was therefore wrong more often than
+  right; the suite count moves a few times a year. Adding or removing a suite
+  means updating the badge in the same commit — nothing checks it. The habit
+  worth keeping from this: a number written in prose is a claim, and a claim
+  nothing verifies drifts until someone trusts it.
 
 - **shellcheck is pinned to 0.11.0** (what CI installs). Older versions (e.g.
   Ubuntu 24.04's apt 0.9.0) emit false positives this repo does not carry
