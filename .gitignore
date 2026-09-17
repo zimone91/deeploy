@@ -28,6 +28,12 @@ backups/
 logs/
 *.log
 
+# Cloudflare Worker tooling. `npx wrangler deploy` is run from the repo root and
+# writes its state and bundles next to wrangler.toml; none of it belongs in the
+# tree, and the deploy step should not leave the working copy dirty.
+.wrangler/
+node_modules/
+
 # Editor / OS noise
 *.swp
 .DS_Store

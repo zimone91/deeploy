@@ -78,6 +78,34 @@ jobs:
           fi
           echo "get-deeploy.sh default tag matches ${btag}"
 
+          # The worker's DEFAULT_TAG is what the bare zim.one/deeploy path serves;
+          # a stale one serves the previous release silently and forever. It is
+          # determined by RUNNING the worker, not by grepping it: a sed over the
+          # declaration reports the first quoted literal and is blind to anything
+          # after it, so `const DEFAULT_TAG = 'v0.1.0-rc6'.replace('rc6','rc1')`
+          # would read as green while the endpoint served another release.
+          wtag=$(node --input-type=module -e '
+            globalThis.fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) });
+            const m = await import("./worker/index.mjs");
+            const r = await m.default.fetch(new Request("https://zim.one/deeploy"));
+            if (r.status !== 200) { console.error("the worker refuses its own default path: " + r.status); process.exit(1); }
+            process.stdout.write(r.headers.get("x-deeploy-tag") || "");
+          ')
+          test -n "$wtag" || { echo "could not determine the worker default tag by running worker/index.mjs"; exit 1; }
+          if [ "${GITHUB_REF_NAME}" != "$wtag" ]; then
+            echo "the worker serves ${wtag}, not ${GITHUB_REF_NAME} — zim.one/deeploy would hand out the wrong release"
+            exit 1
+          fi
+          echo "worker default tag matches ${wtag}"
+
+          # The three checks above are equality against a parsed value; none of
+          # them asks whether the tag is one the public install path can carry.
+          # LC_ALL=C because A-Za-z is a collation range, not an ASCII range.
+          printf '%s' "${GITHUB_REF_NAME}" | LC_ALL=C grep -qE '^v[0-9A-Za-z._-]{1,40}$' || {
+            echo "tag ${GITHUB_REF_NAME} is outside the pattern the worker and get-deeploy.sh accept — the published install URL would be dead"
+            exit 1
+          }
+
   secrets:
     name: gitleaks (secret scan)
     runs-on: ubuntu-24.04

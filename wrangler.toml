@@ -1,0 +1,30 @@
+# Deploy with: npx wrangler deploy
+#
+# This file exists so the route is a reviewable artefact instead of a shape
+# someone clicked into a dashboard and cannot reconstruct a year later.
+
+name = "deeploy-get"
+main = "worker/index.mjs"
+
+# A date safely in the past. Nothing in this worker depends on a runtime flag
+# introduced after it, and `wrangler deploy --dry-run` does NOT validate this
+# value — a future date is only rejected by the real deploy, which is a step
+# run by hand. Bump it deliberately, not reflexively.
+compatibility_date = "2026-09-01"
+
+# No leading '*', but not for the reason it is tempting to write down: per
+# Cloudflare's routing docs a leading '*' matches zero characters, so
+# `*zim.one/deeploy*` WOULD match the apex. It would also pull in every
+# subdomain, which this endpoint has no business owning. Narrower is the reason.
+#
+# No scheme, deliberately. Patterns may begin with http:// or https://, and
+# omitting one matches both — which is what we want: the worker takes the
+# http:// requests in order to redirect them. Pinning the pattern to https://
+# would instead leave port 80 to whatever else answers on this zone.
+#
+# The trailing '*' is a glob, not a path-segment boundary, so /deeploything
+# matches this route as well. Narrowing it to a real segment is the worker's
+# job (PATH_RE); a route pattern cannot express it.
+[[routes]]
+pattern = "zim.one/deeploy*"
+zone_name = "zim.one"
