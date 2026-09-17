@@ -51,6 +51,11 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   module headers and the strings the tool prints; fixing one copy and leaving
   another is the most common defect this repo has had, and it always leaves the
   strongest version of the claim standing.
+  **CHANGELOG is where that grep stops.** Its entries record what was true at a
+  point in time; they are not claims about what is true now. Correcting a stale
+  statement and rewriting history are different acts, and this rule licenses
+  only the first — a changelog edited to agree with the present is a changelog
+  that can no longer be used to find out when something changed.
 - **Fixes come with tests.** A behavior fix without a regression test that
   fails on the old code is not done.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
