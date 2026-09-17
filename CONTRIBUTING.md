@@ -24,8 +24,19 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
 - **shellcheck is pinned to 0.11.0** (what CI installs). Older versions (e.g.
   Ubuntu 24.04's apt 0.9.0) emit false positives this repo does not carry
   exceptions for.
-- Tests are self-contained: no root, no network, no live node. Every external
-  command a module touches is mockable by shadowing it with a shell function.
+- Tests are self-contained: no root, no network, no live validator. Most
+  modules are sourced into the suite's own shell, so an external command is
+  mocked by shadowing it with a shell function. Two suites cannot work that
+  way and say so in their headers: `test_bootstrap.sh` runs `get-deeploy.sh`
+  as a separate `/bin/sh` process, where a function does not cross the process
+  boundary, so it mocks with executable stubs on a restricted PATH; and:
+
+- **`test_worker.sh` requires node**, because the worker is JavaScript and
+  there is no way to exercise it from sh. This is not an optional extra: the
+  release gate already imports `worker/index.mjs` to read the tag it serves,
+  so a box that cannot run node cannot verify a release either. Without node
+  the suite fails with that message — it does not report a skip. A check that
+  cannot determine the answer does not get to report success.
 
 ## Conventions
 
