@@ -53,7 +53,24 @@ mkbin() {
     local dir="$1"; shift
     mkdir -p "$dir"
     local t p
-    for t in "$@"; do p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$dir/$t"; done
+    for t in "$@"; do
+        p="$(command -v "$t" 2>/dev/null)" || p=""
+        # Two ways a sandbox PATH gets built wrong without saying so. A tool
+        # that is not on this box: `command -v` fails, and with `&&` the link
+        # was simply never made — leaving a scenario that fails for a reason
+        # unrelated to what it tests, which is exactly how the missing gzip
+        # presented. A shell builtin or an alias: `command -v` SUCCEEDS but
+        # prints a name rather than a path, so `ln -sf printf printf` makes a
+        # link to itself, which resolves, passes every existence check, and
+        # exits 126 when run. Neither is allowed to be quiet.
+        case "$p" in
+            /*) ln -sf "$p" "$dir/$t" ;;
+            *)  printf '  FAIL mkbin cannot stub %s: command -v gave [%s], not a path\n' "$t" "$p"
+                printf '       a sandbox missing a tool fails scenarios for the wrong reason\n'
+                printf 'RESULT: 0 passed, 1 failed\n'
+                exit 1 ;;
+        esac
+    done
 
     cat > "$dir/curl" <<EOS
 #!/bin/sh
