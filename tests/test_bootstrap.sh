@@ -190,6 +190,24 @@ for bad in 'v1;whoami' 'v1 x' '$(id)' 'main' 'v1$(whoami)' 'v1`id`'; do
     check "and the refusal names the variable"       "$(grep -c 'DEEPLOY_INSTALL_TAG' <<<"$out")" "1"
 done
 
+echo "== the charset check does not depend on the locale =="
+# A bracket range is collation, not ASCII. Measured on this box: bash 3.2 in a
+# UTF-8 locale ACCEPTS these, under LC_ALL=C it rejects them; zsh and dash
+# reject them either way. So on a CI runner whose /bin/sh is dash this case is
+# vacuous, and on macOS it is the real thing — the mirror image of the gzip
+# lesson, and the reason it also runs under bash explicitly where one exists.
+for badshell in sh bash; do
+    command -v "$badshell" >/dev/null 2>&1 || continue
+    for loc in en_US.UTF-8 de_DE.UTF-8 C; do
+        RUN_DIR="$WORK/run-loc"; rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+        out="$(cd "$RUN_DIR" && env -i PATH="$FULL:$(dirname "$(command -v "$badshell")")" \
+            HOME="$RUN_DIR" LC_ALL="$loc" DEEPLOY_TEST_CALLS="$CALLS" \
+            DEEPLOY_INSTALL_TAG='vé' "$badshell" "$BOOTSTRAP" 2>&1)"; rc=$?
+        check_false "$badshell/$loc rejects an accented tag" "[[ '$rc' == '0' ]]"
+        check "  and the refusal is the tag check"          "$(grep -c 'DEEPLOY_INSTALL_TAG' <<<"$out")" "1"
+    done
+done
+
 echo "== THE BOUNDARY: deeploy.sh was never executed, in any scenario above =="
 check "fixture deployer never ran"  "$(grep -c 'FIXTURE-DEPLOY-RAN' "$CALLS")" "0"
 check "no deeploy.sh found on PATH ran" "$(grep -c 'PATH-DEPLOY-RAN' "$CALLS")" "0"

@@ -20,6 +20,14 @@
 # https://github.com/zimone91/deeploy
 set -eu
 
+# Bracket ranges like [0-9A-Za-z] are resolved by COLLATION, not by code point.
+# Under bash (which is /bin/sh on macOS) in a UTF-8 locale, 'e' with an acute
+# accent sorts inside a-z and slips through the tag check below; under LC_ALL=C
+# it does not. The one place in this script that guards a string destined for a
+# URL must not depend on the user's locale, so pin it for the whole run — which
+# also makes the awk parse of SHA256SUMS deterministic.
+export LC_ALL=C
+
 REPO="zimone91/deeploy"
 TAG="${DEEPLOY_INSTALL_TAG:-v0.1.0-rc6}"
 
