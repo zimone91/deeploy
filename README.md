@@ -253,7 +253,7 @@ Self-contained, mocked, no live node required:
 
 ```bash
 ./run_tests.sh                                   # every suite; non-zero on any failure
-shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.0
+shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # shellcheck 0.11.0
 ```
 
 `run_tests.sh` is used instead of a `for` loop on purpose: a loop reports the exit

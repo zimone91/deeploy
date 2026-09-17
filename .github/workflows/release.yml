@@ -74,8 +74,8 @@ jobs:
 
       - name: Gate — bash -n + shellcheck + suites
         run: |
-          for f in deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
-          shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh
+          for f in deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+          shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh
           ./run_tests.sh
 
       - name: Gate — tag matches DEEPLOY_VERSION
@@ -84,6 +84,13 @@ jobs:
           test -n "$ver" || { echo "could not parse DEEPLOY_VERSION from lib/common.sh"; exit 1; }
           if [ "${TAG}" != "v${ver}" ]; then
             echo "tag ${TAG} != v${ver} (lib/common.sh) — refusing to release"
+            exit 1
+          fi
+
+          btag=$(sed -n 's/^TAG="\${DEEPLOY_INSTALL_TAG:-\([^}]*\)}"$/\1/p' get-deeploy.sh)
+          test -n "$btag" || { echo "could not parse the default tag from get-deeploy.sh"; exit 1; }
+          if [ "${TAG}" != "$btag" ]; then
+            echo "get-deeploy.sh defaults to ${btag}, not ${TAG} — refusing to release a bootstrap that fetches another version"
             exit 1
           fi
 

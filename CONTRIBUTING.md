@@ -6,8 +6,8 @@ real stake. Contributions are held to the same bar: small, auditable, tested.
 ## The gate (run before every PR)
 
 ```bash
-for f in deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
-shellcheck -x deeploy.sh run_tests.sh lib/*.sh tests/*.sh     # shellcheck 0.11.0 — see below
+for f in deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # shellcheck 0.11.0 — see below
 ./run_tests.sh                                   # exits non-zero if anything failed
 ```
 
