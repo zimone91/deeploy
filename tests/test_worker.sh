@@ -52,6 +52,12 @@ globalThis.fetch = async (u) => {
     }
 }
 
+// console.error is this worker's only diagnostic channel once it is live —
+// `wrangler tail` and nothing else. Capture it so "it logs the reason" can be
+// asserted instead of hoped for.
+let logged = []
+console.error = (...args) => { logged.push(args.join(' ')) }
+
 let pass = 0, fail = 0
 const check = (name, actual, expected) => {
     const a = JSON.stringify(actual), e = JSON.stringify(expected)
@@ -119,10 +125,14 @@ check('  without fetching anything', r.upstream, null)
 check('http on a pinned path keeps the path',
       (await hit('/deeploy/v0.1.0-rc6', { scheme: 'http' })).location,
       'https://zim.one/deeploy/v0.1.0-rc6')
-// Today the redirect happens before the path is looked at, so a junk path over
-// http is told to come back on https and is refused there.
+// The redirect happens after the path and the tag are found good, so junk is
+// refused on the first trip instead of being sent away and refused on the
+// second, and nothing unvalidated is echoed back in a Location header.
 r = await hit('/deeploy/;whoami', { scheme: 'http' })
-check('http with a junk path -> 301 first, refused on the second trip', r.status, 301)
+check('http with a junk path -> 400 on the first trip', r.status, 400)
+check('  and no Location handing the junk back', r.location, null)
+r = await hit('/deeploything', { scheme: 'http' })
+check('http outside the path segment -> 400, not 301', r.status, 400)
 
 console.log('== the body is copied as bytes, which is what makes it the same file ==')
 // res.text() would strip a BOM and turn any invalid byte into U+FFFD, silently.
@@ -162,6 +172,30 @@ r = await hit('/deeploy')
 // fetch() resolves on headers; a body that dies afterwards rejects at the read.
 check('a body that dies mid-read -> 502, not an empty response', r.status, 502)
 check('  and that refusal is inert too', r.text.startsWith('#'), true)
+
+console.log('== a 502 leaves a trace; an ordinary 404 does not ==')
+// A 502 with nothing behind it is a 502 debugged by guesswork. A wrong tag is
+// not an incident, so the difference has to be asserted in both directions.
+up = { throws: true }
+logged = []
+r = await hit('/deeploy')
+check('unreachable upstream -> 502', r.status, 502)
+check('  and the reason reaches the log', logged.filter(l => l.includes('v0.1.0-rc6')).length, 1)
+up = { ok: true, status: 200, bodyThrows: true }
+logged = []
+r = await hit('/deeploy')
+check('a body that dies mid-read -> 502', r.status, 502)
+check('  and names what went wrong', logged.filter(l => l.includes('truncated')).length, 1)
+up = { ok: false, status: 500 }
+logged = []
+r = await hit('/deeploy')
+check('upstream 500 -> 502', r.status, 502)
+check('  and the status reaches the log', logged.filter(l => l.includes('500')).length, 1)
+up = { ok: false, status: 404 }
+logged = []
+r = await hit('/deeploy/v9.9.9')
+check('a tag that does not exist -> 404', r.status, 404)
+check('  and is NOT logged as an incident', logged.length, 0)
 
 console.log('== HEAD ==')
 up = { ok: true, status: 200, bytes: Buffer.from('#!/bin/sh\nx\n') }

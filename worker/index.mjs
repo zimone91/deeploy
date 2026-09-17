@@ -52,18 +52,6 @@ export default {
     async fetch(request) {
         const url = new URL(request.url)
 
-        // A route pattern with no scheme matches http:// as well as https://,
-        // and this zone does not force HTTPS (measured: http://zim.one/deeploy
-        // answers 404 in cleartext, it does not redirect). Serving a script
-        // that runs as root over cleartext is not acceptable, so redirect
-        // rather than answer. Pinning the route to https:// instead would leave
-        // port 80 answering from whatever else is on the zone; this way the
-        // worker owns both and `curl -L` still works.
-        if (url.protocol !== 'https:') {
-            url.protocol = 'https:'
-            return Response.redirect(url.toString(), 301)
-        }
-
         if (request.method !== 'GET' && request.method !== 'HEAD') {
             return refuse(405, `method ${request.method} not allowed — this endpoint serves a shell script over GET`)
         }
@@ -81,6 +69,30 @@ export default {
             return refuse(400, `not a valid DeePloy tag: ${JSON.stringify(tag)} — expected something like v0.1.0-rc6`)
         }
 
+        // Only now, with the path and the tag already found good.
+        //
+        // A route pattern with no scheme matches http:// as well as https://,
+        // so whether a cleartext request ever reaches this worker is decided by
+        // a zone setting — Always Use HTTPS, which is on and is one click in a
+        // dashboard from being off. A script that runs as root does not get to
+        // depend on that, so the worker redirects on its own account. While the
+        // setting stands, the edge answers first and this branch never fires.
+        //
+        // It sits after validation rather than before so that junk is refused on
+        // the first trip instead of being sent away and refused on the second,
+        // and so that nothing unvalidated is echoed into a Location header. The
+        // cost is that refusal bodies would travel in the clear if the setting
+        // were ever removed; they are inert comments echoing the caller's own
+        // request, and the script itself is still never served over port 80.
+        //
+        // Pinning the route to https:// instead would leave port 80 to whatever
+        // else answers on this zone; this way the worker owns both, and
+        // `curl -L` follows.
+        if (url.protocol !== 'https:') {
+            url.protocol = 'https:'
+            return Response.redirect(url.toString(), 301)
+        }
+
         const upstream = `https://raw.githubusercontent.com/${REPO}/${tag}/${FILE}`
         let bytes
         try {
@@ -88,6 +100,10 @@ export default {
             if (!res.ok) {
                 // Fail closed: no fallback to the default tag, no cached copy. A
                 // tag that does not exist must not quietly install a different one.
+                // A 404 is an ordinary answer to a wrong tag and is not logged;
+                // anything else means the repository misbehaved, and a 502 with
+                // no trace behind it is a 502 debugged by guesswork.
+                if (res.status !== 404) console.error(`deeploy-get: upstream ${res.status} for ${tag}`)
                 return refuse(res.status === 404 ? 404 : 502, `no ${FILE} at ${tag} (upstream ${res.status})`)
             }
             // The body is read INSIDE the try: fetch() resolves when the headers
@@ -95,7 +111,10 @@ export default {
             // Outside, that rejection would escape and the worker would return
             // no response at all — the one outcome refuse() exists to prevent.
             bytes = new Uint8Array(await res.arrayBuffer())
-        } catch {
+        } catch (err) {
+            // `wrangler tail` is the only window into this worker once it is
+            // live. Swallowing the reason turns every 502 into a guess.
+            console.error(`deeploy-get: ${tag} failed: ${err && err.message ? err.message : err}`)
             return refuse(502, `could not read ${FILE} at ${tag} from the repository`)
         }
 
