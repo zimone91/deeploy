@@ -33,7 +33,13 @@ trap 'rm -rf "$TMP"' EXIT
 
 cat > "$TMP/probe.mjs" <<'PROBE_JS'
 const WORKER = process.argv[2]
-const worker = (await import(WORKER)).default
+const mod = await import(WORKER)
+const worker = mod.default
+// Read, not repeated. This suite asserts that the worker is CONSISTENT with its
+// own declared default; that the default equals the tag being released is a
+// different claim, and CI makes it by importing this module at release time.
+// Two assertions beat one literal duplicated in nine places.
+const TAG = mod.DEFAULT_TAG
 
 // The upstream, entirely under test control. `bytes` is what raw.github would
 // return; the scenarios below change it to things a real file could be.
@@ -77,13 +83,14 @@ const hit = async (path, { method = 'GET', scheme = 'https' } = {}) => {
 
 console.log('== the two paths a user is told to use ==')
 let r = await hit('/deeploy')
+check('the worker declares a usable default tag', /^v[0-9A-Za-z.\-_]{1,40}$/.test(TAG), true)
 check('bare /deeploy -> 200', r.status, 200)
-check('  first line pins the default tag', r.text.split('\n')[0], "DEEPLOY_INSTALL_TAG='v0.1.0-rc6'")
+check('  first line pins the default tag', r.text.split('\n')[0], `DEEPLOY_INSTALL_TAG='${TAG}'`)
 check('  fetches that tag from the repository', r.upstream,
-      'https://raw.githubusercontent.com/zimone91/deeploy/v0.1.0-rc6/get-deeploy.sh')
-r = await hit('/deeploy/v0.1.0-rc6')
+      `https://raw.githubusercontent.com/zimone91/deeploy/${TAG}/get-deeploy.sh`)
+r = await hit(`/deeploy/${TAG}`)
 check('pinned path -> 200', r.status, 200)
-check('  and reports the tag it served', r.tag, 'v0.1.0-rc6')
+check('  and reports the tag it served', r.tag, TAG)
 check('trailing slash means the default', (await hit('/deeploy/')).status, 200)
 
 console.log('== the route glob is not a path-segment boundary ==')
@@ -123,8 +130,8 @@ check('http -> 301', r.status, 301)
 check('  to the same URL over https', r.location, 'https://zim.one/deeploy')
 check('  without fetching anything', r.upstream, null)
 check('http on a pinned path keeps the path',
-      (await hit('/deeploy/v0.1.0-rc6', { scheme: 'http' })).location,
-      'https://zim.one/deeploy/v0.1.0-rc6')
+      (await hit(`/deeploy/${TAG}`, { scheme: 'http' })).location,
+      `https://zim.one/deeploy/${TAG}`)
 // The redirect happens after the path and the tag are found good, so junk is
 // refused on the first trip instead of being sent away and refused on the
 // second, and nothing unvalidated is echoed back in a Location header.
@@ -162,7 +169,7 @@ console.log('== every failure fails closed ==')
 up = { ok: false, status: 404 }
 r = await hit('/deeploy/v9.9.9')
 check('a tag with no file -> 404', r.status, 404)
-check('  and does NOT fall back to the default', r.text.includes('v0.1.0-rc6'), false)
+check('  and does NOT fall back to the default', r.text.includes(TAG), false)
 up = { ok: false, status: 500 }
 check('upstream 500 -> 502', (await hit('/deeploy')).status, 502)
 up = { throws: true }
@@ -180,7 +187,7 @@ up = { throws: true }
 logged = []
 r = await hit('/deeploy')
 check('unreachable upstream -> 502', r.status, 502)
-check('  and the reason reaches the log', logged.filter(l => l.includes('v0.1.0-rc6')).length, 1)
+check('  and the reason reaches the log', logged.filter(l => l.includes(TAG)).length, 1)
 up = { ok: true, status: 200, bodyThrows: true }
 logged = []
 r = await hit('/deeploy')
@@ -202,7 +209,7 @@ up = { ok: true, status: 200, bytes: Buffer.from('#!/bin/sh\nx\n') }
 r = await hit('/deeploy', { method: 'HEAD' })
 check('HEAD -> 200 with no body', [r.status, r.buf.length], [200, 0])
 check('  but the same content-length a GET would report',
-      Number(r.length), 12 + "DEEPLOY_INSTALL_TAG='v0.1.0-rc6'\n".length)
+      Number(r.length), 12 + `DEEPLOY_INSTALL_TAG='${TAG}'\n`.length)
 
 console.log('')
 console.log('===================================')

@@ -121,6 +121,20 @@ jobs:
             exit 1
           }
 
+          # The README carries the install command a stranger copies. Nothing
+          # checked it, so a release could ship a front page advertising the
+          # previous version. Set comparison, not "contains": bump five of the
+          # six literals and this is a two-element set that matches no tag.
+          readme_tags=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[-0-9A-Za-z.]*' README.md | sort -u)
+          test -n "$readme_tags" || {
+            echo "no version string found in README — was the install section reworded?"
+            exit 1
+          }
+          if [ "$readme_tags" != "${TAG}" ]; then
+            printf 'README advertises [%s], the tag is [%s]\n' "$(echo "$readme_tags" | tr "\n" " ")" "${TAG}"
+            exit 1
+          fi
+
       - name: Build tarball + SHA256SUMS
         # git archive of the COMMIT, not the checkout dir: reproducible content,
         # respects .gitattributes, and can never scoop untracked files. HEAD is
