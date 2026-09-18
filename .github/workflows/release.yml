@@ -146,6 +146,8 @@ jobs:
           cat SHA256SUMS
 
       - name: Compose the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Computed, never typed. A digest maintained by hand in a file nothing
           # checks is the same defect as the assertion count that used to sit in
@@ -153,21 +155,33 @@ jobs:
           boot_sha=$(sha256sum get-deeploy.sh | cut -d' ' -f1)
           test -n "$boot_sha" || { echo "could not hash get-deeploy.sh"; exit 1; }
 
-          # Derived from the tag, not written down. "Draft" was hardcoded here
-          # once, was true at the time, and became a published release calling
-          # itself a draft. A fixed "Release candidate" is the same trap set one
-          # version further along.
-          case "${TAG}" in
-            *-rc*|*-alpha*|*-beta*) lede="Release candidate. What changed is in \`CHANGELOG.md\`." ;;
-            *)                      lede="What changed is in \`CHANGELOG.md\`." ;;
-          esac
+          # The lede IS the annotated tag's message. GitHub does not show a tag
+          # body anywhere on the release page, so a warning written there — "not
+          # yet run on hardware" — would otherwise reach nobody. Read through the
+          # API rather than out of the checkout: the API returns what GitHub
+          # stores, which is the same reason the tag was verified by object SHA
+          # rather than by what the local repository happened to have.
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
+          tag_type=$(printf '%s' "$ref" | jq -r '.object.type')
+          tag_sha=$(printf '%s' "$ref" | jq -r '.object.sha')
+          if [ "$tag_type" != "tag" ]; then
+            echo "${TAG} is a lightweight tag (${tag_type}); the release lede comes from the tag message, so there is nothing to publish"
+            exit 1
+          fi
+          lede=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.message')
+          if [ "${#lede}" -lt 40 ]; then
+            echo "the tag message for ${TAG} is ${#lede} characters — too short to be a release lede"
+            printf 'got: [%s]\n' "$lede"
+            exit 1
+          fi
 
+          # The lede is multi-line, so it is concatenated rather than substituted.
           # Piped through sed rather than `sed -i`: -i without an argument is
           # GNU-only, and a step that cannot be run outside the runner is a step
           # nobody checks before pushing a tag.
-          cat <<'NOTES' | sed "s|__TAG__|${TAG}|g; s|__BOOTSHA__|${boot_sha}|g; s|__LEDE__|${lede}|" > RELEASE_NOTES.md
-          __LEDE__
-
+          {
+          printf '%s\n\n' "$lede"
+          cat <<'NOTES' | sed "s|__TAG__|${TAG}|g; s|__BOOTSHA__|${boot_sha}|g"
           ## Install
 
           ```sh
@@ -219,7 +233,24 @@ jobs:
 
           Tags are annotated but **not signed**, so a checksum here proves integrity,
           not authorship.
+
+          ## Which files are ours
+
+          Two: `deeploy-__TAG__.tar.gz` and `SHA256SUMS`. Those are what the release
+          workflow builds and what the manifest covers.
+
+          The "Source code (zip)" and "Source code (tar.gz)" links below are generated
+          by GitHub, not by this workflow, and `SHA256SUMS` says nothing about them.
+          Download one of those and you will have an archive with no checksum to check
+          it against — which looks like an unverifiable release and is not one.
+
+          ## Start here
+
+          - [README](https://github.com/zimone91/deeploy/blob/__TAG__/README.md)
+          - [docs/KEY-MODEL.md](https://github.com/zimone91/deeploy/blob/__TAG__/docs/KEY-MODEL.md) —
+            what DeePloy does and does not do with your staked key. Read this one first.
           NOTES
+          } > RELEASE_NOTES.md
 
           if grep -q '__TAG__\|__BOOTSHA__\|__LEDE__' RELEASE_NOTES.md; then
             echo "a placeholder survived into the release notes"
@@ -231,6 +262,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Set here, not left to whoever publishes. Publishing is then one flag
+          # (--draft=false) with nothing to remember alongside it.
+          pre=()
+          case "${TAG}" in *-rc*|*-alpha*|*-beta*) pre=(--prerelease) ;; esac
+
           if gh release view "${TAG}" >/dev/null 2>&1; then
             if [ "$(gh release view "${TAG}" --json isDraft --jq '.isDraft')" != "true" ]; then
               echo "release ${TAG} is already PUBLISHED — refusing to touch its assets."
@@ -245,10 +281,11 @@ jobs:
             # The notes carry the bootstrap digest, so refreshing the assets
             # without refreshing them would publish a digest for a file that is
             # no longer the one attached.
-            gh release edit "${TAG}" --notes-file RELEASE_NOTES.md
+            gh release edit "${TAG}" --notes-file RELEASE_NOTES.md "${pre[@]}"
           else
             gh release create "${TAG}" \
               --draft \
+              "${pre[@]}" \
               --verify-tag \
               --title "DeePloy ${TAG}" \
               --notes-file RELEASE_NOTES.md \

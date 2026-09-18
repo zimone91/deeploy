@@ -46,6 +46,13 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
 - **Per-finding commits**, subject format `area: description (IDs)` — one
   logical fix per commit, with its tests in the same commit.
 - **No `Co-Authored-By` trailers.** Commits in this repository carry one author.
+- **A tag's message is the release lede.** The release workflow reads the
+  annotated tag through the API and puts its message at the top of the release
+  notes, because GitHub shows a tag body nowhere on the release page. Write it
+  for someone who has just landed there and has not read anything else: what
+  this version is, and what is still not proven. A lightweight tag, or a message
+  under 40 characters, fails the release rather than publishing a page with no
+  lede.
 - **When you correct a claim, grep the whole tree for it, not just the file you
   noticed it in.** Statements here are repeated across the README, CONTRIBUTING,
   module headers and the strings the tool prints; fixing one copy and leaving
