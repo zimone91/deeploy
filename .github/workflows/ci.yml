@@ -48,6 +48,18 @@ jobs:
       - name: Lint — shellcheck -x
         run: shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh
 
+      - name: README links files the tarball will actually carry
+        # `git archive` packs TRACKED files only. A README that links docs/ files
+        # nobody added ships a tarball with dead links in it — and the reader is
+        # told two paragraphs earlier to unpack that tarball and read the list.
+        run: |
+          missing=$(grep -oE 'docs/[A-Za-z0-9._-]+\.md' README.md | sort -u \
+            | while read -r f; do git ls-files --error-unmatch "$f" >/dev/null 2>&1 || echo "$f"; done)
+          test -z "$missing" || {
+            printf 'README links files git archive will not ship:\n%s\n' "$missing"
+            exit 1
+          }
+
       - name: Tests — every suite
         run: |
           ./run_tests.sh
