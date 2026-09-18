@@ -1,0 +1,8 @@
+# DeePloy runs as root on machines holding real stake. There is no part of this
+# tree where an unreviewed change is cheap, so the pattern is everything.
+#
+# Branch protection is NOT enabled on this repository yet, so this file requests
+# a review rather than requiring one. It is a statement of who is accountable,
+# not a control — do not read a green PR as one that was gated.
+
+* @zimone91
