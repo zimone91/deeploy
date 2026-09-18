@@ -13,9 +13,14 @@
 # WHAT THE CHECKSUM BUYS YOU, HONESTLY: the tarball and its SHA256SUMS travel
 # the same channel, so they catch a corrupted or tampered download — not a
 # compromise of the repository itself. This bootstrap travels a different one:
-# it is served from zim.one and its own SHA256 is published in the GitHub
-# release notes, so that one you can cross-check. Verification failure aborts;
-# there is no continue-without-verifying path.
+# it is served from zim.one, and its own SHA256 is published in the GitHub
+# release notes, so that one you can cross-check against a second source:
+#
+#   curl -sSfL https://zim.one/deeploy/v0.1.0-rc6 | tail -n +2 | sha256sum
+#
+# tail -n +2 drops the one line the endpoint prepends to pin the version;
+# without it the digest will not match, and the mismatch would mean nothing.
+# Verification failure aborts; there is no continue-without-verifying path.
 #
 # https://github.com/zimone91/deeploy
 set -eu

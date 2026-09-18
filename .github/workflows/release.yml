@@ -131,6 +131,88 @@ jobs:
           sha256sum "deeploy-${TAG}.tar.gz" > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Compose the release notes
+        run: |
+          # Computed, never typed. A digest maintained by hand in a file nothing
+          # checks is the same defect as the assertion count that used to sit in
+          # the README badge, except this one is what a reader checks us against.
+          boot_sha=$(sha256sum get-deeploy.sh | cut -d' ' -f1)
+          test -n "$boot_sha" || { echo "could not hash get-deeploy.sh"; exit 1; }
+
+          # Derived from the tag, not written down. "Draft" was hardcoded here
+          # once, was true at the time, and became a published release calling
+          # itself a draft. A fixed "Release candidate" is the same trap set one
+          # version further along.
+          case "${TAG}" in
+            *-rc*|*-alpha*|*-beta*) lede="Release candidate. What changed is in \`CHANGELOG.md\`." ;;
+            *)                      lede="What changed is in \`CHANGELOG.md\`." ;;
+          esac
+
+          # Piped through sed rather than `sed -i`: -i without an argument is
+          # GNU-only, and a step that cannot be run outside the runner is a step
+          # nobody checks before pushing a tag.
+          cat <<'NOTES' | sed "s|__TAG__|${TAG}|g; s|__BOOTSHA__|${boot_sha}|g; s|__LEDE__|${lede}|" > RELEASE_NOTES.md
+          __LEDE__
+
+          ## Install
+
+          ```sh
+          sh -c "$(curl -sSfL https://zim.one/deeploy/__TAG__)"
+          ```
+
+          This downloads the release, verifies it against `SHA256SUMS`, hands the
+          checkout to root and stops. **It does not deploy anything.** DeePloy wipes
+          disks and rewrites GRUB; the command that starts that is one you type
+          yourself, after reading what you are about to run as root.
+
+          ## Verifying this release
+
+          Two checks. They do not prove the same thing, and the difference is the
+          whole reason both are here.
+
+          **1. The tarball, against the manifest beside it.**
+
+          ```sh
+          sha256sum -c SHA256SUMS      # must print: OK
+          ```
+
+          Both files were produced by the same workflow run and are served from this
+          same page, so this catches a download that was corrupted or tampered with
+          in transit. It says nothing about where the release came from — whoever
+          could replace one of them could replace the other.
+
+          **2. The bootstrap, against the digest published here.**
+
+          `get-deeploy.sh` is served from `zim.one`, which is not this page. That
+          makes this the one check of the two that speaks to provenance rather than
+          to transport.
+
+          ```sh
+          curl -sSfL https://zim.one/deeploy/__TAG__ | tail -n +2 | sha256sum
+          # or, without coreutils:  ... | shasum -a 256
+          ```
+
+          must print
+
+          ```
+          __BOOTSHA__
+          ```
+
+          `tail -n +2` drops the single line the endpoint prepends to pin the
+          version. Everything after it is `get-deeploy.sh` from this tag, byte for
+          byte — which is what makes "the one-liner and the file you read are the
+          same file" something you can check rather than something we assert.
+
+          Tags are annotated but **not signed**, so a checksum here proves integrity,
+          not authorship.
+          NOTES
+
+          if grep -q '__TAG__\|__BOOTSHA__\|__LEDE__' RELEASE_NOTES.md; then
+            echo "a placeholder survived into the release notes"
+            exit 1
+          fi
+          cat RELEASE_NOTES.md
+
       - name: Create the DRAFT release, or refresh an existing draft's assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -144,13 +226,17 @@ jobs:
               echo "Publish a new version instead of rewriting a published one."
               exit 1
             fi
-            echo "draft ${TAG} already exists — replacing its assets"
+            echo "draft ${TAG} already exists — replacing its assets and its notes"
             gh release upload "${TAG}" "deeploy-${TAG}.tar.gz" SHA256SUMS --clobber
+            # The notes carry the bootstrap digest, so refreshing the assets
+            # without refreshing them would publish a digest for a file that is
+            # no longer the one attached.
+            gh release edit "${TAG}" --notes-file RELEASE_NOTES.md
           else
             gh release create "${TAG}" \
               --draft \
               --verify-tag \
               --title "DeePloy ${TAG}" \
-              --notes "Draft — see CHANGELOG.md. Verify: sha256sum -c SHA256SUMS" \
+              --notes-file RELEASE_NOTES.md \
               "deeploy-${TAG}.tar.gz" SHA256SUMS
           fi
