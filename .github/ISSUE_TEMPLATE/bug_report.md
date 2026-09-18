@@ -21,8 +21,8 @@ hostnames, and interface or facility names.
 A bug report does not need them. If a value matters, describe what kind of value
 it was and what was wrong with it — "a 44-character base58 pubkey, one character
 short" is as useful as the pubkey, and only one of the two can be taken back
-afterwards. We have spent a week of this project removing identifiers that were
-published by accident; this line exists so nobody repeats it.
+afterwards. Removing identifiers that had been published by accident cost this
+project a week of its history; that is why the request is here.
 
 ## What happened
 

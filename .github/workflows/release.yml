@@ -151,7 +151,8 @@ jobs:
         run: |
           # Computed, never typed. A digest maintained by hand in a file nothing
           # checks is the same defect as the assertion count that used to sit in
-          # the README badge, except this one is what a reader checks us against.
+          # the README badge, except this one is the number a reader checks the
+          # release against.
           boot_sha=$(sha256sum get-deeploy.sh | cut -d' ' -f1)
           test -n "$boot_sha" || { echo "could not hash get-deeploy.sh"; exit 1; }
 
@@ -229,12 +230,12 @@ jobs:
           `tail -n +2` drops the single line the endpoint prepends to pin the
           version. Everything after it is `get-deeploy.sh` from this tag, byte for
           byte — which is what makes "the one-liner and the file you read are the
-          same file" something you can check rather than something we assert.
+          same file" something you can check rather than something you take on trust.
 
           Tags are annotated but **not signed**, so a checksum here proves integrity,
           not authorship.
 
-          ## Which files are ours
+          ## Which files the release workflow built
 
           Two: `deeploy-__TAG__.tar.gz` and `SHA256SUMS`. Those are what the release
           workflow builds and what the manifest covers.
