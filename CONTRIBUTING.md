@@ -46,18 +46,38 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
 - **Per-finding commits**, subject format `area: description (IDs)` — one
   logical fix per commit, with its tests in the same commit.
 - **No `Co-Authored-By` trailers.** Commits in this repository carry one author.
-- **No first person plural, anywhere a reader can reach it.** This repository
-  has one author, so "we" is not a matter of voice; it is inaccurate. It applies
-  to the README, `docs/`, `SECURITY.md`, release notes and the template in
-  `release.yml` that generates them, the issue and PR templates, `CODEOWNERS`,
-  and code comments — everything in a public repository can be read, and the
-  number of authors does not change with the file extension. Name what acts, or
+- **No first person plural in reader-facing prose.** This repository has one
+  author, so "we" is not a matter of voice; it is inaccurate. The rule covers
+  what a reader meets as prose: `README.md`, `docs/`, `SECURITY.md`, this file,
+  the release-notes template in `.github/workflows/release.yml` and the notes it
+  generates, the issue and PR templates, and `CODEOWNERS`. Name what acts, or
   address the reader: "the release workflow builds", not "we build"; "something
-  you take on trust", not "something we assert". CHANGELOG is exempt for the
-  same reason it is exempt from the grep rule below: its entries record what was
-  written at the time. The two quoted counter-examples above are this bullet
-  showing what it forbids; a grep for the rule will find them and they are not
-  violations.
+  you take on trust", not "something we assert".
+
+  Grep for it with the `s` forms included, or you will miss the one that started
+  this rule — a heading reading "Which files are ours" survived a grep for
+  `\bour\b`, because the `s` leaves no word boundary:
+
+  ```bash
+  grep -rniE '\b(we|our|ours|us|ourselves|ourself)\b' \
+    README.md docs/ SECURITY.md CONTRIBUTING.md .github/
+  ```
+
+  Every match that grep finds in this file is this bullet quoting or
+  demonstrating what it forbids. Counting them here would be one more
+  hand-maintained number, and it would be wrong by the next reword.
+
+  Run the same grep over the whole tree, excluding this file, and you get 38, of
+  which **18 must never be changed**: `--our-localhost` is a Solana CLI flag,
+  `us:100 them:100` is real `solana` output captured in fixtures, and `$US` /
+  `US=` is a variable name in `tests/test_toolchain.sh`.
+
+  The remaining **20 are genuine first person in code comments**, in `lib/` and
+  the workflows. They are a real defect and a separate sweep, tracked for after
+  rc6; this rule does not authorize touching them today, and `lib/` is outside
+  its scope until that sweep is agreed. CHANGELOG is exempt permanently, on the
+  same footing as the grep rule below: its entries record what was written then.
+
 - **A tag's message is the release lede.** The release workflow reads the
   annotated tag through the API and puts its message at the top of the release
   notes, because GitHub shows a tag body nowhere on the release page. Write it
