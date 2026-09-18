@@ -5,6 +5,87 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc6] - 2026-09-18
+
+Packaging and presentation. The deployment logic, the gates around destructive
+steps and the key model are untouched: the tree that deploys is the tree rc5
+shipped. What changed is how you get it, how you check what you got, and how
+much of the front page you have to read before you know what this does.
+
+### Added
+- **`get-deeploy.sh` and a one-command install.** It fetches the pinned release,
+  checks the tarball against its `SHA256SUMS`, unpacks, hands the checkout to
+  root, and stops. It never runs `deeploy.sh`. Two places a bootstrap is usually
+  unsafe are closed: no hash tool means it refuses rather than skipping, and
+  `DEEPLOY_INSTALL_TAG` is validated in the script and not only in the route
+  that serves it.
+- **`worker/index.mjs` and `wrangler.toml`** — the `zim.one/deeploy` endpoint as
+  files rather than dashboard clicks. The worker holds no install logic: it
+  serves `get-deeploy.sh` from this repository at the tag in the URL and
+  prepends one line pinning the version, so the one-liner and the file you read
+  are provably the same bytes.
+- **`tests/test_bootstrap.sh` and `tests/test_worker.sh`** — 19 suites now. The
+  bootstrap suite mocks with executable stubs on a restricted PATH, because the
+  subject is a separate `sh` process and a shell function does not cross that
+  boundary. `test_worker.sh` requires node and fails without it instead of
+  reporting a skip.
+- **`docs/`** — six files carved out of the README, moved byte for byte.
+- **`.github/` templates and `CODEOWNERS`.** The PR checklist asks for a test
+  that fails on the old code, a truthful `--dry-run`, no real identifiers,
+  destructive behaviour unchanged or declared, the corrected claim grepped
+  across the tree, and which platform the gate was run on.
+- **Release notes that verify two different things.** The tarball against its
+  manifest catches a damaged download; `get-deeploy.sh` against the digest
+  published in the notes is the one check that speaks to provenance, because the
+  bootstrap arrives over a different channel. That digest is computed by the
+  workflow, never typed.
+- **Four new CI gates**, each replacing something that was previously a line in
+  a checklist: the bootstrap's default tag must equal the tag being released,
+  the worker's default tag must too (determined by importing and running the
+  worker, not by grepping its source), the tag must match the pattern both
+  consumers accept, and the README must not link a file `git archive` will not
+  ship.
+
+### Fixed
+- **Three false claims on the README front page.** "Nothing of DeePloy runs
+  afterwards" — five units of its own run at every boot, and
+  `deeploy-resume.service` is left enabled after a manual `install --resume`.
+  "It does read the keypair file, twice" — five reads across three commands.
+  "What you need: validator-grade hardware" — the numbers exist and describe
+  what this was proven on, not a minimum.
+- **Every hand-maintained count.** The test badge carried `1117 across 17
+  suites` and was wrong five times inside this batch alone; it carries the suite
+  count now. The same number lived in the README feature list and in the CI job
+  name. The verify section's `# 44 files` is gone, replaced by what the reader
+  is actually looking for in that listing.
+- **Release notes no longer call a published release a draft.** The word was
+  left over from when the workflow always created one. It is derived from the
+  tag now, so a fixed "Release candidate" cannot become the same lie one version
+  later.
+- **`get-deeploy.sh` pins `LC_ALL=C`.** Bracket ranges are resolved by collation,
+  so under bash 3.2 in a UTF-8 locale an accented character passed the tag check
+  that guards a string bound for a URL.
+- **The worker copies bytes, not text.** `Response.text()` strips a BOM and
+  turns invalid bytes into U+FFFD, silently, into a body that is piped into a
+  shell. It also reads the body inside the try, validates the path before
+  redirecting, and logs the reason for a 502.
+- **`mkbin` refuses to build a sandbox it cannot build correctly** — a tool that
+  is missing, or a name that resolves to a builtin rather than a path, now fails
+  the suite instead of producing a PATH quietly short one tool.
+
+### Conventions
+- The rule "grep the whole tree when you correct a claim" now says where it
+  stops. CHANGELOG entries record what was true at a point in time; editing one
+  into agreement with the present destroys the only question it answers.
+
+### Notes
+- The `zim.one/deeploy` worker is deployed after the tag, not before. It serves
+  `get-deeploy.sh` by tag, so until the tag exists there is nothing to serve and
+  debugging runs against an absent file.
+- Green on one platform is not green. A sandbox PATH without `gzip` passed on
+  macOS and failed on ubuntu, because `tar -xzf` is one process under BSD tar
+  and two under GNU tar.
+
 ## [0.1.0-rc5] - 2026-09-16
 
 The public-release cut: the front page, the honest limitations list, and the
