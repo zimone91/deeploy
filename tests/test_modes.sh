@@ -121,10 +121,13 @@ craft() {                                         # <name> -> a tree that is NOT
     tar -cf - --exclude .git -C "$ROOT" . 2>/dev/null | tar -xf - -C "$d"
     echo "$d"
 }
-control() {                                       # <desc> <tree> <expected substring>
-    local out rc; out=$(gate_a "$2" 2>&1); rc=$?
-    check "$1 -> refused"           "$rc" "1"
-    check "  for the stated reason" "$(grep -c "$3" <<<"$out")" "1"
+# Takes the gate to run as its first argument. It used to call gate_a directly,
+# and reusing it for Gate B silently pointed eight controls at the wrong subject:
+# they reported on a gate that was not the one under test.
+control() {                                       # <gate> <desc> <tree> <expected substring>
+    local out rc; out=$("$1" "$3" 2>&1); rc=$?
+    check "$2 -> refused"           "$rc" "1"
+    check "  for the stated reason" "$(grep -c "$4" <<<"$out")" "1"
 }
 WORKDIR=$(mktemp -d); trap 'rm -rf "$WORKDIR"' EXIT
 
@@ -132,15 +135,15 @@ D=$(craft newdoc)
 # shellcheck disable=SC2016  # backticks are markdown here, not substitution
 printf 'Run `./helper.sh` to do the thing.\n' >"$D/docs/HELPER.md"
 printf '#!/bin/bash\n' >"$D/helper.sh"; chmod 644 "$D/helper.sh"
-control "a newly documented script with no +x" "$D" "not executable: helper.sh"
+control gate_a "a newly documented script with no +x" "$D" "not executable: helper.sh"
 
 D=$(craft gone)
 rm -f "$D/run_tests.sh"
-control "a documented script that is not in the tree" "$D" "not in the tree"
+control gate_a "a documented script that is not in the tree" "$D" "not in the tree"
 
 D=$(craft nodocs)
 find "$D" -name '*.md' -delete
-control "no documentation at all" "$D" "derived no documented scripts"
+control gate_a "no documentation at all" "$D" "derived no documented scripts"
 
 # CONTRIBUTING.md must be IN the source of truth. run_tests.sh is named in two
 # places, so removing the other one leaves CONTRIBUTING as the only mention: a
@@ -149,7 +152,7 @@ D=$(craft contributing_only)
 # shellcheck disable=SC2016  # ditto: markdown backticks in the pattern
 sed -i.bak 's|`./run_tests.sh`|the test runner|' "$D/.github/pull_request_template.md" && rm -f "$D"/.github/*.bak
 chmod 644 "$D/run_tests.sh"
-control "run_tests.sh named only by CONTRIBUTING, bit dropped" "$D" "not executable: run_tests.sh"
+control gate_a "run_tests.sh named only by CONTRIBUTING, bit dropped" "$D" "not executable: run_tests.sh"
 # Control the other way: the same tree with the bit intact must pass, so the red
 # above came from the mode and not from the edit that isolated the mention.
 chmod 755 "$D/run_tests.sh"
@@ -165,6 +168,137 @@ gate_a "$D" >/dev/null; RC3=$?
 check "a script named only in CHANGELOG is ignored" "$RC3" "0"
 check "  and the changelog really does name it" \
       "$(grep -c 'retired-thing.sh' "$D/CHANGELOG.md")" "1"
+
+# ---------------------------------------------------------------------------
+# Gate B: every ExecStart= that points into the checkout must name an executable
+# file. systemctl enable does not look at the bit, so a 644 target is accepted at
+# install time and fails at boot with status=203/EXEC — after the reboot, on a
+# box whose disks were erased three phases earlier. That is how rc6 failed.
+#
+# Exactly one ExecStart points into the checkout today: deeploy.sh, via
+# DEEPLOY_SELF. Every other unit runs a script this repo GENERATES, and those are
+# written with an explicit 0755. That second half is asserted here rather than
+# taken on trust — a generated script switched to 0644 would join the class the
+# gate exists for, and nothing else would notice.
+#
+# Nothing is classified by name. A target is resolved through the variable that
+# holds it: an assignment mentioning BASH_SOURCE points at the file that defines
+# it (the checkout), an assignment under an absolute base is generated. A target
+# this cannot place is a refusal, never a skip.
+# ---------------------------------------------------------------------------
+gate_b() {                                        # <root> -> 0 and a summary, or 1 and a reason
+    local root="$1" f line val tgt var rhs owner m
+    local in_checkout=0 generated=0 system=0 resets=0
+
+    while IFS= read -r line; do
+        f="${line%%:*}"; val="${line#*:}"; val="${val#*ExecStart=}"
+        # systemd's reset idiom: an empty ExecStart= clears the vendor unit's
+        # list and the next line supplies the replacement. Counted, not dropped.
+        if [[ -z "${val//[[:space:]\"\\]/}" ]]; then resets=$((resets + 1)); continue; fi
+        tgt=$(printf '%s' "$val" | sed -e 's/^[\\"]*//' -e 's/[[:space:]].*$//' -e 's/[\\"]*$//')
+        if [[ "$tgt" == /* ]]; then
+            # An absolute literal. If this repo writes that path itself it is a
+            # generated script and must be written executable; otherwise it is a
+            # system binary and none of our business.
+            # Match the FULL path, not the basename: "sysctl" is a substring of
+            # SYSCTL_FILE, which filed /usr/sbin/sysctl as a script this repo
+            # generates. A system binary misfiled as ours is a check reporting on
+            # a subject it never had.
+            if grep -h 'write_file' "$root"/lib/*.sh 2>/dev/null | grep -qF -- "$tgt"; then
+                _gb_assert_0755 "$root" "$tgt" "$tgt" || return 1
+                generated=$((generated + 1))
+            else
+                system=$((system + 1))
+            fi
+        elif [[ "${tgt:0:1}" == "$" ]]; then
+            # A '}' inside a bracket class closes the parameter expansion early,
+            # which silently produced a variable name of "${DEEPLOY_SELF}"]/}".
+            # The target is a bare reference, so keep the identifier characters.
+            var=$(printf '%s' "$tgt" | sed 's/[^A-Za-z0-9_]//g')
+            rhs=$(grep -rhoE "^[[:space:]]*(export )?${var}=.*" "$root"/deeploy.sh "$root"/lib/*.sh 2>/dev/null | head -1)
+            [[ -n "$rhs" ]] || { echo "ExecStart names \$${var} and nothing in the tree assigns it"; return 1; }
+            if [[ "$rhs" == *BASH_SOURCE* ]]; then
+                # Resolves to the file that defines it — inside the checkout.
+                owner=$(grep -rlE "^[[:space:]]*(export )?${var}=.*BASH_SOURCE" "$root"/deeploy.sh "$root"/lib/*.sh 2>/dev/null | head -1)
+                owner="${owner#"$root"/}"
+                m=$(mode_in "$root" "$owner")
+                [[ "$m" =~ ^[0-7]{3,4}$ ]] || { echo "could not read a mode for the ExecStart target ${owner}"; return 1; }
+                (( (8#$m & 0111) != 0 )) || { echo "ExecStart points into the checkout at ${owner} and it is not executable — systemctl enable accepts this and the boot fails 203/EXEC"; return 1; }
+                in_checkout=$((in_checkout + 1))
+            elif [[ "$rhs" == *'$'* ]]; then
+                _gb_assert_0755 "$root" "$var" "\$${var}" || return 1
+                generated=$((generated + 1))
+            else
+                echo "cannot place ExecStart target \$${var}: its assignment is neither BASH_SOURCE-derived nor under a path"; return 1
+            fi
+        else
+            echo "cannot place ExecStart target [${tgt}] from ${f}"; return 1
+        fi
+    done < <(grep -rn 'ExecStart=' "$root"/deeploy.sh "$root"/lib/*.sh 2>/dev/null)
+
+    (( in_checkout > 0 )) || { echo "no ExecStart resolves into the checkout — the derivation broke, not the units"; return 1; }
+    (( generated > 0 ))   || { echo "no generated ExecStart target found — the derivation broke"; return 1; }
+    echo "${in_checkout} into the checkout, ${generated} generated (all 0755), ${system} system path(s), ${resets} reset line(s)"
+    return 0
+}
+
+# The mode a generated script is written with. write_file calls span lines, so
+# this reads forward from the call — but STOPS at the next write_file. A fixed
+# 40-line window spilled into the neighbouring call and reported its 0755 as this
+# one's, which made the 0644 control pass and hid the very thing it tested.
+#
+# Returns the mode it found, so "no explicit mode at all" is distinguishable from
+# "an explicit mode that is wrong". Both are refusals; only one is a typo.
+_gb_write_mode() {                                # <root> <path-or-var> -> prints a mode, or nothing
+    local root="$1" what="$2" f n
+    for f in "$root"/lib/*.sh; do
+        n=$(grep -n 'write_file' "$f" 2>/dev/null | grep -F -- "$what" | head -1 | cut -d: -f1)
+        [[ -n "$n" ]] || continue
+        sed -n "${n},$((n + 40))p" "$f" \
+            | awk 'NR>1 && /write_file/{exit} {print}' \
+            | grep -oE '(^|[[:space:]])0[0-7]{3}([[:space:]]|$)' | tail -1 | tr -d '[:space:]'
+        return 0
+    done
+}
+
+_gb_assert_0755() {                               # <root> <what> <label>
+    local m; m=$(_gb_write_mode "$1" "$2")
+    [[ -n "$m" ]] || { echo "generated script ${3} is written with no explicit mode"; return 1; }
+    [[ "$m" == "0755" ]] || { echo "generated script ${3} is not written 0755 (found ${m})"; return 1; }
+    return 0
+}
+
+echo "== Gate B: every ExecStart into the checkout is executable =="
+OUT=$(gate_b "$ROOT"); RC=$?
+check "gate passes on this tree"           "$RC" "0"
+check "  and exactly one points at the checkout" \
+      "$(grep -cE '^1 into the checkout' <<<"$OUT")" "1"
+check "  and it placed every other target"  "$(grep -cE 'generated \(all 0755\)' <<<"$OUT")" "1"
+
+D=$(craft execstart_noexec)
+chmod 644 "$D/deeploy.sh"
+control gate_b "the checkout ExecStart target loses its bit" "$D" "203/EXEC"
+
+D=$(craft execstart_gen644)
+# shellcheck disable=SC2016  # the pattern matches literal shell text in the file
+sed -i.bak 's|\(write_file "\$VALIDATOR_SH".*\)0755|\10644|' "$D/lib/validatorcfg.sh" && rm -f "$D"/lib/*.bak
+control gate_b "a generated ExecStart target written 0644" "$D" "not written 0755"
+
+# The other refusal branch: a call with no mode argument at all. Without this the
+# "found 0644" message could never be distinguished from "found nothing".
+D=$(craft execstart_nomode)
+# shellcheck disable=SC2016  # literal shell text in the pattern
+sed -i.bak 's|\(write_file "\$VALIDATOR_SH".*\)0755|\1|' "$D/lib/validatorcfg.sh" && rm -f "$D"/lib/*.bak
+control gate_b "a generated ExecStart target with no mode argument" "$D" "no explicit mode"
+
+D=$(craft execstart_unknown)
+# shellcheck disable=SC2016  # the unexpanded text is what the crafted file must hold
+printf '\n_gb_probe() { write_file "$X" "ExecStart=${MYSTERY_BIN}" 0644; }\n' >>"$D/lib/verify.sh"
+control gate_b "an ExecStart naming a variable nothing assigns" "$D" "nothing in the tree assigns it"
+
+D=$(craft execstart_none)
+sed -i.bak 's/ExecStart=/ExecStarted_/' "$D"/lib/*.sh "$D"/deeploy.sh && rm -f "$D"/lib/*.bak "$D"/*.bak
+control gate_b "no ExecStart anywhere" "$D" "the derivation broke"
 
 echo ""
 echo "==================================="

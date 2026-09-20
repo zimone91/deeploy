@@ -108,6 +108,17 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   expected to see. So: assert the subject exists, assert the opposite outcome
   is reachable, and only then assert the outcome. State what a control should
   print before running it, not after.
+- **And a control must measure the subject it names.** The rule above is about
+  whether anything was measured; this one is about whether the right thing was.
+  A reused control INHERITS a subject instead of receiving one: a `control()`
+  helper written beside gate A called `gate_a` by name, so eight controls for
+  gate B ran gate A and reported its refusals as gate B's. A window that reads
+  forward from a call has the same shape: a fixed forty lines spilled into the
+  neighbouring `write_file` and reported that call's `0755` as this one's, so
+  the control for a `0644` target passed and hid exactly what it tested. Both
+  measured something real and went green on it. Pass the subject in, bound the
+  window at the next one, and make the reported reason specific enough that
+  measuring the wrong thing cannot produce the right message.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
   gotchas (`var=$(pipeline)` on commands that legitimately return non-zero,
   functions ending in `while read` loops).
