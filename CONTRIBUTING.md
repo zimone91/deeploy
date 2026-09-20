@@ -16,13 +16,14 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   runner fails a suite that exits non-zero, reports failures, *or* never prints
   its `RESULT` line (a suite that dies mid-run is silence, not success).
 
-- **The test badge in the README is maintained by hand**, and now carries the
-  number of suites and nothing else. It used to carry the assertion count too,
-  which changed in nearly every commit and was therefore wrong more often than
-  right; the suite count moves a few times a year. Adding or removing a suite
-  means updating the badge in the same commit — nothing checks it. The habit
-  worth keeping from this: a number written in prose is a claim, and a claim
-  nothing verifies drifts until someone trusts it.
+- **The test badge in the README carries the number of suites and nothing
+  else**, and CI derives that number from `ls tests/test_*.sh` rather than
+  trusting it. It used to carry the assertion count too, which changed in nearly
+  every commit and was therefore wrong more often than right. The suite count
+  moves a few times a year — and still drifted, reading 19 while `tests/` held
+  20, which is what put the gate there. The habit worth keeping: a number
+  written in prose is a claim, and a claim nothing verifies drifts until
+  someone trusts it.
 
 - **shellcheck is pinned to 0.11.0** (what CI installs). Older versions (e.g.
   Ubuntu 24.04's apt 0.9.0) emit false positives this repo does not carry
@@ -97,6 +98,16 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   that can no longer be used to find out when something changed.
 - **Fixes come with tests.** A behavior fix without a regression test that
   fails on the old code is not done.
+- **A control must prove it measured something before it reports.** A check
+  that passes because its subject was absent has not passed. This repository
+  has produced the same defect three ways: a `sed` that silently did nothing
+  under BSD, so the control quietly re-ran the case before it; a `git stash`
+  that took the test away along with the code under test; and four preflight
+  assertions that went green against a function which did not exist, because
+  calling a missing function leaves the counters at zero — exactly what they
+  expected to see. So: assert the subject exists, assert the opposite outcome
+  is reachable, and only then assert the outcome. State what a control should
+  print before running it, not after.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
   gotchas (`var=$(pipeline)` on commands that legitimately return non-zero,
   functions ending in `while read` loops).
