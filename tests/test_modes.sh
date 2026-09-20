@@ -24,13 +24,22 @@ PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"
     else FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: [%s]\n     actual:   [%s]\n' "$1" "$3" "$2"; fi; }
 
-if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    SOURCE="git index"
-    mode_of() { git -C "$ROOT" ls-files -s -- "$1" | awk '{print substr($1,4)}'; }
-else
-    SOURCE="unpacked files"
-    mode_of() { stat -c %a "$ROOT/$1" 2>/dev/null || stat -f %Lp "$ROOT/$1" 2>/dev/null; }
-fi
+# Both helpers take a root so the controls further down can craft a tree and ask
+# the same questions of it. A crafted tree is not a repository, which is exactly
+# the unpacked-tarball case the second branch already exists for.
+mode_in() {                                       # <root> <path>
+    if git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git -C "$1" ls-files -s -- "$2" | awk '{print substr($1,4)}'
+    else
+        stat -c %a "$1/$2" 2>/dev/null || stat -f %Lp "$1/$2" 2>/dev/null
+    fi
+}
+source_of() {                                     # <root> -> "git index" | "unpacked files"
+    if git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
+    then echo "git index"; else echo "unpacked files"; fi
+}
+mode_of() { mode_in "$ROOT" "$1"; }
+SOURCE=$(source_of "$ROOT")
 echo "== modes, measured from the ${SOURCE} =="
 
 # Prove the measurement works before reporting on it. A mode_of that returned
@@ -62,6 +71,100 @@ check "README.md is NOT executable"           "$(x_bit README.md)"           "no
 # And the predicate must be able to SAY it measured nothing, so that "no" above
 # means a mode was read and had no x bit — not that the file was absent.
 check "a path that is not there reads as unmeasured" "$(x_bit no/such/file.sh)" "unmeasured"
+
+# ---------------------------------------------------------------------------
+# Gate A: a script this repository tells a reader to run as ./x.sh must be
+# executable. Derived from the documentation rather than from a list here, so a
+# newly documented script arrives checked instead of remembered.
+#
+# CHANGELOG.md is excluded ON PURPOSE, and the exclusion is asserted below rather
+# than left as a quiet narrowing. The changelog records what was true at a past
+# release — CHANGELOG.md:328 names ./deeploy.sh while describing a fix from an
+# earlier version. Holding history to the present tree would make history
+# unwritable. Every other tracked .md is an instruction to someone reading now.
+# ---------------------------------------------------------------------------
+docs_of() {                                       # <root> -> doc paths, changelog excluded
+    if git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git -C "$1" ls-files '*.md'
+    else
+        ( cd "$1" && find . -name '*.md' -type f | sed 's|^\./||' )
+    fi | grep -v '^CHANGELOG\.md$'
+}
+
+gate_a() {                                        # <root> -> 0 and a summary, or 1 and a reason
+    local root="$1" f s n=0 scripts missing="" nox=""
+    scripts=$(docs_of "$root" | while IFS= read -r f; do
+                  grep -hoE '\./[A-Za-z0-9_][A-Za-z0-9_.-]*\.sh' "$root/$f" 2>/dev/null
+              done | sed 's|^\./||' | sort -u)
+    [[ -n "$scripts" ]] || { echo "derived no documented scripts at all — the derivation broke, not the docs"; return 1; }
+    while IFS= read -r s; do
+        [[ -n "$s" ]] || continue
+        n=$((n + 1))
+        if [[ ! -f "$root/$s" ]]; then missing="$missing $s"; continue; fi
+        local m; m=$(mode_in "$root" "$s")
+        [[ "$m" =~ ^[0-7]{3,4}$ ]] || { echo "could not read a mode for documented script ${s}"; return 1; }
+        (( (8#$m & 0111) != 0 )) || nox="$nox $s"
+    done <<<"$scripts"
+    [[ -z "$missing" ]] || { echo "documented as ./x.sh but not in the tree:${missing}"; return 1; }
+    [[ -z "$nox" ]] || { echo "documented as ./x.sh but not executable:${nox} — a reader who types it gets Permission denied"; return 1; }
+    echo "${n} documented script(s) checked, all executable"
+    return 0
+}
+
+echo "== Gate A: every documented ./x.sh is executable =="
+OUT=$(gate_a "$ROOT"); RC=$?
+check "gate passes on this tree"        "$RC" "0"
+check "  and it checked more than zero" "$(grep -cE '^[1-9][0-9]* documented' <<<"$OUT")" "1"
+
+craft() {                                         # <name> -> a tree that is NOT a repository
+    local d="$WORKDIR/$1"; rm -rf "$d"; mkdir -p "$d"
+    tar -cf - --exclude .git -C "$ROOT" . 2>/dev/null | tar -xf - -C "$d"
+    echo "$d"
+}
+control() {                                       # <desc> <tree> <expected substring>
+    local out rc; out=$(gate_a "$2" 2>&1); rc=$?
+    check "$1 -> refused"           "$rc" "1"
+    check "  for the stated reason" "$(grep -c "$3" <<<"$out")" "1"
+}
+WORKDIR=$(mktemp -d); trap 'rm -rf "$WORKDIR"' EXIT
+
+D=$(craft newdoc)
+# shellcheck disable=SC2016  # backticks are markdown here, not substitution
+printf 'Run `./helper.sh` to do the thing.\n' >"$D/docs/HELPER.md"
+printf '#!/bin/bash\n' >"$D/helper.sh"; chmod 644 "$D/helper.sh"
+control "a newly documented script with no +x" "$D" "not executable: helper.sh"
+
+D=$(craft gone)
+rm -f "$D/run_tests.sh"
+control "a documented script that is not in the tree" "$D" "not in the tree"
+
+D=$(craft nodocs)
+find "$D" -name '*.md' -delete
+control "no documentation at all" "$D" "derived no documented scripts"
+
+# CONTRIBUTING.md must be IN the source of truth. run_tests.sh is named in two
+# places, so removing the other one leaves CONTRIBUTING as the only mention: a
+# gate that skipped it would go green here.
+D=$(craft contributing_only)
+# shellcheck disable=SC2016  # ditto: markdown backticks in the pattern
+sed -i.bak 's|`./run_tests.sh`|the test runner|' "$D/.github/pull_request_template.md" && rm -f "$D"/.github/*.bak
+chmod 644 "$D/run_tests.sh"
+control "run_tests.sh named only by CONTRIBUTING, bit dropped" "$D" "not executable: run_tests.sh"
+# Control the other way: the same tree with the bit intact must pass, so the red
+# above came from the mode and not from the edit that isolated the mention.
+chmod 755 "$D/run_tests.sh"
+gate_a "$D" >/dev/null; check "  and with the bit back it passes" "$?" "0"
+
+# The changelog exclusion is deliberate, so assert it. A tree where ONLY the
+# changelog names a script that does not exist must stay green; if the exclusion
+# were ever dropped, history would start failing the build.
+D=$(craft changelog_only)
+# shellcheck disable=SC2016  # markdown backticks again
+printf '\n- Old note mentioning `./retired-thing.sh`, removed in a later release.\n' >>"$D/CHANGELOG.md"
+gate_a "$D" >/dev/null; RC3=$?
+check "a script named only in CHANGELOG is ignored" "$RC3" "0"
+check "  and the changelog really does name it" \
+      "$(grep -c 'retired-thing.sh' "$D/CHANGELOG.md")" "1"
 
 echo ""
 echo "==================================="
