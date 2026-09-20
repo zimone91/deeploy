@@ -113,7 +113,7 @@ _install_verify_isolation() {
 # preflight entirely.
 _install_assert_resume_source_safe() {
     local why
-    why="$(deeploy_checkout_unsafe_reason "$DEEPLOY_DIR" "$DEEPLOY_SELF")" && return 0
+    why="$(deeploy_root_surface_unsafe_reason "$DEEPLOY_DIR" "$DEEPLOY_SELF" "$LIB")" && return 0
     fail "refusing to install the resume service: ${why} — it would execute as root at boot. Run DeePloy from a root-owned checkout: chown -R root:root '${DEEPLOY_DIR}' (and chmod go-w it)."
 }
 

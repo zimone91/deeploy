@@ -52,8 +52,8 @@ _pf_base_disk() {
 # install cannot complete without the resume unit.
 _pf_check_checkout() {
     local why
-    if why="$(deeploy_checkout_unsafe_reason "${DEEPLOY_DIR:-.}" "${DEEPLOY_SELF:-./deeploy.sh}")"; then
-        pf_ok "Checkout is root-owned and not group/world-writable"
+    if why="$(deeploy_root_surface_unsafe_reason "${DEEPLOY_DIR:-.}" "${DEEPLOY_SELF:-./deeploy.sh}" "${LIB:-${DEEPLOY_DIR:-.}/lib}")"; then
+        pf_ok "deeploy.sh and lib/*.sh are root-owned and not group/world-writable"
     else
         pf_bad "Checkout unusable for the boot-time resume service: ${why}. It would run as root at boot, so a writable path lets any local user swap the script before the reboot. Fix: sudo chown -R root:root '${DEEPLOY_DIR:-.}' && sudo chmod -R go-w '${DEEPLOY_DIR:-.}'"
     fi

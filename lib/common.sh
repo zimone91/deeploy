@@ -142,6 +142,31 @@ deeploy_checkout_unsafe_reason() {                # <path>...
     return 0
 }
 
+# The root-execution surface: every path whose CONTENTS deeploy.sh runs as root,
+# which is this script plus the modules it sources. Globbed, never listed — a
+# list here would be a second copy of the loader's, and the copy that goes stale
+# is always the one nobody remembered to update.
+#
+# deeploy.conf is deliberately NOT in this set. It is parsed as data and never
+# sourced, eval'd or executed ("The conf is DATA, never code" — config.sh), so a
+# writable conf cannot put code into a root process. Add to this set only what is
+# sourced or executed, never what is merely read; the next person will otherwise
+# widen it by guessing.
+#
+# Why it matters that this is wider than the two paths it used to check: the unit
+# written at the reboot boundary runs deeploy.sh as root, and deeploy.sh sources
+# every module before it does anything. A lib/*.sh a local user can write is the
+# same root-persistence vector the gate exists to close, one directory down.
+deeploy_root_surface_unsafe_reason() {            # <checkout-dir> <self> <lib-dir>
+    local dir="$1" self="$2" lib="$3" m
+    deeploy_checkout_unsafe_reason "$dir" "$self" || return 1
+    for m in "$lib"/*.sh; do
+        [[ -e "$m" ]] || continue
+        deeploy_checkout_unsafe_reason "$m" || return 1
+    done
+    return 0
+}
+
 # --- client tag parsing + version floor --------------------------------------
 # jito-solana tags are vMAJOR.MINOR.PATCH[-prerelease]-jito. Three consumers
 # need the same answer — the build (toolchain), the upgrade path, and the

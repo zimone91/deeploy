@@ -324,6 +324,42 @@ deeploy_path_uid() { case "$1" in *bad*) echo 501;; *) echo 0;; esac; }
 CKW=$(deeploy_checkout_unsafe_reason /good/dir /good/bad-file); CKRC=$?
 check "second path is checked too"           "$CKRC" "1"
 check "second path is the one named"         "$(grep -c '/good/bad-file' <<<"$CKW")" "1"
+
+echo "== N8: the surface is deeploy.sh AND every module it sources =="
+# The unit written at the reboot boundary runs deeploy.sh as root, and deeploy.sh
+# sources lib/*.sh before it does anything at all. A module a local user can
+# write is therefore the same root-persistence vector as a writable deeploy.sh,
+# one directory down — and the two-path predicate above cannot see it.
+SURF="$WORK/surface"; mkdir -p "$SURF/lib"
+: > "$SURF/deeploy.sh"; : > "$SURF/lib/common.sh"; : > "$SURF/lib/disk.sh"
+deeploy_path_mode() { echo 755; }
+deeploy_path_uid()  { echo 0; }
+SW=$(deeploy_root_surface_unsafe_reason "$SURF" "$SURF/deeploy.sh" "$SURF/lib"); SRC=$?
+check "all root-owned -> rc0, says nothing"  "${SRC}/${SW}" "0/"
+
+# dir and deeploy.sh stay root-owned; ONE module does not.
+deeploy_path_uid() { case "$1" in *disk.sh) echo 501 ;; *) echo 0 ;; esac; }
+SW=$(deeploy_root_surface_unsafe_reason "$SURF" "$SURF/deeploy.sh" "$SURF/lib"); SRC=$?
+check "a user-owned module -> rc1"           "$SRC" "1"
+check "and the module is the path named"     "$(grep -c 'lib/disk.sh is not root-owned' <<<"$SW")" "1"
+# This is the gap, stated as an assertion rather than as a claim in a commit
+# message: the predicate this replaced passes the very same tree.
+SW2=$(deeploy_checkout_unsafe_reason "$SURF" "$SURF/deeploy.sh"); SRC2=$?
+check "the two-path predicate calls it safe" "${SRC2}/${SW2}" "0/"
+
+deeploy_path_uid() { echo 0; }
+deeploy_path_mode() { case "$1" in *common.sh) echo 775 ;; *) echo 755 ;; esac; }
+SW=$(deeploy_root_surface_unsafe_reason "$SURF" "$SURF/deeploy.sh" "$SURF/lib"); SRC=$?
+check "a group-writable module -> rc1"       "$SRC" "1"
+check "and names it"                         "$(grep -c 'lib/common.sh is group/world-writable' <<<"$SW")" "1"
+
+# An empty lib/ contributes nothing rather than expanding to a literal glob:
+# the modules would fail to source anyway, and a bogus path here would report
+# the wrong reason for the right refusal.
+deeploy_path_mode() { echo 755; }
+mkdir -p "$SURF/emptylib"
+SW=$(deeploy_root_surface_unsafe_reason "$SURF" "$SURF/deeploy.sh" "$SURF/emptylib"); SRC=$?
+check "no modules -> rc0, no phantom path"   "${SRC}/${SW}" "0/"
 unset -f deeploy_path_uid deeploy_path_mode
 
 echo "== tag parsing: vMAJOR.MINOR.PATCH out of jito-solana tag shapes =="
