@@ -59,6 +59,62 @@ _pf_check_checkout() {
     fi
 }
 
+# --- tools the install needs AFTER the point of no return ---------------------
+# Phase 3 erases the data disks (blkdiscard) and only then formats them. Every
+# external command invoked after that moment has to exist BEFORE it, because the
+# alternative is a box with wiped disks and a run that died on "command not
+# found". That is how the missing xfsprogs presented.
+#
+# This list is not remembered, it is derived: CI re-derives the set from the
+# run() call sites in the modules that execute at or after the point of no
+# return, and fails the build if it differs from this list — so a command added
+# to a later phase cannot arrive unasserted. Two subtractions keep it honest.
+# Commands installed by phase 1, which runs BEFORE the point of no return (CI
+# asserts that ordering rather than taking it on trust, because if the wipe ever
+# moves earlier than the packages this whole list silently stops being right).
+# And commands a later phase installs before its own use — cargo and rustup live
+# entirely inside phase 4, which installs them itself.
+#
+# Blocking, not a warning: a warning here is read after the disks are gone.
+#
+# Boundary, so this list is not read as wider than it is: the derivation sees
+# commands invoked through run/run_capture/run_redacted. A command called directly
+# is invisible to it — lib/keys.sh:32 wraps `solana-keygen new` in run() and is
+# seen; lib/keys.sh:33 calls `solana-keygen pubkey` directly and is not. 33 such
+# direct calls exist in the post-wipe modules today, all from the Ubuntu 24.04
+# base system (coreutils, util-linux, procps, diffutils, findutils, grep, sed,
+# mawk, dash, iproute2, iputils-ping), so none is a live risk. But a NON-base
+# command added as a direct call would not appear here and nothing would say so.
+# The same blindness covers executables invoked by path (solana, solana-keygen,
+# agave-xdp-compatibility, cargo-install-all.sh) — DeePloy's own build products.
+# tests/test_toolgate.sh carries the measurement and the backlog item.
+PF_REQUIRED_TOOLS=(
+    apt-get bash blkdiscard getcap install ln mdadm mkdir mkfs.xfs
+    mount mv rm setcap swapoff systemctl
+)
+
+# The second subtraction, written down because CI needs it too: commands a later
+# phase installs before its own use. rustup and cargo are installed by the
+# toolchain phase and used only inside it, so there is nothing for phase 0 to
+# assert about them. Anything added here is a claim that some phase installs it
+# before it needs it — check that before adding, because the failure it hides is
+# the one this whole list exists to prevent.
+# shellcheck disable=SC2034  # read by tests/test_toolgate.sh, not by shell:
+# the gate subtracts these when deriving what PF_REQUIRED_TOOLS must contain.
+PF_TOOLS_SELF_INSTALLED=(cargo rustup)
+
+_pf_check_tools() {
+    local t missing=()
+    for t in ${PF_REQUIRED_TOOLS[@]+"${PF_REQUIRED_TOOLS[@]}"}; do
+        have "$t" || missing+=("$t")
+    done
+    if [[ "${#missing[@]}" -eq 0 ]]; then
+        pf_ok "Commands needed after the disk wipe are all present"
+    else
+        pf_bad "Missing commands that phase 3 and later need: ${missing[*]} — the disks are erased before any of them is used, so a run started now dies with the data already gone. Install them first (xfsprogs provides mkfs.xfs, libcap2-bin provides setcap/getcap)."
+    fi
+}
+
 # --- platform: arch, OS, virtualization --------------------------------------
 _pf_check_platform() {
     local arch osr id ver virt
@@ -302,6 +358,7 @@ preflight_run() {
     require_root
     _PF_HARD=0; _PF_WARN=0
     _pf_check_checkout          # N8: cheapest possible failure, before anything is touched
+    _pf_check_tools             # everything phase 3+ needs, while the disks are still intact
     _pf_check_platform
     _pf_check_cpu
     _pf_check_memory

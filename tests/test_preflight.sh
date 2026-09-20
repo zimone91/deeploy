@@ -169,13 +169,51 @@ deeploy_path_mode() { echo 755; }
 check "wired first in preflight_run" \
     "$(grep -A2 '_PF_HARD=0; _PF_WARN=0' "$ROOT/lib/preflight.sh" | grep -c '_pf_check_checkout')" "1"
 
+echo "== 7c2: _pf_check_tools (what runs after the disks are gone) =="
+# The failure this check exists for: mkfs.xfs was called one line after
+# blkdiscard, shipped in no package DeePloy installs, and was verified nowhere.
+# The run erased both data disks and then died on "command not found".
+have() { case " $PRESENT " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+PRESENT="${PF_REQUIRED_TOOLS[*]}"
+reset; _pf_check_tools >/dev/null 2>&1; counts "every tool present -> clean" 0 0
+
+PRESENT="${PF_REQUIRED_TOOLS[*]/mkfs.xfs/}"
+# Counter in the CURRENT shell, message from a separate capture: a $( ) runs
+# in a subshell, so a pf_bad inside one never reaches _PF_HARD here.
+reset; _pf_check_tools >/dev/null 2>&1; counts "mkfs.xfs missing -> BLOCKING" 1 0
+TOUT=$(_pf_check_tools 2>&1 || true)
+check "names the missing command"        "$(grep -c 'mkfs.xfs' <<<"$TOUT")" "1"
+check "names the package that has it"    "$(grep -c 'xfsprogs' <<<"$TOUT")" "1"
+check "says the disks go first"          "$(grep -c 'erased before any of them is used' <<<"$TOUT")" "1"
+# Control the other way: a tool that is present must not be reported. Without
+# this, a check that named every tool unconditionally would pass the three above.
+check "and does not name a tool that IS present" "$(grep -c 'blkdiscard' <<<"$TOUT")" "0"
+
+PRESENT="${PF_REQUIRED_TOOLS[*]/setcap/}"
+reset; _pf_check_tools >/dev/null 2>&1; counts "setcap missing -> BLOCKING" 1 0
+TOUT=$(_pf_check_tools 2>&1 || true)
+check "names libcap2-bin for setcap"     "$(grep -c 'libcap2-bin' <<<"$TOUT")" "1"
+
+# It must run while the disks are still intact — that is the whole point — so it
+# is wired immediately after the checkout check and before every measurement.
+check "wired second in preflight_run" \
+    "$(sed -n '/^preflight_run()/,/^}/p' "$ROOT/lib/preflight.sh" \
+       | grep -oE '^[[:space:]]+_pf_check_[a-z_]+' | tr -d ' ' | sed -n '2p')" "_pf_check_tools"
+unset -f have; unset PRESENT TOUT
+
 echo "== 7d: preflight_run HARD-GATES (_PF_HARD>0 -> abort; warns alone pass) =="
 require_root() { :; }
-for f in _pf_check_checkout _pf_check_platform _pf_check_cpu _pf_check_memory _pf_check_storage \
-         _pf_check_nic _pf_check_time _pf_check_cluster _pf_check_region _pf_check_ports \
-         _pf_check_bandwidth _pf_check_existing; do
-    eval "${f}() { :; }"
-done
+# Silence every check preflight_run makes, DERIVED from preflight_run itself. A
+# hand-written list here is a list that goes stale: a check added later is not
+# stubbed, its real findings land in _PF_HARD, and this scenario — which is about
+# the counter, not about any one check — starts failing for an unrelated reason.
+# That is exactly what a new _pf_check_tools did the first time it was wired in.
+stubbed=0
+while read -r f; do
+    eval "${f}() { :; }"; stubbed=$((stubbed + 1))
+done < <(sed -n '/^preflight_run()/,/^}/p' "$ROOT/lib/preflight.sh" \
+         | grep -oE '^[[:space:]]+_pf_check_[a-z_]+' | tr -d ' ')
+check "7d: every check in preflight_run was stubbed" "$((stubbed >= 12))" "1"
 _pf_check_platform() { pf_bad "synthetic blocking issue"; }
 PFOUT=$( ( preflight_run ) 2>&1 ); PFRC=$?
 check "7d: one hard issue -> preflight aborts (rc1)" "$PFRC" "1"
