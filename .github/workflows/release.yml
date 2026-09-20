@@ -251,6 +251,50 @@ jobs:
           - [docs/KEY-MODEL.md](https://github.com/zimone91/deeploy/blob/__TAG__/docs/KEY-MODEL.md) —
             what DeePloy does and does not do with your staked key. Read this one first.
           NOTES
+
+          # Emitted only while the defect exists, decided by reading the mode in
+          # the index rather than by remembering to delete a paragraph. When
+          # deeploy.sh carries +x this block stops appearing on its own, which is
+          # the only way a "known issue" note does not outlive the issue.
+          if [ "$(git ls-files -s deeploy.sh | cut -d' ' -f1)" = "100644" ]; then
+          cat <<'KNOWN' | sed "s|__TAG__|${TAG}|g"
+
+          ## Known issue in this release
+
+          `deeploy.sh` ships without its executable bit, so the command this page
+          and the README print does not work:
+
+          ```
+          $ sudo ./deeploy.sh install --dry-run
+          bash: ./deeploy.sh: Permission denied
+          ```
+
+          Run it through the shell instead, which behaves identically:
+
+          ```sh
+          sudo bash ./deeploy.sh install --dry-run
+          sudo bash ./deeploy.sh install
+          ```
+
+          This reaches further than the first command. The install writes a systemd
+          unit whose `ExecStart=` is that same path, to finish the job after the
+          single reboot; systemd refuses to execute a file without the bit, so the
+          unit fails `203/EXEC` and the post-reboot phase does not run. `systemctl
+          enable` does not check the bit, so nothing says so before the reboot.
+          Measured on Ubuntu 24.04: `Result: exit-code`, `status=203/EXEC`, and the
+          same unit succeeds once the bit is set.
+
+          Until this is fixed, set the bit yourself before installing:
+
+          ```sh
+          sudo chmod +x deeploy.sh
+          ```
+
+          Fixed in the next release, together with a gate on every `ExecStart=` that
+          points into the checkout and a refusal to write that unit at all when the
+          target is not executable.
+          KNOWN
+          fi
           } > RELEASE_NOTES.md
 
           if grep -q '__TAG__\|__BOOTSHA__\|__LEDE__' RELEASE_NOTES.md; then

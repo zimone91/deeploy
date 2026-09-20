@@ -57,6 +57,9 @@ sudo ./deeploy.sh install --dry-run   # prints the whole plan, changes nothing
 sudo ./deeploy.sh install
 ```
 
+In v0.1.0-rc6 those two lines fail with `Permission denied`, and the fix is
+one command. See [the known issue](#known-issue-in-v010-rc6) before you start.
+
 The paranoid path, which is the one to take for a tool that runs as root:
 
     curl -fsSLO https://raw.githubusercontent.com/zimone91/deeploy/v0.1.0-rc6/get-deeploy.sh
@@ -121,6 +124,22 @@ across its single reboot. The automatic resume disables it; a manual
 - [docs/FAILOVER.md](docs/FAILOVER.md) — the separate failover tool
 
 Running the tests and the gate: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Known issue in v0.1.0-rc6
+
+`deeploy.sh` ships without its executable bit, so `./deeploy.sh` gives
+`Permission denied`. Set it yourself before installing:
+
+```sh
+sudo chmod +x deeploy.sh
+```
+
+It reaches further than the first command. The install writes a systemd unit
+whose `ExecStart=` is that same path, to finish the job after the single reboot.
+systemd will not execute a file without the bit, so that unit fails `203/EXEC`
+and the post-reboot phase never runs — while `systemctl enable` accepts it
+without complaint, so nothing warns you before the reboot. Measured on Ubuntu
+24.04. Fixed in the next release.
 
 ## Status & known limitations
 
