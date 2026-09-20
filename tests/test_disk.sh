@@ -68,6 +68,19 @@ lsblk() {
 }
 mountpoint() { local p=${!#}; case "$p" in "$MP_A"|"$MP_L") return 0;; *) return 1;; esac; }
 
+# findmnt answers two different questions and the module asks both: the SOURCE of
+# / (root backstop) and the TARGET containing the checkout. One dispatching mock,
+# driven by knobs, so a scenario cannot answer the wrong one by accident.
+FINDMNT_SRC=""              # `findmnt -no SOURCE /`
+CK_MOUNT="/"                # `findmnt -no TARGET --target $DEEPLOY_DIR`; "" = unresolvable
+findmnt() {
+    case "$*" in
+        *--target*) [[ -n "$CK_MOUNT" ]] && printf '%s\n' "$CK_MOUNT" ;;
+        *)          printf '%s\n' "$FINDMNT_SRC" ;;
+    esac
+}
+export DEEPLOY_DIR="$WORK/checkout"; mkdir -p "$DEEPLOY_DIR"
+
 # ============================================================================
 echo "== detection primitives =="
 check "nvme part -> base"    "$(_disk_base /dev/nvme0n1p3)" "nvme0n1"
@@ -88,7 +101,7 @@ _mp_for() { case "$1" in
     */sdb) printf '/boot/efi\n/\n';;     # sdb1 -> /boot/efi ; sdb2 -> md0 -> /
     */md0) printf '/\n';;
     *) printf '';; esac; }
-findmnt() { echo "/dev/md0"; }           # root source IS the array (the buggy case)
+FINDMNT_SRC=/dev/md0           # root source IS the array (the buggy case)
 export PROC_MDSTAT="$WORK/mdstat"
 printf 'Personalities : [raid1]\nmd0 : active raid1 sdb2[1] sda2[0]\n      234419136 blocks super 1.2 [2/2] [UU]\n' >"$PROC_MDSTAT"
 
@@ -185,7 +198,7 @@ echo "== emergency layout (1 NVMe + system, no second NVMe, no RAID0) =="
 LSBLK_ENUM='nvme0n1 2000398934016 disk 0 OnlyOneNVMe
 sdb 256060514304 disk 0 BootSSD'
 _mp_for() { case "$1" in */sdb) printf '/\n';; *) printf '';; esac; }
-findmnt() { echo "/dev/sdb2"; }
+FINDMNT_SRC=/dev/sdb2
 export PROC_MDSTAT="$WORK/no_md"            # absent -> no arrays
 unset ACCOUNTS_DISK LEDGER_DISK
 SOLANA_HOME="$WORK/roothome" disk_run >/dev/null 2>&1
@@ -200,7 +213,7 @@ LSBLK_ENUM='sda 256060514304 disk 0 BootSSD
 nvme0n1 2000398934016 disk 0 SamsungA
 nvme1n1 2000398934016 disk 0 SamsungB'
 _mp_for() { case "$1" in */sda) printf '/\n';; *) printf '';; esac; }   # md1 (data) carries nothing
-findmnt() { echo "/dev/sda2"; }
+FINDMNT_SRC=/dev/sda2
 export PROC_MDSTAT="$WORK/mdstat_q2"
 printf 'Personalities : [raid0]\nmd1 : active raid0 nvme0n1[0] nvme1n1[1]\n      blocks super 1.2\n' >"$PROC_MDSTAT"
 _disk_scan_raid
@@ -235,7 +248,7 @@ sdb 480103981056 disk 0 INTEL_SSDSC
 nvme0n1 1920383410176 disk 0 Samsung_PM9A3
 nvme1n1 1920383410176 disk 0 Samsung_PM9A3'
 _mp_for() { case "$1" in */sda) printf '/\n';; */sdb) printf '/boot/efi\n/\n';; */md0) printf '/\n';; *) printf '';; esac; }
-findmnt() { echo "/dev/md0"; }
+FINDMNT_SRC=/dev/md0           # root source IS the array (the buggy case)
 ask_choice() { REPLY="$2"; }                 # non-interactive: take the numbered default
 require_yes() { return 0; }
 blkid() { return 1; }                        # dry-run reality: NVMe not yet formatted -> blkid finds no UUID
@@ -255,7 +268,7 @@ LSBLK_ENUM='nvme0n1 512110190592 disk 0 OS_NVMe
 nvme1n1 2000398934016 disk 0 Samsung_PM9A3
 nvme2n1 2000398934016 disk 0 Samsung_PM9A3'
 _mp_for() { case "$1" in */nvme0n1) printf '/\n/boot/efi\n';; *) printf '';; esac; }
-findmnt() { echo "/dev/nvme0n1p2"; }
+FINDMNT_SRC=/dev/nvme0n1p2
 export PROC_MDSTAT="$WORK/no_md_7a"    # absent -> no arrays
 blkid() { local d=${!#}; echo "U-${d##*/}"; }
 ask_choice() { REPLY="$2"; }
@@ -295,6 +308,77 @@ _mp_for() { case "$1" in */md1) printf '/somewhere\n';; *) printf '';; esac; }
 OUT7B=$( SOLANA_HOME="$WORK/data7b/solana" _disk_raid_volume 2>&1 )
 check "7b: mounted-elsewhere -> warns"        "$(grep -c 'mounted elsewhere' <<<"$OUT7B")" "1"
 check "7b: mounted-elsewhere -> NO mkfs"      "$(grep -c 'mkfs.xfs' "$CALLS")" "0"
+
+echo "== 7c: the disk holding THIS checkout is never a wipe target =="
+# The topology that makes it matter: the checkout is NOT on the system disk. A
+# clone onto a spare data NVMe passes every existing filter — not system, is
+# NVMe, big enough — and phase 3 would erase the installer mid-run. Same shape as
+# the system formula, so md/LVM holders are followed rather than special-cased.
+LSBLK_ENUM='sda 256060514304 disk 0 BootSSD
+nvme0n1 2000398934016 disk 0 Samsung_PM9A3
+nvme1n1 2000398934016 disk 0 Samsung_PM9A3'
+_mp_for() { case "$1" in */sda) printf '/\n';; */nvme1n1) printf '/mnt/spare\n';; *) printf '';; esac; }
+FINDMNT_SRC=/dev/sda2
+CK_MOUNT=/mnt/spare                       # the checkout lives on the spare NVMe
+export PROC_MDSTAT="$WORK/no_md_7c"       # absent -> no arrays
+_disk_scan_raid; _disk_classify
+check "7c: checkout disk kept out of eligible"  "${_DISK_ELIGIBLE[*]}" "nvme0n1"
+check "7c: and the reason names the checkout" \
+      "$(printf '%s\n' "${_DISK_INELIGIBLE[@]}" | grep -c 'holds this DeePloy checkout (/mnt/spare)')" "1"
+( _disk_assert_eligible /dev/nvme1n1 sda ) >/dev/null 2>&1
+check "7c: assert_eligible REFUSES the checkout disk" "$?" "1"
+CKOUT7C=$( ( _disk_assert_eligible /dev/nvme1n1 sda ) 2>&1 || true )
+check "7c: the refusal says why"  "$(grep -c 'the install is running from it' <<<"$CKOUT7C")" "1"
+# Control, the other way: the OTHER clean NVMe must still be accepted. Without
+# this, a check that refused every device would pass the three assertions above.
+( _disk_assert_eligible /dev/nvme0n1 sda ) >/dev/null 2>&1
+check "7c: a clean NVMe is still accepted"           "$?" "0"
+
+# findmnt is itself an external command, and it is in the set this repo's tool
+# gate cannot see. Unresolvable must mean REFUSE, never skip — a skip here widens
+# the candidate set at the one moment that is unrecoverable.
+CK_MOUNT=""                               # findmnt answers nothing
+( _disk_classify ) >/dev/null 2>&1
+check "7c: unresolvable checkout -> classify REFUSES"     "$?" "1"
+CKOUT7D=$( ( _disk_classify ) 2>&1 || true )
+check "7c: and says it will not guess" "$(grep -c 'will not guess' <<<"$CKOUT7D")" "1"
+( _disk_assert_eligible /dev/nvme0n1 sda ) >/dev/null 2>&1
+check "7c: unresolvable checkout -> assert_eligible REFUSES too" "$?" "1"
+# Control: the same call with findmnt answering must NOT refuse — otherwise the
+# three above would pass against a function that always died.
+CK_MOUNT=/mnt/spare
+( _disk_classify ) >/dev/null 2>&1
+check "7c: resolvable again -> classify proceeds"         "$?" "0"
+
+# And the missing-tool path, a different branch from an empty answer. Removing the
+# mock is NOT how to reach it: on Linux the real findmnt then answers, so that
+# version of this control passes only on a box that happens to lack the tool — it
+# was written that way first and went red under a PATH carrying a real findmnt.
+# Shadow have() instead, so the branch is reached identically on macOS and on the
+# ubuntu runner.
+no_findmnt() { have() { [[ "$1" != findmnt ]] && command -v "$1" >/dev/null 2>&1; }; }
+( no_findmnt; _disk_classify ) >/dev/null 2>&1
+check "7c: findmnt absent -> REFUSES (not skipped)"       "$?" "1"
+CKOUT7E=$( ( no_findmnt; _disk_classify ) 2>&1 || true )
+check "7c: and names the package to install" "$(grep -c 'util-linux' <<<"$CKOUT7E")" "1"
+# Control: with have() intact the same call must NOT take that branch.
+( _disk_classify ) >/dev/null 2>&1
+check "7c: have() intact -> no missing-tool refusal"      "$?" "0"
+
+# The predicate itself must not answer "not carried" for an unresolved mount
+# point: that would hand the caller a disk that is merely unidentified. Both call
+# sites resolve first, so this is unreachable today — assert it anyway, because
+# the comment above it claims construction, not convention.
+( _disk_subtree_has_mount nvme1n1 "" ) >/dev/null 2>&1
+check "7c: empty mount point -> predicate KILLS the caller"  "$?" "1"
+CKOUT7F=$( ( _disk_subtree_has_mount nvme1n1 "" ) 2>&1 || true )
+check "7c: and calls it a bug in the module" "$(grep -c 'bug in this module' <<<"$CKOUT7F")" "1"
+# Controls both directions, so the assertion above cannot pass against a
+# predicate that simply always died.
+( _disk_subtree_has_mount nvme1n1 /mnt/spare ) >/dev/null 2>&1
+check "7c: resolved + carried    -> 0"                       "$?" "0"
+( _disk_subtree_has_mount nvme0n1 /mnt/spare ) >/dev/null 2>&1
+check "7c: resolved + not carried -> 1"                      "$?" "1"
 
 echo ""
 echo "==================================="

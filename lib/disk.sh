@@ -91,6 +91,46 @@ _disk_subtree_has_system() {                      # <disk-name> -> 0 if system
     return 1
 }
 
+# THE checkout formula, deliberately the same shape as the system one: resolve the
+# mount point that CONTAINS the checkout, then ask each disk's block subtree
+# whether it carries that mount point. Going through lsblk holders is what makes
+# it RAID/LVM-aware for free — mapping the device downward instead would turn
+# /dev/md0 into the string "md" and let the real members through, which is the
+# exact bug the system formula was rewritten to kill.
+#
+# Fail-closed, and it SETS A GLOBAL rather than printing one. That is not style:
+# a helper that prints its answer must be called as $( ), which is a subshell, and
+# fail()'s exit there kills only the subshell — the caller reads an empty string
+# and keeps going. This function was written that way first and the suite caught
+# it refusing out loud while classification carried on. findmnt is itself an
+# external command, and an unanswerable question here is not a reason to continue:
+# the next phase erases disks. A missing findmnt, an unparseable answer, or an
+# unset DEEPLOY_DIR each stop the run rather than widen the candidate set.
+_DISK_CK_MOUNT=""                                 # set by _disk_require_checkout_mount
+_disk_require_checkout_mount() {                  # dies in the CALLER's shell, by design
+    local dir="${DEEPLOY_DIR:-}"
+    _DISK_CK_MOUNT=""
+    [[ -n "$dir" ]] || fail "Refusing: DEEPLOY_DIR is unset, so the disk holding this checkout cannot be identified. This phase erases disks; it will not guess."
+    have findmnt || fail "Refusing: findmnt is not installed, so the disk holding the checkout (${dir}) cannot be identified. This phase erases disks; it will not guess. Install util-linux and re-run."
+    _DISK_CK_MOUNT=$(findmnt -no TARGET --target "$dir" 2>/dev/null) || _DISK_CK_MOUNT=""
+    [[ -n "$_DISK_CK_MOUNT" ]] || fail "Refusing: findmnt could not resolve which filesystem holds the checkout (${dir}). This phase erases disks; it will not guess."
+}
+
+_disk_subtree_has_mount() {                       # <disk-name> <mountpoint> -> 0 if carried
+    local d=$1 want=$2 mp
+    # An empty mount point means the resolution above was skipped, and answering
+    # "not carried" would hand the caller a disk that is merely unidentified. Both
+    # call sites pass $_DISK_CK_MOUNT after a bare _disk_require_checkout_mount, so
+    # neither of them can reach this line — which is the point: "by construction"
+    # has to be the construction, not a convention two call sites happen to keep.
+    # The suite reaches it directly, and asserts that it kills the caller.
+    [[ -n "$want" ]] || fail "Refusing: asked whether /dev/${d} carries the checkout without a resolved mount point. That is a bug in this module, not a condition to tolerate before a wipe."
+    while IFS= read -r mp; do
+        [[ "$mp" == "$want" ]] && return 0
+    done < <(lsblk -nr -o MOUNTPOINT "/dev/$d" 2>/dev/null)
+    return 1
+}
+
 # Parse /proc/mdstat -> one "mdN level base1 base2 ..." line per active array.
 _disk_mdstat_arrays() {
     local mdstat="${PROC_MDSTAT:-/proc/mdstat}" md _ rest tok level members
@@ -132,9 +172,13 @@ _disk_scan_raid() {
 _disk_classify() {
     _DISK_ELIGIBLE=(); _DISK_SYSTEM=(); _DISK_INELIGIBLE=()
     local name bytes type model floor=$(( DISK_MIN_GB * 1000000000 ))
+    _disk_require_checkout_mount                  # dies rather than skip; see the formula above
     while read -r name bytes type _ model || [[ -n "$name" ]]; do
         [[ "$type" == "disk" ]] || continue
         if _disk_subtree_has_system "$name"; then _DISK_SYSTEM+=("$name"); continue; fi
+        if _disk_subtree_has_mount "$name" "$_DISK_CK_MOUNT"; then
+            _DISK_INELIGIBLE+=("${name}|holds this DeePloy checkout (${_DISK_CK_MOUNT}) — erasing it destroys the running install"); continue
+        fi
         if (( ${#_DISK_DATA_ARRAY_MEMBERS[@]} )) && _disk_in_list "$name" "${_DISK_DATA_ARRAY_MEMBERS[@]}"; then
             _DISK_INELIGIBLE+=("${name}|member of a data RAID array (resolved below)"); continue
         fi
@@ -180,6 +224,8 @@ _disk_assert_eligible() {
     local dev=$1 root=$2 name; name=$(_disk_base "$dev")
     _disk_assert_not_root "$dev" "$root"
     _disk_subtree_has_system "$name" && fail "Refusing: ${dev} carries a system mount (/, /boot, or swap) — never a data target"
+    _disk_require_checkout_mount
+    _disk_subtree_has_mount "$name" "$_DISK_CK_MOUNT" && fail "Refusing: ${dev} carries the filesystem holding this DeePloy checkout (${DEEPLOY_DIR:-?}) — the install is running from it, and erasing it takes the installer with it"
     _disk_is_nvme "$name" || fail "Refusing: ${dev} is not an NVMe device — SATA/SAS can't sustain a mainnet validator"
     return 0
 }
