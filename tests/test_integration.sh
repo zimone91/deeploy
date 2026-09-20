@@ -99,6 +99,18 @@ curl()        { case "$*" in *getGenesisHash*) printf '{"result":"5eykt4UsFv8P8N
 ALLCALLS="$WORK/allcalls"; : >"$ALLCALLS"
 for c in apt-get ufw systemctl blkdiscard mount swapoff umount mdadm cargo rustup setcap getcap update-grub sysctl cp logger sh; do eval "${c}() { echo '${c}' \"\$*\" >>'$CALLS'; echo '${c}' >>'$ALLCALLS'; return 0; }"; done
 mkfs.xfs() { echo "mkfs.xfs $*" >>"$CALLS"; echo mkfs.xfs >>"$ALLCALLS"; }
+# tuning_grub reads the GENERATED grub.cfg back before arming the reboot, so the
+# walkthrough needs an update-grub that behaves like one. The candidate list is
+# pinned at the fixture: the ubuntu runner has a real /boot/grub/grub.cfg, and
+# falling through to it would have this suite assert against the runner's own
+# bootloader config.
+GCFG="$WORK/grub.cfg"; GRUB_CFG_CANDIDATES=("$GCFG")
+update-grub() {
+    echo "update-grub $*" >>"$CALLS"; echo update-grub >>"$ALLCALLS"
+    local line; line=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$GRUB_FILE" | tail -1)
+    printf 'menuentry Ubuntu {\n\tlinux\t/boot/vmlinuz root=UUID=x ro %s\n}\n' "$line" >"$GCFG"
+    return 0
+}
 ln()       { case "$*" in */etc/*) echo "ln $*" >>"$CALLS";; *) command ln "$@";; esac; }
 require_yes() { return 0; }   # simulate the operator typing 'yes' to the disk wipe
 # stub heavy build/network/wait subprocesses (their logic is unit-tested elsewhere)

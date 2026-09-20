@@ -115,6 +115,33 @@ _pf_check_tools() {
     fi
 }
 
+# --- GRUB drop-ins that would silently win ------------------------------------
+# grub-mkconfig sources /etc/default/grub first and /etc/default/grub.d/*.cfg
+# after it, so a drop-in that ASSIGNS GRUB_CMDLINE_LINUX_DEFAULT replaces whatever
+# DeePloy wrote. update-grub still succeeds, the reboot still happens, and the
+# validator comes up with no CPU isolation at all. The mechanism and one live
+# example are recorded on deeploy_grub_clobbering_dropins() in common.sh.
+#
+# A warning rather than a blocker, and that is a measurement, not a judgement:
+# the same image that carries the clobbering 50-cloudimg-settings.cfg also
+# carries init-select.cfg, which assigns nothing. Drop-ins are an ordinary part
+# of the platform, so a box with one is not yet broken — and phase 2 reads the
+# generated grub.cfg back and refuses before any reboot. This exists so the
+# operator meets the cause here, while there is still time to fix it.
+_pf_check_grub_dropins() {
+    local dir="${GRUB_D_DIR:-/etc/default/grub.d}" f hits=()
+    if [[ ! -d "$dir" ]]; then
+        pf_ok "No ${dir} drop-ins to override the kernel cmdline"
+        return 0
+    fi
+    while IFS= read -r f; do [[ -n "$f" ]] && hits+=("$f"); done < <(deeploy_grub_clobbering_dropins)
+    if (( ${#hits[@]} )); then
+        pf_warn "These ${dir} drop-ins assign GRUB_CMDLINE_LINUX_DEFAULT outright: ${hits[*]}. grub-mkconfig sources them AFTER /etc/default/grub, so they would replace the CPU isolation DeePloy writes. Phase 2 reads the generated grub.cfg back and refuses rather than reboot without isolation — fix or remove them first."
+    else
+        pf_ok "No ${dir} drop-in replaces the kernel cmdline"
+    fi
+}
+
 # --- platform: arch, OS, virtualization --------------------------------------
 _pf_check_platform() {
     local arch osr id ver virt
@@ -360,6 +387,7 @@ preflight_run() {
     _pf_check_checkout          # N8: cheapest possible failure, before anything is touched
     _pf_check_tools             # everything phase 3+ needs, while the disks are still intact
     _pf_check_platform
+    _pf_check_grub_dropins       # warns here; phase 2 refuses, after update-grub has spoken
     _pf_check_cpu
     _pf_check_memory
     _pf_check_storage

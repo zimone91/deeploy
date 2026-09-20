@@ -201,6 +201,44 @@ check "wired second in preflight_run" \
        | grep -oE '^[[:space:]]+_pf_check_[a-z_]+' | tr -d ' ' | sed -n '2p')" "_pf_check_tools"
 unset -f have; unset PRESENT TOUT
 
+echo "== 7c3: _pf_check_grub_dropins (what grub-mkconfig reads AFTER us) =="
+# grub-mkconfig sources /etc/default/grub.d/*.cfg after /etc/default/grub, so a
+# drop-in that ASSIGNS GRUB_CMDLINE_LINUX_DEFAULT replaces the isolation DeePloy
+# writes — Ubuntu cloud images ship 50-cloudimg-settings.cfg doing exactly that.
+# A warning, not a blocker: phase 2 reads the generated grub.cfg back and refuses
+# before any reboot. This just puts the cause in front of the operator earlier.
+# Assert the check EXISTS before asserting what it does: the "clean" cases below
+# would otherwise pass against a missing function — calling one leaves the
+# counters at 0/0, which is exactly what they expect.
+check "the check exists at all" "$(type -t _pf_check_grub_dropins)" "function"
+GRUBD="$WORK/grub.d"; mkdir -p "$GRUBD"; export GRUB_D_DIR="$GRUBD"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0"\n' >"$GRUBD/50-cloudimg-settings.cfg"
+reset; _pf_check_grub_dropins >/dev/null 2>&1; counts "a clobbering drop-in -> WARN (not blocking)" 0 1
+GOUT=$(_pf_check_grub_dropins 2>&1 || true)
+check "names the offending file"      "$(grep -c '50-cloudimg-settings.cfg' <<<"$GOUT")" "1"
+check "explains the ordering"         "$(grep -c 'AFTER /etc/default/grub' <<<"$GOUT")" "1"
+check "says phase 2 will refuse"      "$(grep -c 'refuses rather than reboot' <<<"$GOUT")" "1"
+
+# Appending is not clobbering. Without this control, a check that flagged every
+# drop-in mentioning the variable would pass all four assertions above.
+# shellcheck disable=SC2016  # the unexpanded text IS the fixture: this is what a
+# real drop-in contains, and recognising it is what the check under test does.
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT elevator=none"\n' >"$GRUBD/60-append.cfg"
+rm -f "$GRUBD/50-cloudimg-settings.cfg"
+reset; _pf_check_grub_dropins >/dev/null 2>&1; counts "a drop-in that APPENDS -> clean" 0 0
+printf 'GRUB_TIMEOUT=3\n' >"$GRUBD/70-unrelated.cfg"
+reset; _pf_check_grub_dropins >/dev/null 2>&1; counts "a drop-in touching other keys -> clean" 0 0
+# And the ${...} spelling of the same append must not be read as a clobber.
+# shellcheck disable=SC2016  # ditto, the braced spelling
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} quiet"\n' >"$GRUBD/61-braces.cfg"
+reset; _pf_check_grub_dropins >/dev/null 2>&1; counts "braced append -> clean" 0 0
+
+export GRUB_D_DIR="$WORK/grub.d.absent"
+reset; _pf_check_grub_dropins >/dev/null 2>&1; counts "no drop-in directory at all -> clean" 0 0
+GOUT2=$(_pf_check_grub_dropins 2>&1 || true)
+check "and says so rather than staying silent" "$(grep -c 'No .* drop-ins' <<<"$GOUT2")" "1"
+unset GRUB_D_DIR
+
 echo "== 7d: preflight_run HARD-GATES (_PF_HARD>0 -> abort; warns alone pass) =="
 require_root() { :; }
 # Silence every check preflight_run makes, DERIVED from preflight_run itself. A

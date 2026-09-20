@@ -34,7 +34,23 @@ _cpu_total()    { echo "$MOCK_TOTAL"; }
 _cpu_siblings() { local c=$1 half=$((MOCK_TOTAL/2)); if (( c < half )); then echo "$c,$((c+half))"; else echo "$((c-half)),$c"; fi; }
 systemctl()  { :; }
 sysctl()     { :; }
-update-grub(){ :; }
+# A faithful update-grub, because the module now reads its OUTPUT back. The real
+# tool bakes GRUB_CMDLINE_LINUX_DEFAULT into the generated grub.cfg — and a
+# /etc/default/grub.d drop-in can replace that value on the way, which is the
+# whole failure this models. GRUB_CFG_CANDIDATES also keeps the check away from a
+# real /boot/grub/grub.cfg: the ubuntu runner HAS one, so both an empty mock and a
+# "file is missing" fixture would otherwise send the assertion to read the
+# runner's own bootloader config and pass for the wrong reason.
+GCFG="$WORK/grub.cfg"
+GRUB_CFG_CANDIDATES=("$GCFG")
+GRUBD_CLOBBER=""                 # non-empty = a drop-in assigns the cmdline instead
+update-grub(){
+    local line
+    line=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "${GRUB_FILE:-/dev/null}" | tail -1)
+    [[ -n "$GRUBD_CLOBBER" ]] && line="$GRUBD_CLOBBER"
+    printf 'menuentry Ubuntu {\n\tlinux\t/boot/vmlinuz-6.8.0 root=UUID=deadbeef ro %s\n}\n' "$line" \
+        >"$GCFG"
+}
 
 iso() { MOCK_TOTAL=$1 _isolation_compute "$1" "$2" "$3"; }   # sets _ISO_SET / _ISO_IRQ
 
@@ -197,6 +213,88 @@ check "limits nofile"          "$(grep -c 'nofile 2000000' "$WORK/limits.conf")"
 check "system.conf nofile"     "$(grep -c 'DefaultLimitNOFILE=2000000' "$WORK/system.conf")" "1"
 LIMITS_FILE="$WORK/limits.conf" SYSTEM_CONF="$WORK/system.conf" tuning_limits >/dev/null 2>&1   # idempotent
 check "system.conf nofile not duplicated" "$(grep -c 'DefaultLimitNOFILE' "$WORK/system.conf")" "1"
+
+echo "== G1: the generated grub.cfg is the source of truth, not what we wrote =="
+# /etc/default/grub is an INPUT. grub-mkconfig sources /etc/default/grub.d/*.cfg
+# after it, so a drop-in that assigns GRUB_CMDLINE_LINUX_DEFAULT replaces the line
+# DeePloy just wrote, update-grub still exits 0, and the box reboots with no
+# isolation. Only reading the output catches that.
+GG="$WORK/grub_g1"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' 'GRUB_TIMEOUT=5' >"$GG"
+MOCK_TOTAL=48; TUNE_TOTAL=48; POH_CORE=2; XDP_CORES_COUNT=0; GRUB_FILE="$GG"; GRUBD_CLOBBER=""
+state_clear reboot_required; state_clear isolated_set
+tuning_grub >/dev/null 2>&1
+check "G1: clean box -> tuning_grub succeeds"      "$?" "0"
+check "G1: and the generated cfg carries isolcpus" \
+      "$(grep -c 'isolcpus=domain,managed_irq,2,26' "$GCFG")" "1"
+check "G1: reboot armed"                           "$(state_get reboot_required)" "1"
+OUTG1=$(tuning_grub 2>&1 || true)
+check "G1: and it says where it verified"          "$(grep -c 'survived grub-mkconfig' <<<"$OUTG1")" "1"
+
+# The clobber: a drop-in wins, update-grub still exits 0, the input file is fine.
+GRUBD_CLOBBER="console=tty1 console=ttyS0,115200n8"
+state_clear reboot_required
+( tuning_grub ) >/dev/null 2>&1
+check "G1: drop-in clobbers the cmdline -> REFUSES" "$?" "1"
+check "G1: and the input file still looks right"    "$(grep -c 'isolcpus=domain,managed_irq,2,26' "$GG")" "1"
+
+# The refusal must name the drop-in on THIS box, found at that moment — not a
+# filename the repo remembers. Fixture is deliberately not 50-cloudimg-settings:
+# a hardcoded hint would pass an assertion naming that file and fail this one.
+GDIR="$WORK/grub.d"; mkdir -p "$GDIR"; export GRUB_D_DIR="$GDIR"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n' >"$GDIR/90-vendor-override.cfg"
+OUTG2=$( ( tuning_grub ) 2>&1 || true )
+check "G1: refusal names the drop-in it FOUND"  "$(grep -c '90-vendor-override.cfg' <<<"$OUTG2")" "1"
+check "G1: and names no file it did not find"   "$(grep -c '50-cloudimg' <<<"$OUTG2")" "0"
+# An appending drop-in is not a cause, so it must not be named either.
+# shellcheck disable=SC2016  # unexpanded on purpose: that is what the file holds
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT ro"\n' >"$GDIR/91-append.cfg"
+OUTG2b=$( ( tuning_grub ) 2>&1 || true )
+check "G1: an appending drop-in is not blamed"  "$(grep -c '91-append.cfg' <<<"$OUTG2b")" "0"
+# And with no clobbering drop-in at all the refusal must say the cause is
+# elsewhere rather than blame grub.d for something that is not there.
+rm -f "$GDIR/90-vendor-override.cfg"
+OUTG2c=$( ( tuning_grub ) 2>&1 || true )
+check "G1: no clobberer -> says the cause is elsewhere" \
+      "$(grep -c 'the cause is elsewhere' <<<"$OUTG2c")" "1"
+unset GRUB_D_DIR
+check "G1: NO reboot armed after the refusal"       "$(state_get reboot_required)" ""
+
+# Partial application is not application: isolcpus present, nohz_full gone.
+GRUBD_CLOBBER="quiet isolcpus=domain,managed_irq,2,26"
+( tuning_grub ) >/dev/null 2>&1
+check "G1: isolcpus without nohz_full -> REFUSES"   "$?" "1"
+OUTG3=$( ( tuning_grub ) 2>&1 || true )
+check "G1: and says partial is not applied" "$(grep -c 'partially applied' <<<"$OUTG3")" "1"
+
+# No grub.cfg anywhere. The path depends on BIOS vs EFI, so this is an unanswered
+# question, not an inapplicable check — it must refuse, never pass quietly.
+GRUBD_CLOBBER=""
+GRUB_CFG_CANDIDATES=("$WORK/nothing-here.cfg")   # and nothing falls back to /boot
+( update-grub(){ :; }; tuning_grub ) >/dev/null 2>&1
+check "G1: no generated grub.cfg -> REFUSES"        "$?" "1"
+OUTG4=$( ( update-grub(){ :; }; tuning_grub ) 2>&1 || true )
+check "G1: and calls it unanswered, not inapplicable" \
+      "$(grep -c 'not that it does not apply\|unanswered question' <<<"$OUTG4")" "1"
+# Control both ways: with the file back, the same call must succeed — otherwise
+# every assertion above would pass against a function that always refused.
+GRUB_CFG_CANDIDATES=("$GCFG")
+state_clear reboot_required
+tuning_grub >/dev/null 2>&1
+check "G1: generated cfg back -> succeeds again"    "$?" "0"
+
+# The pinning above only proves something if the DEFAULT list is the real one:
+# a module that looked nowhere would pass every assertion in this section.
+check "G1: the default candidate list is the real /boot locations" \
+      "$(declare -f _grub_generated_cfg | grep -c '/boot/grub/grub.cfg')" "1"
+check "G1: and a pinned list wins over it"        "$(_grub_generated_cfg)" "$GCFG"
+
+# Dry-run writes nothing, so there is nothing to read back. That is not the same
+# as skipping a check whose subject exists.
+rm -f "$GCFG"
+( DRY_RUN=1 tuning_grub ) >/dev/null 2>&1
+check "G1: dry-run does not refuse on a missing cfg" "$?" "0"
+OUTG5=$( ( DRY_RUN=1 tuning_grub ) 2>&1 || true )
+check "G1: and says it WOULD verify"  "$(grep -c 'would read the generated grub.cfg' <<<"$OUTG5")" "1"
 
 echo ""
 echo "==================================="

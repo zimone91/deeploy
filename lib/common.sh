@@ -641,6 +641,42 @@ remove_block() {
 }
 
 # ----------------------------------------------------------------------------
+# GRUB drop-ins that replace the kernel cmdline.
+# ----------------------------------------------------------------------------
+# Measured, not assumed, on an Ubuntu 22.04 cloud image (arm64 — its drop-in sets
+# console=ttyAMA0): grub-mkconfig sources /etc/default/grub at line 162 and then
+# loops over /etc/default/grub.d/*.cfg at 164-167, sourcing each one AFTER. On
+# that image 50-cloudimg-settings.cfg line 11 is a bare
+# GRUB_CMDLINE_LINUX_DEFAULT="…" — a clobber, not an append. That is one image,
+# not a claim about every Ubuntu image; the ORDERING is the part that generalises.
+#
+# Also measured on the same image: init-select.cfg sits in that directory and
+# assigns nothing of the sort. Harmless drop-ins are ordinary, which is why phase
+# 0 warns instead of blocking.
+#
+# Lives here rather than in preflight because phase 2 needs it too: when the
+# read-back refuses, the operator should be told which drop-in is on THEIR box,
+# derived at that moment, rather than a filename this repo remembered.
+#
+# An assignment that references the current value EXTENDS it and is left alone.
+deeploy_grub_clobbering_dropins() {                # -> prints basenames, one per line
+    local dir="${GRUB_D_DIR:-/etc/default/grub.d}" f line
+    [[ -d "$dir" ]] || return 0
+    for f in "$dir"/*.cfg; do
+        [[ -e "$f" ]] || continue
+        while IFS= read -r line; do
+            # shellcheck disable=SC2016  # the literal text is the subject: this reads
+            # someone else's file and asks whether it names that variable.
+            case "$line" in
+                *'$GRUB_CMDLINE_LINUX_DEFAULT'*|*'${GRUB_CMDLINE_LINUX_DEFAULT'*) continue ;;
+            esac
+            printf '%s\n' "${f##*/}"; break
+        done < <(grep -E '^[[:space:]]*GRUB_CMDLINE_LINUX_DEFAULT=' "$f" 2>/dev/null)
+    done
+    return 0
+}
+
+# ----------------------------------------------------------------------------
 # Traps. deeploy.sh must run `set -Eeuo pipefail` for the ERR trap to fire
 # inside functions; this only installs the handlers.
 # ----------------------------------------------------------------------------

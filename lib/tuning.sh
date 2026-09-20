@@ -92,6 +92,72 @@ _isolation_grub_params() {
         "$_ISO_SET" "$_ISO_SET" "$_ISO_SET" "$_ISO_IRQ"
 }
 
+# --- read-back: what grub-mkconfig ACTUALLY baked in -------------------------
+# Writing /etc/default/grub is not the same as the kernel getting the parameters.
+# grub-mkconfig sources /etc/default/grub.d/*.cfg afterwards, and a drop-in that
+# assigns GRUB_CMDLINE_LINUX_DEFAULT replaces the line DeePloy just wrote. The
+# run then reboots and the validator comes up with no isolation, which is
+# indistinguishable from isolation that did not help. The mechanism and the image
+# it was measured on are recorded on deeploy_grub_clobbering_dropins().
+#
+# So the source of truth is the GENERATED file, not the input we wrote.
+#
+# This returns a path and never calls fail(), because callers read it through
+# $( ) — a subshell, where an exit would be swallowed and the caller would
+# continue with an empty string.
+#
+# The candidate list is overridable for the same reason GRUB_FILE is: a fixture
+# must be able to say "there is no grub.cfg" and be believed. Without that, a
+# test for the not-found branch reads the RUNNER's own /boot/grub/grub.cfg and
+# passes for the wrong reason on Linux while looking right on macOS.
+GRUB_CFG_CANDIDATES=()                            # empty = the real locations below
+_grub_generated_cfg() {                           # -> prints the path, or returns 1
+    local c
+    if (( ${#GRUB_CFG_CANDIDATES[@]} )); then
+        for c in "${GRUB_CFG_CANDIDATES[@]}"; do
+            [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+        done
+        return 1
+    fi
+    for c in /boot/grub/grub.cfg /boot/grub2/grub.cfg /boot/efi/EFI/*/grub.cfg; do
+        [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+# Fail-closed on every branch, INCLUDING "no grub.cfg anywhere". The path depends
+# on whether the box booted BIOS or EFI, so not finding one means the question is
+# unanswered — not that it does not apply. An unanswered question here is a reboot
+# onto an unverified kernel cmdline.
+# Name the drop-in that is on THIS box, found now, rather than one this repo
+# remembered from some image. If none is found the message says so, because
+# blaming grub.d for a cause that is not there sends the operator to the wrong
+# file — the cmdline can also be lost to a manual edit or a provider's own image.
+_grub_clobber_hint() {
+    local dir="${GRUB_D_DIR:-/etc/default/grub.d}" f hits=()
+    while IFS= read -r f; do [[ -n "$f" ]] && hits+=("$f"); done < <(deeploy_grub_clobbering_dropins)
+    if (( ${#hits[@]} )); then
+        printf 'These drop-ins under %s assign GRUB_CMDLINE_LINUX_DEFAULT outright and grub-mkconfig sources them after /etc/default/grub, which is the likely cause: %s.' \
+            "$dir" "${hits[*]}"
+    else
+        printf 'No drop-in under %s assigns GRUB_CMDLINE_LINUX_DEFAULT, so the cause is elsewhere — check for a manual edit of the generated file or a provider image that regenerates it.' "$dir"
+    fi
+}
+
+_grub_assert_applied() {                          # <isolcpus-set> <nohz-set>
+    local want_iso=$1 want_nohz=$2 cfg
+    if is_dry_run; then
+        info "${C_DIM}[dry-run]${C_NC} would read the generated grub.cfg back and verify isolcpus=${want_iso}"
+        return 0                                  # nothing was written, so there is nothing to read
+    fi
+    cfg=$(_grub_generated_cfg) || fail "Refusing: update-grub ran but no generated grub.cfg could be found (looked in /boot/grub, /boot/grub2 and the ESP). The path depends on BIOS vs EFI, so this is an unanswered question, not an inapplicable check — and the next step is a reboot onto whatever the bootloader actually has."
+    grep -q "isolcpus=domain,managed_irq,${want_iso}" "$cfg" \
+        || fail "Refusing: ${cfg} does not carry isolcpus=domain,managed_irq,${want_iso} after update-grub. $(_grub_clobber_hint) Not rebooting on a cmdline that lacks the isolation."
+    grep -q "nohz_full=${want_nohz}" "$cfg" \
+        || fail "Refusing: ${cfg} carries isolcpus but not nohz_full=${want_nohz} after update-grub. A partially applied cmdline is not a working one."
+    ok "Verified in ${cfg}: isolcpus and nohz_full survived grub-mkconfig"
+}
+
 # --- GRUB rewrite (idempotent, preserves provider base params) ---------------
 _grub_current_cmdline() {
     local grub=$1
@@ -193,6 +259,8 @@ tuning_grub() {
     backup_file "$grub"
     _grub_write_cmdline "$grub" "GRUB_CMDLINE_LINUX_DEFAULT=\"$new\""   # exactly ONE line (N13)
     run update-grub
+    _grub_assert_applied "$_ISO_SET" "$_ISO_SET"  # before any state is armed: a
+                                                  # refusal here must leave no reboot pending
     state_set isolated_set "$_ISO_SET"
     state_set irqaffinity  "$_ISO_IRQ"
     state_set xdp_cores    "$_ISO_XDP"
