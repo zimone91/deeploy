@@ -129,6 +129,14 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   reports confidently about the rest, and a count-greater-than-zero check will
   not catch it. When a derivation can silently return less than everything, say
   how much it expected to find, not only that it found some.
+- **An exit status is measured without a pipe.** `$?` after a pipeline belongs to
+  its last element, so `cmd | sed ...; echo $?` reports on `sed`. It has been
+  read wrong here nine times, most recently while measuring that the rc6 tarball
+  refuses to run: the command exited 126 and the pipeline reported 0. Run the
+  command on its own and capture the status, or redirect to a file and read it
+  afterwards. When a pipe is genuinely needed, take the status from
+  `${PIPESTATUS[0]}` — and note that it is clobbered by the next command, so
+  assign it on the very next line.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
   gotchas (`var=$(pipeline)` on commands that legitimately return non-zero,
   functions ending in `while read` loops).
