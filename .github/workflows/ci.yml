@@ -60,19 +60,6 @@ jobs:
             exit 1
           }
 
-      - name: README's test badge counts the suites that exist
-        # The badge is a claim about this repo, and a hand-maintained number is a
-        # claim that drifts the moment someone adds a file. It already drifted
-        # once: the badge read 19 while tests/ held 20. Derive it or delete it.
-        run: |
-          want=$(ls tests/test_*.sh | wc -l | tr -d ' ')
-          have=$(grep -oE 'tests-[0-9]+%20suites' README.md | grep -oE '[0-9]+')
-          test -n "$have" || { echo "no test badge found in README.md"; exit 1; }
-          test "$have" = "$want" || {
-            echo "README badge says $have suites, tests/ holds $want"
-            exit 1
-          }
-
       - name: Tests — every suite
         run: |
           ./run_tests.sh

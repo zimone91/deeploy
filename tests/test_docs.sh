@@ -185,11 +185,23 @@ check "slug: it is NOT the DOM form" \
       "$(slug 'Known issue in v0.1.0-rc6' | grep -c 'user-content')" "0"
 check "slug: hyphens survive"     "$(slug 'Status & known limitations')" "status--known-limitations"
 
-craft() { local d="$WORKDIR/$1"; rm -rf "$d"; mkdir -p "$d"
-    tar -cf - --exclude .git -C "$ROOT" . 2>/dev/null | tar -xf - -C "$d"; echo "$d"; }
-control() { local out rc; out=$(gate_anchors "$2" 2>&1); rc=$?
-    check "$1 -> refused"           "$rc" "1"
-    check "  for the stated reason" "$(grep -c "$3" <<<"$out")" "1"; }
+# A crafted tree must NOT be a repository: mode_in and md_files both answer
+# differently inside one, and a copied .git would have them read the ORIGINAL
+# index instead of the files just crafted. tar's --exclude matches differently
+# across implementations, so the removal is explicit rather than trusted, and
+# the assertion below turns a platform difference into a failing test instead of
+# a control that quietly measures the wrong tree.
+craft() {                                         # <name> -> a tree that is NOT a repository
+    local d="$WORKDIR/$1"; rm -rf "$d"; mkdir -p "$d"
+    tar -cf - --exclude .git -C "$ROOT" . 2>/dev/null | tar -xf - -C "$d"
+    rm -rf "$d/.git"
+    echo "$d"
+}
+# Takes the gate as its first argument. A control that names one gate and is
+# reused for another measures the wrong subject — see CONTRIBUTING.
+control() { local out rc; out=$("$1" "$3" 2>&1); rc=$?
+    check "$2 -> refused"           "$rc" "1"
+    check "  for the stated reason" "$(grep -c "$4" <<<"$out")" "1"; }
 
 # THE scenario this was built for: the heading goes, the link stays. The heading
 # to delete is DERIVED from the link, not named. The first version named the rc6
@@ -205,17 +217,19 @@ drop_heading_for() {                              # <file> <anchor>
     printf '%s' "$out" >"$f"
 }
 D=$(craft heading_removed)
+check "a crafted tree is not a repository" \
+      "$(git -C "$D" rev-parse --is-inside-work-tree 2>/dev/null || echo no)" "no"
 printf '\nSee [the section](#a-target-heading).\n\n## A target heading\n' >>"$D/docs/OPERATING.md"
 gate_anchors "$D" >/dev/null
 check "fixture: the link resolves while its heading stands" "$?" "0"
 ANC=$(links_of "$D/docs/OPERATING.md" | tail -1 | sed 's/.*\t//')
 check "  and the anchor was derived from the link"          "$ANC" "a-target-heading"
 drop_heading_for "$D/docs/OPERATING.md" "$ANC"
-control "the heading is deleted and the link left behind" "$D" "anchor does not exist"
+control gate_anchors "the heading is deleted and the link left behind" "$D" "anchor does not exist"
 
 D=$(craft anchor_typo)
 printf '\nSee [the thing](#no-such-heading-here).\n' >>"$D/docs/INSTALL.md"
-control "a link to an anchor that never existed" "$D" "no-such-heading-here"
+control gate_anchors "a link to an anchor that never existed" "$D" "no-such-heading-here"
 
 # A tree with no anchor links is not an error, and saying so is the whole point
 # of the self-test. This used to refuse here.
@@ -228,11 +242,62 @@ check "  and says the derivation was verified" "$(grep -c 'derivation verified' 
 D=$(craft fenced_heading)
 # shellcheck disable=SC2016  # the markdown fence is literal text, not substitution
 printf '\nSee [it](#pretend-heading).\n\n```bash\n# pretend heading\n```\n' >>"$D/docs/OPERATING.md"
-control "a fenced comment does not count as a heading" "$D" "pretend-heading"
+control gate_anchors "a fenced comment does not count as a heading" "$D" "pretend-heading"
 # Control the other way: the SAME text as a real heading must resolve, so the red
 # above came from the fence and not from the slug or the link syntax.
 printf '\n## pretend heading\n' >>"$D/docs/OPERATING.md"
 gate_anchors "$D" >/dev/null; check "  and as a real heading it resolves" "$?" "0"
+
+# ---------------------------------------------------------------------------
+# The README's test badge counts the suites that exist.
+#
+# It is a claim about this repository, and a hand-maintained number drifts the
+# moment someone adds a file: it read 19 while tests/ held 20, which is what put
+# a check on it in the first place.
+#
+# That check lived in .github/workflows/ci.yml and was wrong. It pulled every
+# digit out of `tests-22%20suites` — and %20, the URL-encoded space, contains a
+# 20 — so it compared a two-line string against one number and could never pass.
+# It went red on its first run, at a badge value that was correct.
+#
+# It is here rather than in a workflow for the reason the tool gate is: a check
+# with no controls is decoration, and controls only run where the suites run. The
+# defect above survived because it was verified by retyping a simpler version of
+# it in a shell, which is a model of the check rather than the check.
+# ---------------------------------------------------------------------------
+badge_count() {                                   # <root> -> the number on the badge
+    sed -n 's/.*tests-\([0-9][0-9]*\)%20suites.*/\1/p' "$1/README.md"
+}
+suite_count() {                                   # <root> -> files in tests/
+    find "$1/tests" -maxdepth 1 -name 'test_*.sh' -type f 2>/dev/null | wc -l | tr -d ' '
+}
+gate_badge() {                                    # <root> -> 0 + summary, or 1 + reason
+    local root="$1" have want
+    have=$(badge_count "$root"); want=$(suite_count "$root")
+    [[ -n "$have" ]] || { echo "no test badge found in README.md"; return 1; }
+    [[ "$have" =~ ^[0-9]+$ ]] || { echo "the badge did not yield one number: [${have//$'\n'/ }]"; return 1; }
+    [[ "$want" =~ ^[1-9][0-9]*$ ]] || { echo "counted ${want} suites in tests/ — the count broke, not the badge"; return 1; }
+    [[ "$have" == "$want" ]] || { echo "README badge says ${have} suites, tests/ holds ${want}"; return 1; }
+    echo "badge and tests/ agree on ${want} suites"
+    return 0
+}
+
+echo "== the README test badge counts the suites that exist =="
+OUTB=$(gate_badge "$ROOT"); RCB=$?
+check "badge matches the files on disk"     "$RCB" "0"
+# The control that would have caught the %20 defect: the badge must yield exactly
+# ONE number. Extracting every digit also finds the 20 inside the encoded space.
+check "  and the badge yields ONE number"   "$(badge_count "$ROOT" | wc -l | tr -d ' ')" "1"
+check "  and it is the suite count"         "$(badge_count "$ROOT")" "$(suite_count "$ROOT")"
+check "  and the summary says so"           "$(grep -c 'badge and tests/ agree' <<<"$OUTB")" "1"
+
+D=$(craft badge_drift)
+sed -i.bak 's/tests-[0-9]*%20suites/tests-19%20suites/' "$D/README.md" && rm -f "$D"/*.bak
+control gate_badge "the badge drifts from the file count" "$D" "README badge says 19"
+
+D=$(craft badge_gone)
+sed -i.bak 's/tests-[0-9]*%20suites/tests-suites/' "$D/README.md" && rm -f "$D"/*.bak
+control gate_badge "the badge is unparseable" "$D" "no test badge found"
 
 echo ""
 echo "==================================="

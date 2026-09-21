@@ -59,7 +59,9 @@ of those failures land after the point of no return.
   root and `deeploy.sh` sources every module first. A writable `lib/disk.sh` was
   the same root-persistence vector, one directory down. Globbed, never listed.
 - **The README test badge is derived.** It had drifted to 19 against 20 suites on
-  disk. CI counts the files now.
+  disk. A suite counts the files now — the first version of that check lived in
+  the workflow, pulled every digit out of `tests-22%20suites`, found the 20
+  inside the encoded space, and went red on a badge that was correct.
 
 ### Fixed
 - `deeploy.sh` is `100755` in the index, so the tarball ships it executable.

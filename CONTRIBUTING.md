@@ -17,8 +17,8 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   its `RESULT` line (a suite that dies mid-run is silence, not success).
 
 - **The test badge in the README carries the number of suites and nothing
-  else**, and CI derives that number from `ls tests/test_*.sh` rather than
-  trusting it. It used to carry the assertion count too, which changed in nearly
+  else**, and `tests/test_docs.sh` derives that number from the files in
+  `tests/` rather than trusting it. It used to carry the assertion count too, which changed in nearly
   every commit and was therefore wrong more often than right. The suite count
   moves a few times a year — and still drifted, reading 19 while `tests/` held
   20, which is what put the gate there. The habit worth keeping: a number

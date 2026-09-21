@@ -116,9 +116,16 @@ OUT=$(gate_a "$ROOT"); RC=$?
 check "gate passes on this tree"        "$RC" "0"
 check "  and it checked more than zero" "$(grep -cE '^[1-9][0-9]* documented' <<<"$OUT")" "1"
 
+# A crafted tree must NOT be a repository: mode_in and md_files both answer
+# differently inside one, and a copied .git would have them read the ORIGINAL
+# index instead of the files just crafted. tar's --exclude matches differently
+# across implementations, so the removal is explicit rather than trusted, and
+# the assertion below turns a platform difference into a failing test instead of
+# a control that quietly measures the wrong tree.
 craft() {                                         # <name> -> a tree that is NOT a repository
     local d="$WORKDIR/$1"; rm -rf "$d"; mkdir -p "$d"
     tar -cf - --exclude .git -C "$ROOT" . 2>/dev/null | tar -xf - -C "$d"
+    rm -rf "$d/.git"
     echo "$d"
 }
 # Takes the gate to run as its first argument. It used to call gate_a directly,
@@ -132,6 +139,8 @@ control() {                                       # <gate> <desc> <tree> <expect
 WORKDIR=$(mktemp -d); trap 'rm -rf "$WORKDIR"' EXIT
 
 D=$(craft newdoc)
+check "a crafted tree is not a repository" \
+      "$(git -C "$D" rev-parse --is-inside-work-tree 2>/dev/null || echo no)" "no"
 # shellcheck disable=SC2016  # backticks are markdown here, not substitution
 printf 'Run `./helper.sh` to do the thing.\n' >"$D/docs/HELPER.md"
 printf '#!/bin/bash\n' >"$D/helper.sh"; chmod 644 "$D/helper.sh"
