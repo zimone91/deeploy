@@ -72,6 +72,10 @@ The `chown` there is not tidiness. The post-reboot resume service runs this
 checkout as root at boot, so phase 0 refuses to install it out of a directory
 another local user could write to.
 
+The `chmod` is not tidiness either. Under some umasks — `002` is the common one
+— a fresh clone or an unpacked tarball comes out group-writable, and the same
+two commands above remove it.
+
 ## Verify what you downloaded
 
 Release tarballs ship a `SHA256SUMS` next to them, produced by the tagged
