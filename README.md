@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/zimone91/deeploy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zimone91/deeploy/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="tests" src="https://img.shields.io/badge/tests-21%20suites-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-22%20suites-brightgreen">
   <img alt="shellcheck" src="https://img.shields.io/badge/shellcheck%200.11.0-clean-brightgreen">
   <img alt="status" src="https://img.shields.io/badge/status-release%20candidate-orange">
   <a href="https://github.com/zimone91/deeploy/releases"><img alt="release" src="https://img.shields.io/github/v/release/zimone91/deeploy?include_prereleases&sort=semver"></a>

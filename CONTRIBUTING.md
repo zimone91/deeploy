@@ -119,6 +119,16 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   measured something real and went green on it. Pass the subject in, bound the
   window at the next one, and make the reported reason specific enough that
   measuring the wrong thing cannot produce the right message.
+- **A refusal must say which of the two it is: the subject is broken, or the
+  subject could not be measured.** They send a reader to different files. The
+  mode predicate in `tests/test_modes.sh` answers `unmeasured` rather than `no`
+  for a file it cannot stat, so a negative control cannot be satisfied by a
+  missing path. The anchor gate says "the derivation broke, not the docs" when it
+  derives nothing, which is what sent the last such failure to the right place.
+  The harder case is PARTIAL: a derivation that returns some of its subject
+  reports confidently about the rest, and a count-greater-than-zero check will
+  not catch it. When a derivation can silently return less than everything, say
+  how much it expected to find, not only that it found some.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
   gotchas (`var=$(pipeline)` on commands that legitimately return non-zero,
   functions ending in `while read` loops).
