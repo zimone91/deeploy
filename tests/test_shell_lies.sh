@@ -83,16 +83,43 @@ badge='tests-22%20suites'
 check "every-digit extraction returns TWO numbers"      "$(grep -oE '[0-9]+' <<<"$badge" | tr '\n' ' ')" "22 20 "
 check "  extracting the field returns one"              "$(sed -n 's/.*tests-\([0-9][0-9]*\)%20suites.*/\1/p' <<<"$badge")" "22"
 
-# 4. `git log --until=<date>` excludes that same day: the boundary is midnight at
-#    its start. Asking "is there anything on or before the 31st" this way answers
-#    about the 30th, and the repository's own first commit went missing.
+# 4. `git log --until=<bare date>` — and the reason this one is NOT a fact.
+#
+#    It was filed under FACTS and CI took it apart on the first run: this box
+#    answered 0, ubuntu-latest answered 1, same query, same repository. Measured
+#    on 2026-09-22 with one git binary and only TZ changed, against commits made
+#    across 2026-05-31 UTC:
+#
+#      TZ=UTC              --until=2026-05-31 behaves as END of day   (== 23:59:59)
+#      TZ=Europe/Moscow    --until=2026-05-31 behaves as START of day (== 00:00:00)
+#
+#    Two readings of the same string, decided by the reader's timezone. No
+#    mechanism is claimed here, because none was established — twice in this batch
+#    a mechanism was asserted that had not been measured, and a wrong cause sends
+#    the next person somewhere there is nothing to find. What IS established is
+#    that the bare form is not a question with one answer.
+#
+#    So what gets asserted is the cure, and it is portable: give the time AND the
+#    offset, and the answer stops depending on who is asking.
 cd "$WORK" && git init -q datebox && cd datebox || exit 1
-git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first \
-    --date='2026-05-31T06:13:32+03:00' 2>/dev/null
-GIT_COMMITTER_DATE='2026-05-31T06:13:32+03:00' git -c user.email=t@t -c user.name=t \
-    commit -q --allow-empty --amend --no-edit --date='2026-05-31T06:13:32+03:00' 2>/dev/null
-check "--until=<day> hides a commit made that day"      "$(git log --until=2026-05-31 --oneline | wc -l | tr -d ' ')" "0"
-check "  and --until=<day>T23:59:59 finds it"           "$(git log --until=2026-05-31T23:59:59 --oneline | wc -l | tr -d ' ')" "1"
+for h in 00 03 12 21; do
+    GIT_COMMITTER_DATE="2026-05-31T${h}:00:00+00:00" \
+    git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "at${h}" \
+        --date="2026-05-31T${h}:00:00+00:00"
+done
+utc_x=$(TZ=UTC            git log --until='2026-05-31T23:59:59+00:00' --oneline | wc -l | tr -d ' ')
+msk_x=$(TZ=Europe/Moscow  git log --until='2026-05-31T23:59:59+00:00' --oneline | wc -l | tr -d ' ')
+check "an explicit timestamp WITH an offset is timezone-invariant" "$utc_x" "$msk_x"
+check "  and it finds the day's commits"                           "$utc_x" "4"
+# The hazard itself, asserted so that its disappearance is also news: the bare
+# form is NOT invariant. If a future git makes it so, this goes red and someone
+# re-reads the comment above, which is the right outcome either way.
+utc_b=$(TZ=UTC            git log --until=2026-05-31 --oneline | wc -l | tr -d ' ')
+msk_b=$(TZ=Europe/Moscow  git log --until=2026-05-31 --oneline | wc -l | tr -d ' ')
+check "a bare date is NOT timezone-invariant"  "$([[ "$utc_b" != "$msk_b" ]] && echo differs || echo same)" "differs"
+# Control the other way: the two timezones are genuinely both in play, so the
+# assertion above cannot pass because one of the queries returned nothing at all.
+check "  and both timezones answered"          "$([[ -n "$utc_b" && -n "$msk_b" ]] && echo yes || echo no)" "yes"
 cd "$ROOT" || exit 1
 
 echo ""
