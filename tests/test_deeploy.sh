@@ -189,8 +189,13 @@ check "systemctl reboot issued (confirm Y)"    "$(grep -c 'systemctl reboot' "$C
 echo "== N8: resume unit — quoted ExecStart path + root-ownership gate =="
 # a checkout path with spaces renders QUOTED (systemd argv0 must not split)
 reset_state
-( DEEPLOY_SELF="/tmp/dee ploy/deeploy.sh" DEEPLOY_DIR="/tmp/dee ploy" _install_setup_resume_service ) >/dev/null 2>&1
-check "ExecStart argv0 double-quoted (space-safe)" "$(grep -c 'ExecStart="/tmp/dee ploy/deeploy.sh" install --resume --post-reboot' "$RESUME_SERVICE_FILE")" "1"
+# The path must EXIST: the resume guard now refuses a target it cannot stat, so a
+# purely synthetic path would be refused before the unit is ever rendered. The
+# space in the directory name — the thing under test — is unchanged.
+SPACEDIR="$WORK/dee ploy"; mkdir -p "$SPACEDIR"; printf '#!/bin/bash\n' >"$SPACEDIR/deeploy.sh"; chmod 755 "$SPACEDIR/deeploy.sh"
+( DEEPLOY_SELF="$SPACEDIR/deeploy.sh" DEEPLOY_DIR="$SPACEDIR" _install_setup_resume_service ) >/dev/null 2>&1
+check "ExecStart argv0 double-quoted (space-safe)" \
+      "$(grep -cF "ExecStart=\"$SPACEDIR/deeploy.sh\" install --resume --post-reboot" "$RESUME_SERVICE_FILE")" "1"
 # non-root-owned checkout -> REFUSED, no unit written (root-persistence vector)
 deeploy_path_uid() { echo 501; }
 reset_state
@@ -210,6 +215,38 @@ deeploy_path_mode() { echo 755; }
 reset_state
 _install_setup_resume_service >/dev/null 2>&1
 check_true "root-owned 0755 checkout -> unit written" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
+
+echo "== N8b: a NON-EXECUTABLE entry point refuses before writing or enabling =="
+# systemctl enable does not look at the executable bit. A 644 deeploy.sh enables
+# cleanly and the failure lands at boot as status=203/EXEC — after the reboot, on
+# a box whose disks were erased three phases earlier. rc6 shipped that, because
+# git archive preserves index modes.
+#
+# 644 is NOT group- or world-writable, so the ownership predicate passes it. That
+# is what makes this scenario about the new check: nothing else here can refuse.
+deeploy_path_mode() { case "$1" in *deeploy.sh) echo 644;; *) echo 755;; esac; }
+reset_state; : >"$CALLS"
+NX=$( ( _install_setup_resume_service ) 2>&1 ); NXRC=$?
+check "non-executable entry point -> fail"       "$NXRC" "1"
+check_false "  and the unit is NOT written"      "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
+check "  and systemctl enable is NOT called"     "$(grep -c 'systemctl enable' "$CALLS")" "0"
+check "  and daemon-reload is NOT called either" "$(grep -c 'daemon-reload' "$CALLS")" "0"
+check "  message names the boot failure"         "$(grep -c '203/EXEC' <<<"$NX")" "1"
+check "  message names the fix"                  "$(grep -c 'chmod +x' <<<"$NX")" "1"
+# Subject control: this must refuse for the bit, not for ownership. If the
+# message said root-owned, the scenario would be exercising the predicate next
+# door and reporting it as this one.
+check "  and it is NOT the ownership refusal"    "$(grep -c 'root-owned' <<<"$NX")" "0"
+# The other direction, same scenario: with the bit back, both actions happen.
+deeploy_path_mode() { echo 755; }
+reset_state; : >"$CALLS"
+_install_setup_resume_service >/dev/null 2>&1
+check_true "  755 entry point -> unit IS written" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
+check "  755 entry point -> enable IS called"     "$(grep -c 'systemctl enable deeploy-resume.service' "$CALLS")" "1"
+# A target that cannot be stat'ed at all is a third branch, and must also refuse.
+NY=$( ( DEEPLOY_SELF="$WORK/not-there/deeploy.sh" _install_setup_resume_service ) 2>&1 ); NYRC=$?
+check "a target that does not exist -> fail"      "$NYRC" "1"
+check "  and says so"                             "$(grep -c 'does not exist' <<<"$NY")" "1"
 
 echo "== old-server reminder before the reboot gate (dz_enabled only) =="
 # Pre-reboot branch calls dz_print_old_server_reminder when dz_enabled. Stub it

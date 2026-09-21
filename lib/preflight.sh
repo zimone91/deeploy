@@ -59,11 +59,42 @@ _pf_check_checkout() {
     fi
 }
 
+# The entry point must be executable, and this has to be asked HERE rather than
+# only where it is used. The resume unit is written at the reboot boundary, which
+# sits between phase 7 and phase 8 — so a checkout that lost its bit in delivery
+# (a zip round-trip, a copy across filesystems, someone else's umask) passes
+# phase 0, erases the data disks in phase 3, spends 30-90 minutes building in
+# phase 4, and only then is refused. Same shape as the missing mkfs.xfs: the
+# thing the run needs was absent from the start and nothing asked until the cost
+# was already paid.
+#
+# Blocking, not a warning: a warning here is read after the disks are gone.
+#
+# Its own check rather than folded into _pf_check_checkout, because that one
+# answers who may write the file and this one answers whether it can run. The
+# refusals must stay distinguishable — a message that said both would be a check
+# reporting wider than it measured.
+_pf_check_self_executable() {
+    local why
+    if why="$(deeploy_not_executable_reason "${DEEPLOY_SELF:-./deeploy.sh}")"; then
+        pf_ok "Entry point is executable"
+    else
+        pf_bad "${why}. The install writes a boot-time unit whose ExecStart is this path, and systemctl enable does not check it — the failure would land at the reboot, with the data disks already erased. Fix: chmod +x '${DEEPLOY_SELF:-./deeploy.sh}'"
+    fi
+}
+
 # --- tools the install needs AFTER the point of no return ---------------------
 # Phase 3 erases the data disks (blkdiscard) and only then formats them. Every
 # external command invoked after that moment has to exist BEFORE it, because the
 # alternative is a box with wiped disks and a run that died on "command not
 # found". That is how the missing xfsprogs presented.
+#
+# The rule is wider than this list: every external tool AND every file the run
+# depends on after the point of no return has to be checked before it. This list
+# covers the tools. deeploy.sh itself is the other kind — not a tool, the
+# installer — and it is checked by _pf_check_self_executable above. Saying
+# "tools" was how that one stayed unasked: same place, same consequence,
+# different word.
 #
 # This list is not remembered, it is derived: CI re-derives the set from the
 # run() call sites in the modules that execute at or after the point of no
@@ -385,6 +416,7 @@ preflight_run() {
     require_root
     _PF_HARD=0; _PF_WARN=0
     _pf_check_checkout          # N8: cheapest possible failure, before anything is touched
+    _pf_check_self_executable   # ...and it has to be able to RUN at the reboot boundary
     _pf_check_tools             # everything phase 3+ needs, while the disks are still intact
     _pf_check_platform
     _pf_check_grub_dropins       # warns here; phase 2 refuses, after update-grub has spoken

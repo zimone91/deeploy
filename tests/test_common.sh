@@ -325,6 +325,42 @@ CKW=$(deeploy_checkout_unsafe_reason /good/dir /good/bad-file); CKRC=$?
 check "second path is checked too"           "$CKRC" "1"
 check "second path is the one named"         "$(grep -c '/good/bad-file' <<<"$CKW")" "1"
 
+echo "== N8c: deeploy_not_executable_reason — can this file actually run =="
+# Kept separate from the predicate above on purpose. That one answers who may
+# WRITE the file; this one answers whether it can RUN. Folding them would make
+# the other's ok line ("root-owned and not group/world-writable") claim a
+# property it never measured.
+NXF="$WORK/runnable.sh"; printf '#!/bin/bash\n' >"$NXF"
+deeploy_path_mode() { echo 755; }
+NXW=$(deeploy_not_executable_reason "$NXF"); NXRC=$?
+check "executable -> rc0, says nothing"       "${NXRC}/${NXW}" "0/"
+deeploy_path_mode() { echo 644; }
+NXW=$(deeploy_not_executable_reason "$NXF"); NXRC=$?
+check "mode 644 -> rc1"                       "$NXRC" "1"
+check "  and the reason names the mode"       "$(grep -c 'is mode 644' <<<"$NXW")" "1"
+# 0644 with a leading zero is the same file; the arithmetic must not read it as
+# decimal or as an invalid octal literal.
+deeploy_path_mode() { echo 0644; }
+( deeploy_not_executable_reason "$NXF" ) >/dev/null 2>&1
+check "mode 0644 (leading zero) -> rc1"       "$?" "1"
+deeploy_path_mode() { echo 0755; }
+( deeploy_not_executable_reason "$NXF" ) >/dev/null 2>&1
+check "mode 0755 (leading zero) -> rc0"       "$?" "0"
+# Owner-only execute still runs for root, which is who the boot unit is.
+deeploy_path_mode() { echo 700; }
+( deeploy_not_executable_reason "$NXF" ) >/dev/null 2>&1
+check "mode 700 -> rc0 (root can run it)"     "$?" "0"
+# Unanswerable, not absent: a mode that cannot be read is a refusal of its own,
+# distinct from a file that is simply not executable.
+deeploy_path_mode() { echo ""; }
+NXW=$(deeploy_not_executable_reason "$NXF"); NXRC=$?
+check "unreadable mode -> rc1"                "$NXRC" "1"
+check "  and says the mode could not be read" "$(grep -c 'could not be read' <<<"$NXW")" "1"
+deeploy_path_mode() { echo 755; }
+NXW=$(deeploy_not_executable_reason "$WORK/no-such-file.sh"); NXRC=$?
+check "missing file -> rc1"                   "$NXRC" "1"
+check "  and says it does not exist"          "$(grep -c 'does not exist' <<<"$NXW")" "1"
+
 echo "== N8: the surface is deeploy.sh AND every module it sources =="
 # The unit written at the reboot boundary runs deeploy.sh as root, and deeploy.sh
 # sources lib/*.sh before it does anything at all. A module a local user can

@@ -142,6 +142,28 @@ deeploy_checkout_unsafe_reason() {                # <path>...
     return 0
 }
 
+# Whether a path can actually be executed. Deliberately NOT folded into
+# deeploy_checkout_unsafe_reason: that one answers a security question — who is
+# allowed to write this — and this one answers whether the file can run at all.
+# Folding them would make its ok line ("root-owned and not group/world-writable")
+# claim something it never measured.
+#
+# The reason this exists at runtime and not only as a gate: the resume unit's
+# ExecStart is this script's own path, and `systemctl enable` does not look at
+# the bit. A 644 entry point enables cleanly and fails at boot with
+# status=203/EXEC — after the reboot, on a box whose disks were erased three
+# phases earlier. v0.1.0-rc6 shipped that, because git archive preserves index
+# modes and the bit had never been set. A gate in this repository cannot see a
+# checkout someone chmod'ed by hand, or unpacked with a umask of their own.
+deeploy_not_executable_reason() {                 # <path> -> 0 executable, else 1 + reason
+    local p="$1" m
+    [[ -e "$p" ]] || { printf '%s does not exist' "$p"; return 1; }
+    m=$(deeploy_path_mode "$p")
+    [[ "$m" =~ ^[0-7]{3,4}$ ]] || { printf 'the mode of %s could not be read' "$p"; return 1; }
+    (( (8#$m & 0111) != 0 )) || { printf '%s is mode %s and is not executable' "$p" "$m"; return 1; }
+    return 0
+}
+
 # The root-execution surface: every path whose CONTENTS deeploy.sh runs as root,
 # which is this script plus the modules it sources. Globbed, never listed — a
 # list here would be a second copy of the loader's, and the copy that goes stale

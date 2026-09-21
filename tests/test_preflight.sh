@@ -33,6 +33,19 @@ check() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1
 reset() { _PF_HARD=0; _PF_WARN=0; }
 counts() { check "$1 [hard=$2 warn=$3]" "${_PF_HARD}/${_PF_WARN}" "$2/$3"; }
 
+# Position in preflight_run, by name. Asserting a literal ordinal ("wired
+# second") encodes a number instead of the requirement, and breaks the moment
+# anything is inserted ahead of it — which is exactly what adding
+# _pf_check_self_executable did. What actually matters is that the structural
+# checks, the ones that cost nothing and can refuse before the box is touched,
+# all run before the first measurement of the machine.
+pf_index() {                                      # <check-name> -> its 1-based position
+    sed -n '/^preflight_run()/,/^}/p' "$ROOT/lib/preflight.sh" \
+        | grep -oE '^[[:space:]]+_pf_check_[a-z_]+' | tr -d ' ' \
+        | grep -nx "$1" | cut -d: -f1
+}
+
+
 DRY_RUN=0 common_init
 
 # ---- fixtures ---------------------------------------------------------------
@@ -169,6 +182,31 @@ deeploy_path_mode() { echo 755; }
 check "wired first in preflight_run" \
     "$(grep -A2 '_PF_HARD=0; _PF_WARN=0' "$ROOT/lib/preflight.sh" | grep -c '_pf_check_checkout')" "1"
 
+echo "== 7c1: _pf_check_self_executable (the installer itself, asked in phase 0) =="
+# The reboot boundary sits between phase 7 and phase 8, so the resume unit is
+# written AFTER the disks are erased (phase 3) and after the 30-90 minute build
+# (phase 4). A checkout that lost its bit in delivery would pay all of that
+# before being refused. Phase 0 is where the question costs nothing.
+SELFX="$WORK/deeploy.sh"; printf '#!/bin/bash\n' >"$SELFX"
+export DEEPLOY_SELF="$SELFX"
+deeploy_path_mode() { echo 755; }
+reset; _pf_check_self_executable >/dev/null 2>&1; counts "executable entry point -> clean" 0 0
+deeploy_path_mode() { echo 644; }
+reset; _pf_check_self_executable >/dev/null 2>&1; counts "entry point 644 -> BLOCKING" 1 0
+SX=$(_pf_check_self_executable 2>&1 || true)
+check "names the mode it found"        "$(grep -c 'is mode 644' <<<"$SX")" "1"
+check "names the fix"                  "$(grep -c 'chmod +x' <<<"$SX")" "1"
+check "says the disks go first"        "$(grep -c 'data disks already erased' <<<"$SX")" "1"
+# Subject control: this must refuse for the bit, not for ownership. 644 is not
+# group-writable, so the neighbouring predicate passes it — if this message ever
+# said root-owned, the scenario would be measuring that one and reporting it here.
+check "and it is NOT the ownership refusal" "$(grep -c 'root-owned' <<<"$SX")" "0"
+# It runs before the box is measured at all: structural first, measurement after.
+check "runs before the first measurement of the machine" \
+      "$(( $(pf_index _pf_check_self_executable) < $(pf_index _pf_check_platform) ))" "1"
+deeploy_path_mode() { echo 755; }
+unset DEEPLOY_SELF
+
 echo "== 7c2: _pf_check_tools (what runs after the disks are gone) =="
 # The failure this check exists for: mkfs.xfs was called one line after
 # blkdiscard, shipped in no package DeePloy installs, and was verified nowhere.
@@ -194,11 +232,14 @@ reset; _pf_check_tools >/dev/null 2>&1; counts "setcap missing -> BLOCKING" 1 0
 TOUT=$(_pf_check_tools 2>&1 || true)
 check "names libcap2-bin for setcap"     "$(grep -c 'libcap2-bin' <<<"$TOUT")" "1"
 
-# It must run while the disks are still intact — that is the whole point — so it
-# is wired immediately after the checkout check and before every measurement.
-check "wired second in preflight_run" \
-    "$(sed -n '/^preflight_run()/,/^}/p' "$ROOT/lib/preflight.sh" \
-       | grep -oE '^[[:space:]]+_pf_check_[a-z_]+' | tr -d ' ' | sed -n '2p')" "_pf_check_tools"
+# It must run while the disks are still intact — that is the whole point — and
+# before the box is measured, so a missing tool is reported in seconds rather
+# than after the bandwidth probe.
+check "_pf_check_tools runs before the first measurement" \
+      "$(( $(pf_index _pf_check_tools) < $(pf_index _pf_check_platform) ))" "1"
+# Control: the index really is being read, and the ordering really is directional.
+check "  and pf_index resolves a real position"  "$(pf_index _pf_check_platform | grep -cE '^[0-9]+$')" "1"
+check "  and a later check does NOT precede it"  "$(( $(pf_index _pf_check_bandwidth) < $(pf_index _pf_check_platform) ))" "0"
 unset -f have; unset PRESENT TOUT
 
 echo "== 7c3: _pf_check_grub_dropins (what grub-mkconfig reads AFTER us) =="

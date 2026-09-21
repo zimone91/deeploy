@@ -113,8 +113,15 @@ _install_verify_isolation() {
 # preflight entirely.
 _install_assert_resume_source_safe() {
     local why
-    why="$(deeploy_root_surface_unsafe_reason "$DEEPLOY_DIR" "$DEEPLOY_SELF" "$LIB")" && return 0
-    fail "refusing to install the resume service: ${why} — it would execute as root at boot. Run DeePloy from a root-owned checkout: chown -R root:root '${DEEPLOY_DIR}' (and chmod go-w it)."
+    if ! why="$(deeploy_root_surface_unsafe_reason "$DEEPLOY_DIR" "$DEEPLOY_SELF" "$LIB")"; then
+        fail "refusing to install the resume service: ${why} — it would execute as root at boot. Run DeePloy from a root-owned checkout: chown -R root:root '${DEEPLOY_DIR}' (and chmod go-w it)."
+    fi
+    # Separate question, separate refusal: writable-by-others is a security
+    # problem, non-executable is a boot that fails after the disks are gone.
+    if ! why="$(deeploy_not_executable_reason "$DEEPLOY_SELF")"; then
+        fail "refusing to install the resume service: ${why}. systemctl enable accepts a unit whose ExecStart cannot run, so this would surface at boot as status=203/EXEC — after the reboot, with the data disks already erased. Fix: chmod +x '${DEEPLOY_SELF}'"
+    fi
+    return 0
 }
 
 _install_setup_resume_service() {
