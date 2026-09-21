@@ -26,7 +26,7 @@ _DEEPLOY_COMMON_SOURCED=1
 # Defaults (so `source common.sh` alone is inert and test-friendly).
 # All of these may be overridden by deeploy.sh's arg parser or by env in tests.
 # ----------------------------------------------------------------------------
-DEEPLOY_VERSION="${DEEPLOY_VERSION:-0.1.0-rc6}"
+DEEPLOY_VERSION="${DEEPLOY_VERSION:-0.1.0-rc7}"
 
 # How to invoke DeePloy in printed instructions. There is no `deeploy` in PATH —
 # the operator runs the script by path. deeploy.sh sets DEEPLOY_SELF (its own

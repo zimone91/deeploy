@@ -8,7 +8,7 @@
 // a claim someone has to trust.
 //
 //   /deeploy                -> DEFAULT_TAG
-//   /deeploy/v0.1.0-rc6     -> that tag
+//   /deeploy/v0.1.0-rc7     -> that tag
 //   anything else           -> 400, and the body is inert (see below)
 //
 // The file is .mjs, not .js, so `node` can import it without depending on
@@ -21,7 +21,7 @@
 // old version silently and indefinitely. Exported because the release gate
 // imports this module and exercises it; a gate that parsed the text of this
 // line could be defeated by anything after the literal.
-export const DEFAULT_TAG = 'v0.1.0-rc6'
+export const DEFAULT_TAG = 'v0.1.0-rc7'
 
 const REPO = 'zimone91/deeploy'
 const FILE = 'get-deeploy.sh'

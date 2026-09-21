@@ -5,6 +5,65 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc7] - 2026-09-21
+
+`deeploy.sh` had never carried its executable bit. `git archive` packs tracked
+files and preserves index modes, so every release tarball unpacked it 100644 and
+the README's own first command after `cd` gave `Permission denied`. That was the
+mild half. The install writes a systemd unit whose `ExecStart=` is that same
+path, `systemctl enable` does not look at the bit, and the failure therefore
+lands at the reboot as `status=203/EXEC` — after the disks have been erased and
+after the 30-90 minute build. The June hardware runs completed, so the bit was
+set by hand on those boxes and never recorded.
+
+Fixing the bit took one commit. The rest of this release is the question that
+followed it: what else does the install depend on that nothing checks, and which
+of those failures land after the point of no return.
+
+### Added
+- **Tools the install needs after the disks are erased are asserted in phase 0.**
+  `mkfs.xfs` was invoked one line after `blkdiscard`, came in no package DeePloy
+  installs, and was verified nowhere; a box without `xfsprogs` lost both data
+  disks and then died on "command not found". The list is derived, not
+  remembered: CI re-derives it from the `run()` call sites in every module at or
+  after the point of no return and fails when it differs. It also asserts the
+  phase ordering the two subtractions rest on, rather than assuming it.
+- **The disk holding the checkout is never offered as a wipe target.** A clone
+  onto a spare data NVMe passed every filter — not a system disk, is NVMe, over
+  the size floor — and phase 3 would have erased the installer mid-run. Resolved
+  the way system disks already were, by mount point through `lsblk` holders, so
+  RAID and LVM come for free. Every way of not knowing is a refusal: no
+  `findmnt`, no answer, or no `DEEPLOY_DIR` each stop the run.
+- **The generated `grub.cfg` is read back before any reboot is armed.**
+  `grub-mkconfig` sources `/etc/default/grub.d/*.cfg` after `/etc/default/grub`,
+  so a drop-in that assigns `GRUB_CMDLINE_LINUX_DEFAULT` replaces the CPU
+  isolation DeePloy just wrote while `update-grub` still exits 0. Phase 0 warns
+  about such drop-ins, naming the ones on your box; phase 2 refuses if the
+  isolation is not in the generated file. Not finding a `grub.cfg` is also a
+  refusal — the path depends on BIOS or EFI, so an empty search is an unanswered
+  question, not a check that does not apply.
+- **A non-executable entry point is refused twice.** In phase 0, where the
+  question costs nothing, and again at the reboot boundary, because the bit can
+  be lost between them. Neither replaces the gates: those read this repository
+  and cannot see a checkout someone unpacked with a umask of their own.
+- **Gates that carry the controls proving they can go red.** Every
+  documented `./x.sh` must be executable. Every `ExecStart=` that points into the
+  checkout must name an executable file, with the claim that the others are
+  generated at 0755 asserted rather than written down. And every in-page link
+  must point at a heading that exists — which the removal of this release's own
+  known-issue section would otherwise have broken silently.
+
+### Changed
+- **The root-execution surface is the whole surface.** The checkout check asked
+  about the directory and `deeploy.sh`; the boot-time unit runs `deeploy.sh` as
+  root and `deeploy.sh` sources every module first. A writable `lib/disk.sh` was
+  the same root-persistence vector, one directory down. Globbed, never listed.
+- **The README test badge is derived.** It had drifted to 19 against 20 suites on
+  disk. CI counts the files now.
+
+### Fixed
+- `deeploy.sh` is `100755` in the index, so the tarball ships it executable.
+
 ## [0.1.0-rc6] - 2026-09-18
 
 Packaging and presentation. The deployment logic, the gates around destructive

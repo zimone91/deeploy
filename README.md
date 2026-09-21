@@ -41,10 +41,10 @@ does not control. That handoff, and the reasoning behind each read, are in
 
 ## Install (one command)
 
-    sh -c "$(curl -sSfL https://zim.one/deeploy/v0.1.0-rc6)"
+    sh -c "$(curl -sSfL https://zim.one/deeploy/v0.1.0-rc7)"
 
 That downloads the pinned release and its `SHA256SUMS`, checks the tarball
-against the manifest, and unpacks it into `./deeploy-v0.1.0-rc6`. It refuses to
+against the manifest, and unpacks it into `./deeploy-v0.1.0-rc7`. It refuses to
 start if that directory already exists. With `sudo` available it hands the
 checkout to root; without it, it prints the two commands for you to run.
 
@@ -52,21 +52,18 @@ Then it stops. DeePloy wipes disks, rewrites GRUB and reboots the box, so you
 read the checkout and start the install yourself:
 
 ```bash
-cd deeploy-v0.1.0-rc6
+cd deeploy-v0.1.0-rc7
 sudo ./deeploy.sh install --dry-run   # prints the whole plan, changes nothing
 sudo ./deeploy.sh install
 ```
 
-In v0.1.0-rc6 those two lines fail with `Permission denied`, and the fix is
-one command. See [the known issue](#known-issue-in-v010-rc6) before you start.
-
 The paranoid path, which is the one to take for a tool that runs as root:
 
-    curl -fsSLO https://raw.githubusercontent.com/zimone91/deeploy/v0.1.0-rc6/get-deeploy.sh
+    curl -fsSLO https://raw.githubusercontent.com/zimone91/deeploy/v0.1.0-rc7/get-deeploy.sh
 
 Read it, then run `sh get-deeploy.sh`. Or from source:
 
-    git clone --branch v0.1.0-rc6 https://github.com/zimone91/deeploy
+    git clone --branch v0.1.0-rc7 https://github.com/zimone91/deeploy
     cd deeploy
     sudo chown -R root:root . && sudo chmod -R go-w .
     sudo ./deeploy.sh install --dry-run
@@ -95,7 +92,7 @@ a different one, served from zim.one, and its digest is published in the release
 notes. Comparing those two is the check that says something about origin:
 
 ```bash
-curl -sSfL https://zim.one/deeploy/v0.1.0-rc6 | tail -n +2 | sha256sum
+curl -sSfL https://zim.one/deeploy/v0.1.0-rc7 | tail -n +2 | sha256sum
 ```
 
 `tail -n +2` drops the one line the endpoint adds to pin the version. Tags are
@@ -124,22 +121,6 @@ across its single reboot. The automatic resume disables it; a manual
 - [docs/FAILOVER.md](docs/FAILOVER.md) — the separate failover tool
 
 Running the tests and the gate: [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Known issue in v0.1.0-rc6
-
-`deeploy.sh` ships without its executable bit, so `./deeploy.sh` gives
-`Permission denied`. Set it yourself before installing:
-
-```sh
-sudo chmod +x deeploy.sh
-```
-
-It reaches further than the first command. The install writes a systemd unit
-whose `ExecStart=` is that same path, to finish the job after the single reboot.
-systemd will not execute a file without the bit, so that unit fails `203/EXEC`
-and the post-reboot phase never runs — while `systemctl enable` accepts it
-without complaint, so nothing warns you before the reboot. Measured on Ubuntu
-24.04. Fixed in the next release.
 
 ## Status & known limitations
 

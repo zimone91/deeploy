@@ -7,11 +7,13 @@
 # failure one level down — a link to an anchor on the same page, after the
 # heading it names has been deleted.
 #
-# The specific reason it exists now: the next commit removes the "Known issue in
-# v0.1.0-rc6" section, and README carries a link to its anchor near the top. The
-# version gate cannot catch that — it matches v0.1.0-rc6 and the anchor spells it
-# v010-rc6, with the dots gone. A gate written against one's own next commit is
-# worth more than the one link it currently guards.
+# The specific reason it was written: the commit after it removed the "Known issue
+# in v0.1.0-rc6" section, and the README linked to that anchor near the top.
+# Nothing else would have caught the link left behind — the version gate matches
+# v0.1.0-rc6 and the anchor spells it v010-rc6, with the dots gone. It did go red
+# against that removal, which is what the gate was for. The link is gone with the
+# section, so this tree now has none, and the self-test below is what makes that
+# zero a measurement rather than a broken parser's silence.
 #
 # HOW GITHUB BUILDS AN ANCHOR — and how much of it this knows.
 #
@@ -108,8 +110,28 @@ links_of() {                                      # <file> -> "target-path<TAB>a
     done
 }
 
+# Prove the derivation works before believing what it returns. A tree can
+# legitimately hold no anchor links — this one does — and "found none" then has to
+# be a measurement, not the silence of a parser that stopped working. Refusing on
+# a count of zero was the first shape of this, and it would have failed the tree
+# for having nothing wrong with it. So the machinery runs first against a fixture
+# whose answer is known, and only then against the tree.
+_anchors_self_test() {                            # -> 0 if links_of/anchors_of work
+    local d got; d=$(mktemp -d)
+    printf '# Title\n\nSee [it](#a-known-heading).\n\n## A known heading\n' >"$d/SELF.md"
+    got=$(links_of "$d/SELF.md")
+    if [[ "$got" != $'\ta-known-heading' ]]; then
+        rm -rf "$d"; echo "self-test: links_of returned [${got}], expected a same-file link to a-known-heading"; return 1
+    fi
+    if ! anchors_of "$d/SELF.md" | grep -qxF 'a-known-heading'; then
+        rm -rf "$d"; echo "self-test: anchors_of did not turn '## A known heading' into its anchor"; return 1
+    fi
+    rm -rf "$d"; return 0
+}
+
 gate_anchors() {                                  # <root> -> 0 + summary, or 1 + reason
     local root="$1" f line t a target have n=0 dead=""
+    _anchors_self_test || return 1
     while IFS= read -r f; do
         # Split the line by hand. `IFS=$'\t' read -r t a` looks equivalent and is
         # not: a tab is IFS whitespace, so a leading one is stripped and a
@@ -130,16 +152,32 @@ gate_anchors() {                                  # <root> -> 0 + summary, or 1 
         done < <(links_of "$root/$f")
     done < <(md_files "$root")
 
-    (( n > 0 )) || { echo "derived no in-page links at all — the derivation broke, not the docs"; return 1; }
     [[ -z "$dead" ]] || { echo "links whose anchor does not exist:${dead}"; return 1; }
-    echo "${n} in-repository anchor link(s) checked, all resolve"
+    if (( n == 0 )); then
+        echo "derivation verified on a fixture; this tree holds no anchor links"
+    else
+        echo "${n} in-repository anchor link(s) checked, all resolve"
+    fi
     return 0
 }
 
 echo "== anchors: every in-page link points at a heading that exists =="
 OUT=$(gate_anchors "$ROOT"); RC=$?
 check "gate passes on this tree"            "$RC" "0"
-check "  and it checked more than zero"     "$(grep -cE '^[1-9][0-9]* in-repository' <<<"$OUT")" "1"
+check "  and it says the derivation was verified" \
+      "$(grep -c 'derivation verified on a fixture' <<<"$OUT")" "1"
+
+# The self-test is the thing standing between "no links" and "no parser". Assert
+# it works, and assert it can FAIL — a self-test that always passes is the same
+# defect it exists to prevent.
+_anchors_self_test >/dev/null 2>&1
+check "the derivation self-test passes"     "$?" "0"
+( links_of() { :; }; _anchors_self_test ) >/dev/null 2>&1
+check "  and fails when links_of returns nothing"   "$?" "1"
+( anchors_of() { :; }; _anchors_self_test ) >/dev/null 2>&1
+check "  and fails when anchors_of returns nothing" "$?" "1"
+SELFOUT=$( ( links_of() { :; }; _anchors_self_test ) 2>&1 || true )
+check "  and names which half broke"        "$(grep -c 'links_of returned' <<<"$SELFOUT")" "1"
 
 # The slug rule, against the one heading it was confirmed on.
 check "slug: v0.1.0-rc6 heading"  "$(slug 'Known issue in v0.1.0-rc6')" "known-issue-in-v010-rc6"
@@ -153,18 +191,38 @@ control() { local out rc; out=$(gate_anchors "$2" 2>&1); rc=$?
     check "$1 -> refused"           "$rc" "1"
     check "  for the stated reason" "$(grep -c "$3" <<<"$out")" "1"; }
 
-# THE scenario this was built for: the heading goes, the link stays.
+# THE scenario this was built for: the heading goes, the link stays. The heading
+# to delete is DERIVED from the link, not named. The first version named the rc6
+# section — and the very next commit removed it, which would have left this
+# control crafting a tree identical to the real one and passing on nothing.
+drop_heading_for() {                              # <file> <anchor>
+    local f=$1 want=$2 line out=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^#{1,6}[[:space:]]+(.*)$ ]] && [[ "$(slug "${BASH_REMATCH[1]}")" == "$want" ]]
+        then continue; fi
+        out+="$line"$'\n'
+    done < "$f"
+    printf '%s' "$out" >"$f"
+}
 D=$(craft heading_removed)
-grep -v '^## Known issue in v0.1.0-rc6$' "$ROOT/README.md" >"$D/README.md"
+printf '\nSee [the section](#a-target-heading).\n\n## A target heading\n' >>"$D/docs/OPERATING.md"
+gate_anchors "$D" >/dev/null
+check "fixture: the link resolves while its heading stands" "$?" "0"
+ANC=$(links_of "$D/docs/OPERATING.md" | tail -1 | sed 's/.*\t//')
+check "  and the anchor was derived from the link"          "$ANC" "a-target-heading"
+drop_heading_for "$D/docs/OPERATING.md" "$ANC"
 control "the heading is deleted and the link left behind" "$D" "anchor does not exist"
 
 D=$(craft anchor_typo)
 printf '\nSee [the thing](#no-such-heading-here).\n' >>"$D/docs/INSTALL.md"
 control "a link to an anchor that never existed" "$D" "no-such-heading-here"
 
+# A tree with no anchor links is not an error, and saying so is the whole point
+# of the self-test. This used to refuse here.
 D=$(craft no_links)
 sed -i.bak 's/](#/](/g' "$D"/*.md "$D"/docs/*.md && rm -f "$D"/*.bak "$D"/docs/*.bak
-control "no in-page links anywhere" "$D" "derived no in-page links"
+NOL=$(gate_anchors "$D"); check "no in-page links anywhere -> still passes" "$?" "0"
+check "  and says the derivation was verified" "$(grep -c 'derivation verified' <<<"$NOL")" "1"
 
 # A heading-shaped line inside a code fence must not satisfy a link.
 D=$(craft fenced_heading)
