@@ -27,6 +27,7 @@ if [[ ${#suites[@]} -eq 0 ]]; then
     [[ -e "${suites[0]}" ]] || { echo "no suites found under tests/" >&2; exit 1; }
 fi
 
+RESULT_RE='^RESULT: ([0-9]+) passed, ([0-9]+) failed'
 pass_total=0
 fail_total=0
 bad_suites=0
@@ -36,7 +37,19 @@ for t in ${suites[@]+"${suites[@]}"}; do
     name="$(basename "$t")"
     out="$(bash "$t" 2>&1)"
     suite_rc=$?
-    line="$(printf '%s\n' "$out" | grep -E '^RESULT: [0-9]+ passed, [0-9]+ failed' | tail -1)"
+    # Parsed by bash itself, so that nothing external decides whether a suite
+    # reported at all. This was `| grep -E '^RESULT: ...' | tail -1`, and
+    # GREP_OPTIONS='-v' turns that grep into its own negation: an inverted grep
+    # never returns empty, so the "no RESULT" guard below could not fire, every
+    # suite counted as ok, and the run printed ALL GREEN with zero assertions and
+    # exit 0. Measured 2026-09-22 against BSD grep 2.6.0-FreeBSD, which honours
+    # GREP_OPTIONS silently — no warning, empty stderr.
+    # The pattern lives in a variable because an escaped space inside [[ =~ ]] is
+    # not reliable on bash 3.2, which is what /bin/bash is on macOS.
+    line=""
+    while IFS= read -r _l; do
+        [[ "$_l" =~ $RESULT_RE ]] && line="$_l"
+    done <<<"$out"
 
     if [[ -z "$line" ]]; then
         # No RESULT: the suite never reached its own summary. This is the case
@@ -47,8 +60,9 @@ for t in ${suites[@]+"${suites[@]}"}; do
         continue
     fi
 
-    p="$(printf '%s' "$line" | sed -E 's/RESULT: ([0-9]+) passed.*/\1/')"
-    f="$(printf '%s' "$line" | sed -E 's/.*, ([0-9]+) failed.*/\1/')"
+    [[ "$line" =~ $RESULT_RE ]]
+    p="${BASH_REMATCH[1]}"
+    f="${BASH_REMATCH[2]}"
     pass_total=$((pass_total + p))
     fail_total=$((fail_total + f))
 
@@ -60,6 +74,16 @@ for t in ${suites[@]+"${suites[@]}"}; do
         printf '  %-26s ok    %s passed\n' "$name" "$p"
     fi
 done
+
+# A run that ends green having measured nothing is the defect this repository keeps
+# finding in other people's checks, and it was reachable here: with the RESULT parse
+# subverted, every suite counted as ok and the total was zero. Proven to fire — a
+# suite reporting "0 passed, 0 failed" is refused — and proven not to misfire: one
+# real assertion anywhere is enough to silence it.
+if [[ "$rc" -eq 0 && "$pass_total" -eq 0 ]]; then
+    printf 'REFUSING: %d suite(s) reported and not one assertion ran. Nothing was measured.\n' "${#suites[@]}"
+    exit 1
+fi
 
 echo
 if [[ "$rc" -eq 0 ]]; then
