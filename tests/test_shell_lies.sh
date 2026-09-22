@@ -83,43 +83,54 @@ badge='tests-22%20suites'
 check "every-digit extraction returns TWO numbers"      "$(grep -oE '[0-9]+' <<<"$badge" | tr '\n' ' ')" "22 20 "
 check "  extracting the field returns one"              "$(sed -n 's/.*tests-\([0-9][0-9]*\)%20suites.*/\1/p' <<<"$badge")" "22"
 
-# 4. `git log --until=<bare date>` — and the reason this one is NOT a fact.
+# 4. `git log --until=<bare date>` fills the time of day from NOW, read on the
+#    reader's clock — and that is measured, not inferred.
 #
 #    It was filed under FACTS and CI took it apart on the first run: this box
-#    answered 0, ubuntu-latest answered 1, same query, same repository. Measured
-#    on 2026-09-22 with one git binary and only TZ changed, against commits made
-#    across 2026-05-31 UTC:
+#    answered 0, ubuntu-latest answered 1. The replacement assertion — "a bare
+#    date is not timezone-invariant" — then failed too, on a tree byte-identical
+#    to one that had just passed, because the property itself moves with the
+#    clock. Two reconstructions of the cause were wrong and neither was written
+#    down; a third was established against a controlled repository and holds.
 #
-#      TZ=UTC              --until=2026-05-31 behaves as END of day   (== 23:59:59)
-#      TZ=Europe/Moscow    --until=2026-05-31 behaves as START of day (== 00:00:00)
+#    Five commits at 00/06/12/18/23 UTC on 2026-05-31, one git binary, three
+#    timezones, at 02:10 UTC on 2026-09-22. The boundary is "2026-05-31 at the
+#    current local time of day", and predicting each count from that matched the
+#    actual three times out of three:
 #
-#    Two readings of the same string, decided by the reader's timezone. No
-#    mechanism is claimed here, because none was established — twice in this batch
-#    a mechanism was asserted that had not been measured, and a wrong cause sends
-#    the next person somewhere there is nothing to find. What IS established is
-#    that the bare form is not a question with one answer.
+#      TZ=UTC                 local 02:10 -> boundary 02:10+00:00 -> 1
+#      TZ=Europe/Moscow       local 05:10 -> boundary 05:10+03:00 -> 1
+#      TZ=America/Los_Angeles local 19:10 -> boundary 19:10-07:00 -> 5
 #
-#    So what gets asserted is the cure, and it is portable: give the time AND the
-#    offset, and the answer stops depending on who is asking.
+#    So a bare date answers a different question every hour, and the same
+#    question differently in each timezone. That cannot be asserted — a test of
+#    it would go red at some hours and green at others, which is what it did.
+#    What IS stable is the narrower hazard underneath: an explicit time with no
+#    offset is still read on the reader's clock. Measured at 00:30, 06:00, 12:00
+#    and 23:30, UTC and Europe/Moscow disagreed at every one.
+#
+#    The cure is to give the offset, and that is what gets asserted.
+command -v git >/dev/null 2>&1 || {
+    printf '  FAIL this case needs git and there is none — refusing to skip it\n'
+    printf 'RESULT: %d passed, %d failed\n' "$PASS" "$((FAIL + 1))"; exit 1; }
 cd "$WORK" && git init -q datebox && cd datebox || exit 1
-for h in 00 03 12 21; do
+for h in 00 06 12 18 23; do
     GIT_COMMITTER_DATE="2026-05-31T${h}:00:00+00:00" \
     git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "at${h}" \
         --date="2026-05-31T${h}:00:00+00:00"
 done
-utc_x=$(TZ=UTC            git log --until='2026-05-31T23:59:59+00:00' --oneline | wc -l | tr -d ' ')
-msk_x=$(TZ=Europe/Moscow  git log --until='2026-05-31T23:59:59+00:00' --oneline | wc -l | tr -d ' ')
-check "an explicit timestamp WITH an offset is timezone-invariant" "$utc_x" "$msk_x"
-check "  and it finds the day's commits"                           "$utc_x" "4"
-# The hazard itself, asserted so that its disappearance is also news: the bare
-# form is NOT invariant. If a future git makes it so, this goes red and someone
-# re-reads the comment above, which is the right outcome either way.
-utc_b=$(TZ=UTC            git log --until=2026-05-31 --oneline | wc -l | tr -d ' ')
-msk_b=$(TZ=Europe/Moscow  git log --until=2026-05-31 --oneline | wc -l | tr -d ' ')
-check "a bare date is NOT timezone-invariant"  "$([[ "$utc_b" != "$msk_b" ]] && echo differs || echo same)" "differs"
-# Control the other way: the two timezones are genuinely both in play, so the
-# assertion above cannot pass because one of the queries returned nothing at all.
-check "  and both timezones answered"          "$([[ -n "$utc_b" && -n "$msk_b" ]] && echo yes || echo no)" "yes"
+utc_x=$(TZ=UTC           git log --until='2026-05-31T23:59:59+00:00' --oneline | wc -l | tr -d ' ')
+msk_x=$(TZ=Europe/Moscow git log --until='2026-05-31T23:59:59+00:00' --oneline | wc -l | tr -d ' ')
+check "an explicit time WITH an offset is timezone-invariant" "$utc_x" "$msk_x"
+check "  and it finds every commit of that UTC day"           "$utc_x" "5"
+# The stable half of the hazard: drop the offset and the reader's clock is back.
+# Fixed times, so this does not move with the hour the suite happens to run.
+utc_n=$(TZ=UTC           git log --until='2026-05-31T23:59:59' --oneline | wc -l | tr -d ' ')
+msk_n=$(TZ=Europe/Moscow git log --until='2026-05-31T23:59:59' --oneline | wc -l | tr -d ' ')
+check "an explicit time WITHOUT an offset is not"  "$([[ "$utc_n" != "$msk_n" ]] && echo differs || echo same)" "differs"
+# Control: both timezones answered. Without it the line above would pass because
+# one of the two queries returned nothing at all.
+check "  and both timezones answered"              "$([[ -n "$utc_n" && -n "$msk_n" ]] && echo yes || echo no)" "yes"
 cd "$ROOT" || exit 1
 
 echo ""
