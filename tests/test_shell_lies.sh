@@ -106,8 +106,11 @@ check "  extracting the field returns one"              "$(sed -n 's/.*tests-\([
 #    question differently in each timezone. That cannot be asserted — a test of
 #    it would go red at some hours and green at others, which is what it did.
 #    What IS stable is the narrower hazard underneath: an explicit time with no
-#    offset is still read on the reader's clock. Measured at 00:30, 06:00, 12:00
-#    and 23:30, UTC and Europe/Moscow disagreed at every one.
+#    offset is still read on the reader's clock — and because every field of it
+#    is given, nothing is filled from "now", so the answer holds whatever hour
+#    the suite runs at. Four --until values against the same five commits, UTC
+#    against Europe/Moscow: 00:30 -> 1 vs 0, 06:00 -> 2 vs 1, 12:00 -> 3 vs 2,
+#    23:30 -> 5 vs 4. Four values of the argument, not four times of running.
 #
 #    The cure is to give the offset, and that is what gets asserted.
 command -v git >/dev/null 2>&1 || {
