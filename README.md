@@ -138,8 +138,12 @@ reading included.
   has not seen it.
 - `upgrade` is beta. Tests exercise it; a real client upgrade on a staked box
   has not.
+- `upgrade --rollback` does not go through the staked-identity check.
 - `dz-connect` hands your keypair path to `doublezero-solana`, which comes from
   an apt repository and is not pinned here.
+- The build downloads rustup-init, the anza installer, jito-solana at a mutable
+  tag and a clone of the XDP helper, and runs all of it as root without checking
+  a checksum or a signature.
 - Disk eligibility is checked against the layouts this has run on. Read the
   table it prints before you type `yes`.
 - The `mlx5` IRQ map is static, not computed from the running topology.
