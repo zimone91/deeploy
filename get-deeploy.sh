@@ -46,7 +46,7 @@ say() { printf '%s\n' "$*"; }
 # grep would be skipped on a box without it.
 case "$TAG" in
     v*) ;;
-    *) die "DEEPLOY_INSTALL_TAG '${TAG}' must start with 'v' (e.g. v1.2.3)" ;;
+    *) die "DEEPLOY_INSTALL_TAG '${TAG}' must start with 'v' (e.g. v0.1.0-rc7)" ;;
 esac
 case "$TAG" in
     *[!0-9A-Za-z._-]*) die "DEEPLOY_INSTALL_TAG '${TAG}' contains characters that are not allowed in a tag" ;;

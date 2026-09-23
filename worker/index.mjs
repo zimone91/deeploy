@@ -66,7 +66,7 @@ export default {
         const tag = raw === undefined || raw === '' ? DEFAULT_TAG : raw
 
         if (!TAG_RE.test(tag)) {
-            return refuse(400, `not a valid DeePloy tag: ${JSON.stringify(tag)} — expected something like v0.1.0-rc6`)
+            return refuse(400, `not a valid DeePloy tag: ${JSON.stringify(tag)} — expected something like v0.1.0-rc7`)
         }
 
         // Only now, with the path and the tag already found good.
