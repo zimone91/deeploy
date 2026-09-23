@@ -32,6 +32,8 @@ check() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1
 SCANNED=(README.md get-deeploy.sh worker/index.mjs)
 
 src_version() {                                   # <tree> -> 0.1.0-rcN
+    # shellcheck disable=SC2016  # the literal ${DEEPLOY_VERSION:-...} IS what is
+    # being matched in another file; expanding it here would search for its value.
     sed -n 's/^DEEPLOY_VERSION="\${DEEPLOY_VERSION:-\([^}]*\)}"$/\1/p' "$1/lib/common.sh"
 }
 literals() {                                      # <tree> -> sorted unique vX.Y.Z... set
@@ -54,12 +56,11 @@ worker_default() {                                # <tree> -> the served tag
     ' 2>/dev/null)
 }
 gate() {                                          # <tree> -> 0 + summary, or 1 + reason
-    local t=$1 ver set n w
+    local t=$1 ver set w
     ver=$(src_version "$t")
     [[ -n "$ver" ]] || { echo "could not parse DEEPLOY_VERSION out of lib/common.sh"; return 1; }
     set=$(literals "$t")
     [[ -n "$set" ]] || { echo "no version literal found in any scanned file — the derivation broke, not the files"; return 1; }
-    n=$(printf '%s\n' "$set" | grep -c .)
     if [[ "$set" != "v${ver}" ]]; then
         printf 'scanned files carry [%s]; lib/common.sh says [v%s]\n' "$(printf '%s' "$set" | tr '\n' ' ')" "$ver"
         return 1
