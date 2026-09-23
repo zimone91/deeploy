@@ -77,8 +77,8 @@ jobs:
 
       - name: Gate — bash -n + shellcheck + suites
         run: |
-          for f in deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
-          shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh
+          git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+          shellcheck -x $(git ls-files '*.sh')
           ./run_tests.sh
 
       - name: Gate — tag matches DEEPLOY_VERSION

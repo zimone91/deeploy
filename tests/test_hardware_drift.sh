@@ -31,6 +31,8 @@ check "  and says 'files changed'"         "$(grep -c 'files changed' <<<"$OUT")
 
 # Derived: recompute the same statistic here and require the line to carry it.
 # Without this the case above passes on a script that prints a fixed sentence.
+# shellcheck disable=SC2016  # the literal ${HW_ANCHOR:-...} IS the thing being
+# matched in the source file; expanding it here would search for its value.
 ANCHOR=$(cd "$ROOT" && sed -n 's/^HW_ANCHOR="\${HW_ANCHOR:-\([0-9a-f]*\)}"$/\1/p' hardware-drift.sh)
 check "the anchor is readable from one place" "$(printf '%s' "$ANCHOR" | grep -cE '^[0-9a-f]{7,40}$')" "1"
 WANT=$(cd "$ROOT" && git diff --shortstat "$ANCHOR" HEAD -- deeploy.sh lib/ | sed 's/^ *//')
@@ -81,6 +83,25 @@ for wf in .github/workflows/ci.yml .github/workflows/release.yml; do
     n=$(grep -c 'actions/checkout' "$ROOT/$wf")
     d=$(grep -c 'fetch-depth: 0' "$ROOT/$wf")
     check "$(basename "$wf"): every checkout asks for the full history" "$d" "$n"
+done
+
+echo "== and the lint list is derived, not typed =="
+# hardware-drift.sh was invisible to CI on the day it was added: the lint step
+# named deeploy.sh, get-deeploy.sh, run_tests.sh, lib/*.sh and tests/*.sh, and a
+# new file at the top level matched none of them. A hand-maintained list of what
+# to check is the same defect as a hand-maintained count of what was checked.
+for wf in .github/workflows/ci.yml .github/workflows/release.yml; do
+    # The step's NAME also contains "shellcheck -x", and matching it instead of
+    # the command would assert about a label. Take the line that runs something.
+    for what in 'shellcheck -x' 'bash -n'; do
+        # The step's NAME also contains the command, and matching it instead of
+        # the command would assert about a label. Take a line that runs something.
+        line=$(grep -h -- "$what" "$ROOT/$wf" | grep -v '^ *#' | grep -v 'name:' | head -1)
+        check "$(basename "$wf"): the '$what' step was found" \
+              "$([[ -n "$line" ]] && echo found || echo missing)" "found"
+        check "  and it enumerates from git, not by hand" \
+              "$(grep -c 'git ls-files' <<<"$line")" "1"
+    done
 done
 
 echo ""

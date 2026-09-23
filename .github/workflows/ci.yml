@@ -45,10 +45,10 @@ jobs:
           shellcheck --version
 
       - name: Syntax — bash -n
-        run: for f in deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh; do bash -n "$f"; done
+        run: git ls-files -z '*.sh' | xargs -0 -n1 bash -n
 
       - name: Lint — shellcheck -x
-        run: shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh
+        run: shellcheck -x $(git ls-files '*.sh')
 
       - name: README links files the tarball will actually carry
         # `git archive` packs TRACKED files only. A README that links docs/ files
