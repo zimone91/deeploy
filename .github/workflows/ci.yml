@@ -24,6 +24,8 @@ jobs:
       # Pinned to a full commit SHA (not a movable tag) — supply-chain hygiene
       # for a workflow that runs on every push.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0   # the suites measure against history; depth 1 cannot
 
       - name: Install shellcheck v0.11.0 (pinned + sha256-verified)
         # Pin the dev-gate version, with checksum verification. Ubuntu 24.04's apt

@@ -47,6 +47,9 @@ jobs:
           # on dispatch this is the ONLY thing that puts the tag's tree in the
           # runner; without it every later step would operate on the branch
           ref: ${{ inputs.tag || github.ref }}
+          # The notes carry a figure computed against the last hardware run, and
+          # that commit is months back: a depth-limited checkout cannot reach it.
+          fetch-depth: 0
 
       - name: Resolve the tag under build
         # inputs reach the shell as env, never as inline ${{ }} inside run:
