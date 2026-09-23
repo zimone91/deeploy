@@ -5,6 +5,100 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc8] - 2026-09-23
+
+One check rc7 added refused too much, and one check that was never there let
+an install destroy data. Both were found by reading the code, not by a box
+failing.
+
+Nothing in this release has been executed on hardware.
+
+### Fixed
+- **Phase 0 no longer demands packages phase 1 can install.** It refused to
+  start without `mdadm`, `mkfs.xfs`, `setcap` or `getcap`. Phase 3 does need
+  `mdadm` and `mkfs.xfs` after the disks are erased and phase 4 needs
+  `setcap`/`getcap`, but phase 1 runs first and installs the base packages, so
+  it could have installed all of them — and `mdadm` was required even on a box
+  whose data disks are not in an array. Phase 1 now installs `xfsprogs`,
+  `mdadm` and `libcap2-bin`. The assertion stays; what changed is when absence
+  is a refusal. Before phase 1 has run it is expected and the run continues,
+  naming what phase 1 will install. Once phase 1 is marked done it means the
+  install did not happen, and the refusal returns pointing at
+  `install --only 1`, which covers a resume whose phase 1 was completed by a
+  version that did not carry these packages.
+- **A mounted data disk is refused at three points, not unmounted at one.** An
+  NVMe that passed the other checks — at least 400 GB, not part of a data
+  array — and was mounted anywhere other than `/`, `/boot`, `/boot/efi`, swap
+  or the filesystem holding the checkout was offered for erasure; phase 3
+  printed a warning just before the confirmation prompt and, on `yes`,
+  unmounted it and erased it. A warning that arrives in the same breath as the
+  prompt is not a gate. The menu does not offer such a disk, the backstop that
+  validates a disk named in a config file refuses it, and the erase itself
+  refuses a disk that is mounted, where the automatic `umount` used to stand.
+  `--yes` answers none of them: the menu does not ask, and the other two are
+  failures rather than prompts. This is older than rc7 and rc7 did not touch
+  it — `_disk_wipe_report`, `_disk_umount_if_mounted`, `_disk_subtree_has_system`
+  and `_disk_two_nvme` are byte-identical in rc2, rc3, rc5, rc6 and rc7.
+- **A re-run is recognised before any disk is classified.** "Which disk may be
+  erased?" and "is this our own box again?" are different questions, and
+  answering the first one first was wrong. If `/mnt/accounts` and `/mnt/ledger`
+  are both mounted, the devices are taken from those mounts — each must be a
+  whole non-system NVMe carrying XFS, and the two must differ — the layout is
+  adopted, and nothing is classified, offered or erased. One mounted without
+  the other, a partition, a bind mount, the wrong filesystem or both on one
+  device each refuse with the reason rather than guessing.
+- **A re-run can no longer cross the two mount points in `/etc/fstab`.** This
+  one reached real releases. `_disk_finalize_two_nvme` writes fstab keyed by
+  MOUNT POINT, so `ensure_line` replaces that mount's line with whatever disk
+  the menu answer named. A re-run asked the menu again, and answering in the
+  opposite order left `/mnt/accounts` carrying the ledger's UUID and
+  `/mnt/ledger` the accounts UUID — to take effect at the next boot, on
+  filesystems that were never erased. Measured on a fixture. Taking each device
+  from the mount it is actually on cannot produce it.
+- **A box laid out on data disks never falls back to the system disk.** The
+  emergency layout writes no filesystem, but it rewrites `solana_home`,
+  `ledger_path`, `snapshots_path` and `accounts_path` through
+  `_disk_record_paths`, so a validator would come back pointed at
+  `/root/solana` with its real ledger on a disk nothing references. If the
+  recorded layout is `two-nvme` or `raid-volume` and no eligible data disk is
+  visible, the run refuses and changes nothing. A first install, and a box
+  already recorded as emergency, are unaffected.
+
+### Added
+- **Every release page states how much of it has never been on hardware, and
+  the figure is computed.** `hardware-drift.sh` reports the files and lines
+  changed in `deeploy.sh` and `lib/` since the last tree known to have run on
+  metal, naming the commit it measures from and its date, and saying that the
+  commit is a lower bound rather than the run itself. The release workflow
+  refuses to compose notes if the figure cannot be produced.
+- **Every version literal a stranger can act on is checked on every push.** The
+  README's install commands, `get-deeploy.sh` (including the usage examples in
+  its header) and the worker's default must all equal `v$DEEPLOY_VERSION`. The
+  same comparison existed, but only in steps that run on a tag — after the
+  irreversible move. The worker's default is read by running the module, not by
+  grepping it. Its error-message example had been naming `v0.1.0-rc6` for two
+  releases; the new suite found it on its first run.
+- **Two known limitations that were true and unlisted** are in the README: the
+  build fetches and executes rustup-init and the anza installer, clones
+  jito-solana at a tag that can move and the XDP helper with no pin at all, all
+  as root and without checking a checksum or a signature; and
+  `upgrade --rollback` does not reach the staked-identity guard.
+
+### Changed
+- **The test aggregator could finish green having measured nothing.** Its guard
+  for a suite that never reported was keyed on `grep` returning empty, and an
+  inverted `grep` never returns empty. The result line is now found and parsed
+  by bash itself, and a run that ends green with zero assertions is refused.
+- **CI enumerates what it checks from `git ls-files`** rather than from a
+  hand-written list of paths, and every checkout fetches the full history
+  because the suites now measure against it.
+
+### Development note
+The mounted-disk refusal was first written to apply before the re-run was
+recognised, which made a re-run of an already-installed box fall through to
+the emergency layout. That was caught on `main` and fixed before this
+release; no published release ever carried it.
+
 ## [0.1.0-rc7] - 2026-09-21
 
 `deeploy.sh` had never carried its executable bit. `git archive` packs tracked

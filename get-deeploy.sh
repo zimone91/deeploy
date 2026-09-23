@@ -2,7 +2,7 @@
 # DeePloy — bootstrap. Fetches a pinned release, verifies it against its
 # SHA256SUMS, hands the checkout to root, and stops.
 #
-#   sh -c "$(curl -sSfL https://zim.one/deeploy/v0.1.0-rc7)"   # pinned
+#   sh -c "$(curl -sSfL https://zim.one/deeploy/v0.1.0-rc8)"   # pinned
 #   sh -c "$(curl -sSfL https://zim.one/deeploy)"              # default version
 #
 # IT DOES NOT DEPLOY. DeePloy wipes disks, rewrites GRUB and reboots the box.
@@ -16,7 +16,7 @@
 # it is served from zim.one, and its own SHA256 is published in the GitHub
 # release notes, so that one you can cross-check against a second source:
 #
-#   curl -sSfL https://zim.one/deeploy/v0.1.0-rc7 | tail -n +2 | sha256sum
+#   curl -sSfL https://zim.one/deeploy/v0.1.0-rc8 | tail -n +2 | sha256sum
 #
 # tail -n +2 drops the one line the endpoint prepends to pin the version;
 # without it the digest will not match, and the mismatch would mean nothing.
@@ -34,7 +34,7 @@ set -eu
 export LC_ALL=C
 
 REPO="zimone91/deeploy"
-TAG="${DEEPLOY_INSTALL_TAG:-v0.1.0-rc7}"
+TAG="${DEEPLOY_INSTALL_TAG:-v0.1.0-rc8}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -46,7 +46,7 @@ say() { printf '%s\n' "$*"; }
 # grep would be skipped on a box without it.
 case "$TAG" in
     v*) ;;
-    *) die "DEEPLOY_INSTALL_TAG '${TAG}' must start with 'v' (e.g. v0.1.0-rc7)" ;;
+    *) die "DEEPLOY_INSTALL_TAG '${TAG}' must start with 'v' (e.g. v0.1.0-rc8)" ;;
 esac
 case "$TAG" in
     *[!0-9A-Za-z._-]*) die "DEEPLOY_INSTALL_TAG '${TAG}' contains characters that are not allowed in a tag" ;;
