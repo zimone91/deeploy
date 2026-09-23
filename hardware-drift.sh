@@ -56,5 +56,9 @@ short=$(git rev-parse --short "$HW_ANCHOR")
 stat=$(git diff --shortstat "$HW_ANCHOR" "$ref" -- deeploy.sh lib/)
 [[ -n "$stat" ]] || stat="no changes"
 
-printf 'Drift in the deployment path since the last hardware run — %s ("%s", %s): %s.\n' \
-    "$short" "$subject" "$date" "$(printf '%s' "$stat" | sed 's/^ *//')"
+# The anchor is a LOWER BOUND, not the last tree that ran on metal: part of the F
+# series was confirmed on the box and part was written afterwards. Saying "since
+# the last hardware run" would assert the bound is the thing it bounds, and that
+# wording would have gone into every future release.
+printf 'Changes in the deployment path since %s ("%s", %s): %s. The last commit run on hardware is no earlier than %s, so these figures can only overstate what has not run on hardware.\n' \
+    "$short" "$subject" "$date" "$(printf '%s' "$stat" | sed 's/^ *//')" "$short"

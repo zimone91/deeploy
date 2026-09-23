@@ -78,7 +78,7 @@ jobs:
       - name: Gate — bash -n + shellcheck + suites
         run: |
           git ls-files -z '*.sh' | xargs -0 -n1 bash -n
-          shellcheck -x $(git ls-files '*.sh')
+          git ls-files -z '*.sh' | xargs -0 shellcheck -x
           ./run_tests.sh
 
       - name: Gate — tag matches DEEPLOY_VERSION
