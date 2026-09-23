@@ -380,6 +380,50 @@ check "7c: resolved + carried    -> 0"                       "$?" "0"
 ( _disk_subtree_has_mount nvme0n1 /mnt/spare ) >/dev/null 2>&1
 check "7c: resolved + not carried -> 1"                      "$?" "1"
 
+echo "== 8: a mounted non-system disk is refused, not unmounted =="
+# X2. The wipe path used to print a warning, then umount, then blkdiscard. A
+# non-system NVMe carrying /var or /home is exactly the disk an operator does not
+# expect to lose, and a warning inside a yes/no prompt is not a gate.
+LSBLK_ENUM='nvme0n1 2000398934016 disk 0 Samsung_PM9A3
+nvme1n1 2000398934016 disk 0 Samsung_PM9A3'
+_mp_for() { case "$1" in
+    */nvme0n1) printf '/home\n';;            # somebody's data lives here
+    *) printf '';; esac; }
+FINDMNT_SRC=/dev/sda ; CK_MOUNT="/"
+export PROC_MDSTAT="$WORK/nomd"; : >"$PROC_MDSTAT"
+
+_disk_scan_raid
+_disk_classify
+check "mounted NVMe is NOT offered"        "$(_disk_in_list nvme0n1 ${_DISK_ELIGIBLE[@]+"${_DISK_ELIGIBLE[@]}"} && echo in || echo out)" "out"
+check "  and the reason names the mount"   "$(printf '%s\n' "${_DISK_INELIGIBLE[@]}" | grep -c '^nvme0n1|mounted at /home')" "1"
+# Control: the same scenario must still offer the disk that is NOT mounted, or
+# the case above would pass on a classifier that offers nothing at all.
+check "  while the unmounted sibling IS offered" "$(_disk_in_list nvme1n1 ${_DISK_ELIGIBLE[@]+"${_DISK_ELIGIBLE[@]}"} && echo in || echo out)" "in"
+
+( _disk_assert_eligible /dev/nvme0n1 sda ) >/dev/null 2>&1
+check "assert_eligible refuses the mounted one" "$?" "1"
+EOUT=$( _disk_assert_eligible /dev/nvme0n1 sda 2>&1 || true )
+check "  and says where it is mounted"          "$(grep -c '/home' <<<"$EOUT")" "1"
+check "  and says who must unmount it"          "$(grep -c 'Unmount it yourself' <<<"$EOUT")" "1"
+( _disk_assert_eligible /dev/nvme1n1 sda ) >/dev/null 2>&1
+check "  and still accepts the unmounted one"   "$?" "0"
+
+# --yes is for ordinary confirmations and has never covered disk wipes
+# (lib/common.sh:38, :411). This is a fail, not a prompt, so it cannot be
+# answered by a flag — asserted rather than assumed.
+( ASSUME_YES=1 _disk_assert_eligible /dev/nvme0n1 sda ) >/dev/null 2>&1
+check "ASSUME_YES=1 does not buy the mounted disk" "$?" "1"
+
+# The last line of defence, one statement before blkdiscard: it refuses and it
+# does NOT unmount. The control is the call log — an automatic umount here would
+# disarm both refusals above the moment either is weakened.
+: >"$CALLS"
+( _disk_assert_not_mounted /dev/nvme0n1 ) >/dev/null 2>&1
+check "the pre-wipe guard refuses"          "$?" "1"
+check "  and calls no umount"               "$(grep -c '^umount' "$CALLS")" "0"
+( _disk_assert_not_mounted /dev/nvme1n1 ) >/dev/null 2>&1
+check "  and passes an unmounted disk"      "$?" "0"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

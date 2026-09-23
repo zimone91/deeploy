@@ -78,6 +78,10 @@ _disk_model()       { lsblk -dn -o MODEL "$1" 2>/dev/null | head -1; }
 _disk_human()       { awk -v b="${1:-0}" 'BEGIN{ if (b>=1000000000000) printf "%.2f TB", b/1000000000000; else printf "%.0f GB", b/1000000000 }'; }
 _disk_is_nvme()     { case "${1##*/}" in nvme*) return 0;; *) return 1;; esac; }
 _disk_mounted_anywhere() { [[ -n "$(lsblk -nr -o MOUNTPOINT "$1" 2>/dev/null | awk 'NF{print; exit}')" ]]; }
+# Every mountpoint in a disk's subtree, one per line. The predicate above answers
+# whether there is one; a refusal has to be able to NAME it, or the operator is
+# told to unmount something without being told what.
+_disk_mountpoints() { lsblk -nr -o MOUNTPOINT "$1" 2>/dev/null | awk 'NF'; }
 _disk_in_list()     { local x=$1; shift; local e; for e in "$@"; do [[ "$e" == "$x" ]] && return 0; done; return 1; }
 
 # THE system formula: a whole disk is a SYSTEM disk if ANY mountpoint in its
@@ -179,6 +183,9 @@ _disk_classify() {
         if _disk_subtree_has_mount "$name" "$_DISK_CK_MOUNT"; then
             _DISK_INELIGIBLE+=("${name}|holds this DeePloy checkout (${_DISK_CK_MOUNT}) — erasing it destroys the running install"); continue
         fi
+        if _disk_mounted_anywhere "/dev/$name"; then
+            _DISK_INELIGIBLE+=("${name}|mounted at $(_disk_mountpoints "/dev/$name" | tr '\n' ' ')— unmount it yourself if it is really a target"); continue
+        fi
         if (( ${#_DISK_DATA_ARRAY_MEMBERS[@]} )) && _disk_in_list "$name" "${_DISK_DATA_ARRAY_MEMBERS[@]}"; then
             _DISK_INELIGIBLE+=("${name}|member of a data RAID array (resolved below)"); continue
         fi
@@ -226,6 +233,15 @@ _disk_assert_eligible() {
     _disk_subtree_has_system "$name" && fail "Refusing: ${dev} carries a system mount (/, /boot, or swap) — never a data target"
     _disk_require_checkout_mount
     _disk_subtree_has_mount "$name" "$_DISK_CK_MOUNT" && fail "Refusing: ${dev} carries the filesystem holding this DeePloy checkout (${DEEPLOY_DIR:-?}) — the install is running from it, and erasing it takes the installer with it"
+    # A mounted non-system disk is refused outright, with no exception for mounts
+    # DeePloy itself made. State records disk NAMES (nvme0n1), and those are not
+    # stable across reboots, so an exception would either refuse the wrong disk
+    # after renumbering or need the whole identification redone. Reformatting a
+    # ledger on a staked box is deliberate; the explicit umount is the friction
+    # that makes it so. --yes does not reach here: this is a fail, not a prompt.
+    if _disk_mounted_anywhere "$dev"; then
+        fail "Refusing: ${dev} is mounted at $(_disk_mountpoints "$dev" | tr '\n' ' ')— erasing it destroys whatever is live there. Unmount it yourself and run again."
+    fi
     _disk_is_nvme "$name" || fail "Refusing: ${dev} is not an NVMe device — SATA/SAS can't sustain a mainnet validator"
     return 0
 }
@@ -413,7 +429,7 @@ _disk_two_nvme() {
 
     local d
     for d in "$ACCOUNTS_DISK" "$LEDGER_DISK"; do
-        _disk_umount_if_mounted "$d"
+        _disk_assert_not_mounted "$d"
         run blkdiscard -f "$d"
         run mkfs.xfs -f "$d"
     done
@@ -421,10 +437,14 @@ _disk_two_nvme() {
     ok "Data disks formatted (XFS) and mounted"
 }
 
-_disk_umount_if_mounted() {
+# This unmounted the disk one line before blkdiscard. Both refusals above have to
+# hold for control to arrive here, so an automatic umount at this point protects
+# nothing and quietly disarms them: weaken either one and a live filesystem is
+# unmounted and erased without a word. A last line of defence has to refuse.
+_disk_assert_not_mounted() {
     local d=$1 mp
-    mp=$(lsblk -nr -o MOUNTPOINT "$d" 2>/dev/null | awk 'NF{print; exit}')
-    [[ -n "$mp" ]] && run umount "$mp"
+    mp=$(_disk_mountpoints "$d" | tr '\n' ' ')
+    [[ -z "$mp" ]] || fail "Refusing: ${d} is still mounted at ${mp}— refusing to unmount it here, one line before it is erased. Unmount it yourself and run again."
     return 0
 }
 
