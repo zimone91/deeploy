@@ -179,12 +179,29 @@ jobs:
             exit 1
           fi
 
+          # Every release page states how much of the deployment path has not been
+          # on hardware, and the figure is computed here rather than typed into a
+          # tag message. Fail-closed on BOTH refusals, because they are different
+          # and neither may produce a release: exit 1 is "the anchor is not in
+          # this history", exit 2 is "could not measure" (a depth-limited
+          # checkout is the ordinary way to get it). There is no release without
+          # the line — that is the whole point of computing it.
+          drift=""; drift_rc=0
+          drift=$(./hardware-drift.sh "$TAG") || drift_rc=$?
+          if [ "$drift_rc" -ne 0 ]; then
+            echo "hardware-drift.sh exited ${drift_rc} for ${TAG}: refusing to compose notes without the figure"
+            printf 'got: [%s]\n' "$drift"
+            exit 1
+          fi
+          test -n "$drift" || { echo "hardware-drift.sh exited 0 and produced nothing"; exit 1; }
+
           # The lede is multi-line, so it is concatenated rather than substituted.
           # Piped through sed rather than `sed -i`: -i without an argument is
           # GNU-only, and a step that cannot be run outside the runner is a step
           # nobody checks before pushing a tag.
           {
           printf '%s\n\n' "$lede"
+          printf '%s\n\n' "$drift"
           cat <<'NOTES' | sed "s|__TAG__|${TAG}|g; s|__BOOTSHA__|${boot_sha}|g"
           ## Install
 
@@ -255,49 +272,6 @@ jobs:
             what DeePloy does and does not do with your staked key. Read this one first.
           NOTES
 
-          # Emitted only while the defect exists, decided by reading the mode in
-          # the index rather than by remembering to delete a paragraph. When
-          # deeploy.sh carries +x this block stops appearing on its own, which is
-          # the only way a "known issue" note does not outlive the issue.
-          if [ "$(git ls-files -s deeploy.sh | cut -d' ' -f1)" = "100644" ]; then
-          cat <<'KNOWN' | sed "s|__TAG__|${TAG}|g"
-
-          ## Known issue in this release
-
-          `deeploy.sh` ships without its executable bit, so the command this page
-          and the README print does not work:
-
-          ```
-          $ sudo ./deeploy.sh install --dry-run
-          bash: ./deeploy.sh: Permission denied
-          ```
-
-          Run it through the shell instead, which behaves identically:
-
-          ```sh
-          sudo bash ./deeploy.sh install --dry-run
-          sudo bash ./deeploy.sh install
-          ```
-
-          This reaches further than the first command. The install writes a systemd
-          unit whose `ExecStart=` is that same path, to finish the job after the
-          single reboot; systemd refuses to execute a file without the bit, so the
-          unit fails `203/EXEC` and the post-reboot phase does not run. `systemctl
-          enable` does not check the bit, so nothing says so before the reboot.
-          Measured on Ubuntu 24.04: `Result: exit-code`, `status=203/EXEC`, and the
-          same unit succeeds once the bit is set.
-
-          Until this is fixed, set the bit yourself before installing:
-
-          ```sh
-          sudo chmod +x deeploy.sh
-          ```
-
-          Fixed in the next release, together with a gate on every `ExecStart=` that
-          points into the checkout and a refusal to write that unit at all when the
-          target is not executable.
-          KNOWN
-          fi
           } > RELEASE_NOTES.md
 
           if grep -q '__TAG__\|__BOOTSHA__\|__LEDE__' RELEASE_NOTES.md; then
