@@ -118,7 +118,19 @@ tool_gate() {                              # <tree>
         | grep -oE '^[a-z0-9][a-z0-9.+-]*$' | sort -u > "$WORK/sub"
     grep -oE 'apt-get install -y [a-z0-9 -]+' "$t/lib/doublezero.sh" | tr ' ' '\n' \
         | grep -E '^doublezero' >> "$WORK/sub"
-    sed -n '/^PF_TOOLS_SELF_INSTALLED=(/,/)/p' "$t/lib/preflight.sh" \
+    # Bounded to the array's OWN line. This was a sed range ending at /)/, and a
+    # range's end is searched from the line AFTER the start, so it never ends on
+    # the start line: it always read at least one line too many. That was
+    # harmless only while the extra line began with '_' and the filter below
+    # dropped it. Add a second array under this one and the range swallows it
+    # whole — measured 2026-09-23, when PF_TOOLS_BASE_INSTALLED was added and its
+    # four tools were silently subtracted from what the gate requires, turning a
+    # real assertion into an empty one.
+    local selfline
+    selfline=$(grep -m1 '^PF_TOOLS_SELF_INSTALLED=(' "$t/lib/preflight.sh")
+    [[ "$selfline" == *')'* ]] || {
+        echo "PF_TOOLS_SELF_INSTALLED does not close on its own line — cannot bound it"; return 1; }
+    printf '%s\n' "$selfline" \
         | tr ' ()' '\n' | grep -oE '^[a-z][a-z0-9.-]*$' | grep -v PF_TOOLS >> "$WORK/sub"
     sort -u "$WORK/sub" -o "$WORK/sub"
     comm -23 "$WORK/derived" "$WORK/sub" > "$WORK/want"
@@ -185,6 +197,30 @@ control "PF_REQUIRED_TOOLS cannot be parsed" "$D" "could not parse PF_REQUIRED_T
 D=$(craft phasemap)
 sed 's/^run_phase() {/run_phase_renamed() {/' "$ROOT/deeploy.sh" > "$D/deeploy.sh"
 control "the phase map cannot be read" "$D" "no phase maps to"
+
+# The subtraction reads one named array. Anything written next to it must not be
+# read as part of it — the parser used to take the neighbour whole, which is the
+# window-spills-into-the-neighbour defect from CONTRIBUTING, sitting inside a gate.
+echo "== a neighbouring array is not absorbed into the subtraction =="
+D=$(craft neighbour)
+awk '{print}
+     /^PF_TOOLS_SELF_INSTALLED=\(/ && !d {
+        print ""
+        print "# planted by tests/test_toolgate.sh"
+        print "PF_TOOLS_PLANTED=(getcap mdadm mkfs.xfs setcap)"
+        d=1 }' "$ROOT/lib/preflight.sh" > "$D/lib/preflight.sh"
+check "the plant really landed next to it" \
+      "$(grep -c '^PF_TOOLS_PLANTED=(' "$D/lib/preflight.sh")" "1"
+OUT=$(tool_gate "$D" 2>&1); RC=$?
+check "  and the gate still passes"        "$RC" "0"
+check "  and still resolves both phases"   "$(grep -c 'installs packages' <<<"$OUT")" "1"
+
+D=$(craft multiline)
+printf '%s\n' 'PF_TOOLS_SELF_INSTALLED=(' '    cargo rustup' ')' > "$WORK/ml"
+awk 'BEGIN{while((getline l < ARGV[2])>0) m[++n]=l; ARGV[2]=""}
+     /^PF_TOOLS_SELF_INSTALLED=\(/ {for(i=1;i<=n;i++) print m[i]; next} {print}' \
+    "$ROOT/lib/preflight.sh" "$WORK/ml" > "$D/lib/preflight.sh"
+control "PF_TOOLS_SELF_INSTALLED spread over lines" "$D" "cannot bound it"
 
 # A comment is not an invocation: the block documenting PF_REQUIRED_TOOLS names
 # blkdiscard in prose, and that must not be able to relocate the wipe.
