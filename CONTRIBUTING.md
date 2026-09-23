@@ -141,6 +141,25 @@ shellcheck -x deeploy.sh get-deeploy.sh run_tests.sh lib/*.sh tests/*.sh   # she
   command and false for anything in this tree — a rule wider than the code it
   describes. `tests/test_shell_lies.sh` asserts both modes, which is how that
   was caught.
+- **A check that scans this tree is inside the tree it scans.** A negative
+  control that greps for a literal "this token is absent" finds itself the
+  moment the block lives in a scanned file, so the one control whose job is to
+  prove a zero is reachable cannot score zero in the configuration it ships in.
+  The same shape misplaced a guard in `run_tests.sh`: the insertion point was
+  located by searching for the words `ALL GREEN`, the comment being inserted
+  contained them, and the guard landed above every measurement and refused a
+  clean tree. Build such a token at run time out of something the source does
+  not contain, and when a search picks the place to edit, anchor it on text the
+  edit does not itself introduce.
+- **An empty derived pattern is true of everything.** `index($0, "")` is 1 in
+  one-true-awk, gawk and mawk alike, and `grep -c ''` counts every line, so a
+  derivation that failed to extract its pattern does not report nothing — it
+  reports a hit on every candidate. Found while deriving the path operand of a
+  `tar --exclude` for a check that has not shipped: every line where the
+  extraction did not match left the pattern empty and paired the file with the
+  next `rm` in the window, including one inside a prose comment. Refuse the
+  empty case by name before using it. A derivation that produced nothing has to
+  say so, not hand back something that matches anything.
 - Everything is bash + `set -Eeuo pipefail` at the entrypoint: mind the errexit
   gotchas (`var=$(pipeline)` on commands that legitimately return non-zero,
   functions ending in `while read` loops).
