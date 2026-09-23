@@ -39,11 +39,15 @@ for t in ${suites[@]+"${suites[@]}"}; do
     suite_rc=$?
     # Parsed by bash itself, so that nothing external decides whether a suite
     # reported at all. This was `| grep -E '^RESULT: ...' | tail -1`, and
-    # GREP_OPTIONS='-v' turns that grep into its own negation: an inverted grep
-    # never returns empty, so the "no RESULT" guard below could not fire, every
-    # suite counted as ok, and the run printed ALL GREEN with zero assertions and
-    # exit 0. Measured 2026-09-22 against BSD grep 2.6.0-FreeBSD, which honours
-    # GREP_OPTIONS silently — no warning, empty stderr.
+    # an inverted grep never returns empty: it returns the last line that is NOT
+    # a RESULT line. So the "no RESULT" guard below could not fire, every suite
+    # counted as ok, and the run printed ALL GREEN with zero assertions and exit
+    # 0. Measured 2026-09-22 two ways, because the first one is not portable:
+    # GREP_OPTIONS='-v', which BSD grep 2.6.0-FreeBSD honours silently but GNU
+    # grep has ignored since 2.21; and an inverting grep placed on PATH, measured
+    # on GNU grep 3.7 — it needs no variable, so it applies to BSD grep by
+    # construction. Do not read this as a note about one environment variable and
+    # conclude it cannot happen here.
     # The pattern lives in a variable because an escaped space inside [[ =~ ]] is
     # not reliable on bash 3.2, which is what /bin/bash is on macOS.
     line=""
