@@ -38,6 +38,16 @@ BASE_PACKAGES=(
     libevent-dev cmake screen atop ncdu fail2ban
 )
 
+# NOT part of that set, and kept separate so the line above stays true: these are
+# what DeePloy's own later phases invoke. Phase 0 asserts mdadm, mkfs.xfs, setcap
+# and getcap because phase 3 needs them AFTER the disks are erased, and the stock
+# Ubuntu 22.04 cloud image carries none of them — so a box that was going to work
+# was refused at the door for want of a package this phase can install. Phase 1
+# runs before phase 3, so it installs them and the refusal has nothing to say.
+DEEPLOY_PACKAGES=(
+    xfsprogs mdadm libcap2-bin
+)
+
 # --- helpers -----------------------------------------------------------------
 _valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 )); }
 
@@ -146,7 +156,7 @@ _base_resolve_config() {
 
 # --- packages ----------------------------------------------------------------
 base_packages() {
-    step "Installing base packages (${#BASE_PACKAGES[@]} packages)"
+    step "Installing base packages ($(( ${#BASE_PACKAGES[@]} + ${#DEEPLOY_PACKAGES[@]} )) packages)"
     export DEBIAN_FRONTEND=noninteractive
     run apt-get update
     # apt upgrade fires only on the FIRST run (state-marker guarded), never on a
@@ -160,7 +170,7 @@ base_packages() {
             state_set base_apt_upgraded "$(_ts)"
         fi
     fi
-    run apt-get install -y "${BASE_PACKAGES[@]}"
+    run apt-get install -y "${BASE_PACKAGES[@]}" "${DEEPLOY_PACKAGES[@]}"
     ok "Base packages installed"
     # DoubleZero packages + env (no staked key needed) — done here with the base
     # packages. Gated on the Phase 1 enable decision.

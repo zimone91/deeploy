@@ -134,15 +134,46 @@ PF_REQUIRED_TOOLS=(
 # the gate subtracts these when deriving what PF_REQUIRED_TOOLS must contain.
 PF_TOOLS_SELF_INSTALLED=(cargo rustup)
 
-_pf_check_tools() {
-    local t missing=()
-    for t in ${PF_REQUIRED_TOOLS[@]+"${PF_REQUIRED_TOOLS[@]}"}; do
-        have "$t" || missing+=("$t")
+# The THIRD subtraction, and unlike the one above it is conditional. These four
+# stay in PF_REQUIRED_TOOLS because phase 3 genuinely needs them after the disks
+# are erased; what is conditional is whether their absence is a refusal NOW.
+# lib/base.sh DEEPLOY_PACKAGES installs them in phase 1, which runs before phase
+# 3, and the stock Ubuntu 22.04 cloud image ships none of them — so refusing at
+# the door cost a box that was going to work. Once phase 1 is marked done their
+# absence means the install did not happen, and that is a refusal again.
+PF_TOOLS_BASE_INSTALLED=(getcap mdadm mkfs.xfs setcap)
+
+_pf_tool_is_base_installed() {                    # <tool> -> 0 if phase 1 installs it
+    local t=$1 e
+    for e in ${PF_TOOLS_BASE_INSTALLED[@]+"${PF_TOOLS_BASE_INSTALLED[@]}"}; do
+        [[ "$e" == "$t" ]] && return 0
     done
-    if [[ "${#missing[@]}" -eq 0 ]]; then
-        pf_ok "Commands needed after the disk wipe are all present"
+    return 1
+}
+
+_pf_check_tools() {
+    local t missing=() pending=() installable=()
+    for t in ${PF_REQUIRED_TOOLS[@]+"${PF_REQUIRED_TOOLS[@]}"}; do
+        have "$t" && continue
+        if _pf_tool_is_base_installed "$t"; then
+            installable+=("$t")
+            is_phase_done 1 || { pending+=("$t"); continue; }
+        fi
+        missing+=("$t")
+    done
+    if [[ "${#missing[@]}" -gt 0 ]]; then
+        local hint="Install them first (xfsprogs provides mkfs.xfs, mdadm provides mdadm, libcap2-bin provides setcap/getcap)."
+        # Phase 1 installs these and is idempotent, so the operator is pointed at
+        # the phase rather than at a hand-typed apt line. Appended, not swapped in:
+        # the package mapping is what tells them WHAT is missing.
+        if [[ "${#installable[@]}" -gt 0 ]] && is_phase_done 1; then
+            hint="${hint} Phase 1 is marked done, so it should have installed these and did not: ${installable[*]}. Run '${DEEPLOY_SELF:-./deeploy.sh} install --only 1' and start again."
+        fi
+        pf_bad "Missing commands that phase 3 and later need: ${missing[*]} — the disks are erased before any of them is used, so a run started now dies with the data already gone. ${hint}"
+    elif [[ "${#pending[@]}" -gt 0 ]]; then
+        pf_ok "Commands needed after the disk wipe are present, except ${pending[*]} — phase 1 installs those, and it runs before phase 3"
     else
-        pf_bad "Missing commands that phase 3 and later need: ${missing[*]} — the disks are erased before any of them is used, so a run started now dies with the data already gone. Install them first (xfsprogs provides mkfs.xfs, libcap2-bin provides setcap/getcap)."
+        pf_ok "Commands needed after the disk wipe are all present"
     fi
 }
 

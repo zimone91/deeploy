@@ -215,22 +215,48 @@ have() { case " $PRESENT " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 PRESENT="${PF_REQUIRED_TOOLS[*]}"
 reset; _pf_check_tools >/dev/null 2>&1; counts "every tool present -> clean" 0 0
 
+# mkfs.xfs, mdadm, setcap and getcap come from lib/base.sh DEEPLOY_PACKAGES, which
+# phase 1 installs — and phase 1 runs before phase 3. So their absence BEFORE
+# phase 1 is not a refusal: the stock Ubuntu 22.04 image ships none of them, and
+# refusing there turned a box that was going to work into a box that would not
+# start. After phase 1 is marked done, the same absence means the install did not
+# happen, and it is a refusal again. Both directions are asserted, because a
+# conditional that only ever takes one branch is not a conditional.
 PRESENT="${PF_REQUIRED_TOOLS[*]/mkfs.xfs/}"
+state_clear phase-1 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/phase-1"
+reset; _pf_check_tools >/dev/null 2>&1; counts "mkfs.xfs missing, phase 1 pending -> NOT blocking" 0 0
+TOUT=$(_pf_check_tools 2>&1 || true)
+check "  says phase 1 installs it"       "$(grep -c 'phase 1 installs those' <<<"$TOUT")" "1"
+check "  and names the tool it means"    "$(grep -c 'mkfs.xfs' <<<"$TOUT")" "1"
+
+mark_phase_done 1
 # Counter in the CURRENT shell, message from a separate capture: a $( ) runs
 # in a subshell, so a pf_bad inside one never reaches _PF_HARD here.
-reset; _pf_check_tools >/dev/null 2>&1; counts "mkfs.xfs missing -> BLOCKING" 1 0
+reset; _pf_check_tools >/dev/null 2>&1; counts "mkfs.xfs missing, phase 1 done -> BLOCKING" 1 0
 TOUT=$(_pf_check_tools 2>&1 || true)
 check "names the missing command"        "$(grep -c 'mkfs.xfs' <<<"$TOUT")" "1"
 check "names the package that has it"    "$(grep -c 'xfsprogs' <<<"$TOUT")" "1"
 check "says the disks go first"          "$(grep -c 'erased before any of them is used' <<<"$TOUT")" "1"
+check "points at the phase, not at apt"  "$(grep -c 'install --only 1' <<<"$TOUT")" "1"
 # Control the other way: a tool that is present must not be reported. Without
 # this, a check that named every tool unconditionally would pass the three above.
 check "and does not name a tool that IS present" "$(grep -c 'blkdiscard' <<<"$TOUT")" "0"
 
+# The condition must not leak. blkdiscard comes from no package DeePloy installs,
+# so it blocks whatever phase 1 has done — including before it has run at all.
+state_clear phase-1 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/phase-1"
+PRESENT="${PF_REQUIRED_TOOLS[*]/blkdiscard/}"
+reset; _pf_check_tools >/dev/null 2>&1; counts "blkdiscard missing, phase 1 pending -> BLOCKING" 1 0
+TOUT=$(_pf_check_tools 2>&1 || true)
+check "  names blkdiscard"               "$(grep -c 'blkdiscard' <<<"$TOUT")" "1"
+check "  and does not offer --only 1 for it" "$(grep -c 'install --only 1' <<<"$TOUT")" "0"
+
+mark_phase_done 1
 PRESENT="${PF_REQUIRED_TOOLS[*]/setcap/}"
-reset; _pf_check_tools >/dev/null 2>&1; counts "setcap missing -> BLOCKING" 1 0
+reset; _pf_check_tools >/dev/null 2>&1; counts "setcap missing, phase 1 done -> BLOCKING" 1 0
 TOUT=$(_pf_check_tools 2>&1 || true)
 check "names libcap2-bin for setcap"     "$(grep -c 'libcap2-bin' <<<"$TOUT")" "1"
+state_clear phase-1 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/phase-1"
 
 # It must run while the disks are still intact — that is the whole point — and
 # before the box is measured, so a missing tool is reported in seconds rather
