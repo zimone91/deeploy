@@ -73,10 +73,30 @@ mountpoint() { local p=${!#}; case "$p" in "$MP_A"|"$MP_L") return 0;; *) return
 # driven by knobs, so a scenario cannot answer the wrong one by accident.
 FINDMNT_SRC=""              # `findmnt -no SOURCE /`
 CK_MOUNT="/"                # `findmnt -no TARGET --target $DEEPLOY_DIR`; "" = unresolvable
+# Adoption asks three more questions, each about ONE mount point: is it mounted,
+# what device is under it, and what filesystem. Driven by knobs so a scenario
+# cannot answer the wrong question by accident, same as the two above.
+ADOPT_A_SRC=""; ADOPT_L_SRC=""       # "" = that mount point is not mounted
+ADOPT_A_FS="xfs"; ADOPT_L_FS="xfs"
 findmnt() {
+    local last=${!#}
     case "$*" in
-        *--target*) [[ -n "$CK_MOUNT" ]] && printf '%s\n' "$CK_MOUNT" ;;
-        *)          printf '%s\n' "$FINDMNT_SRC" ;;
+        *--target*)     [[ -n "$CK_MOUNT" ]] && printf '%s\n' "$CK_MOUNT" ;;
+        *"-no TARGET"*) case "$last" in
+                            /mnt/accounts) [[ -n "$ADOPT_A_SRC" ]] && printf '%s\n' "$last" ;;
+                            /mnt/ledger)   [[ -n "$ADOPT_L_SRC" ]] && printf '%s\n' "$last" ;;
+                        esac ;;
+        *"-no SOURCE "*|*"-no SOURCE"*)
+                        case "$last" in
+                            /mnt/accounts) printf '%s\n' "$ADOPT_A_SRC" ;;
+                            /mnt/ledger)   printf '%s\n' "$ADOPT_L_SRC" ;;
+                            *)             printf '%s\n' "$FINDMNT_SRC" ;;
+                        esac ;;
+        *"-no FSTYPE"*) case "$last" in
+                            /mnt/accounts) printf '%s\n' "$ADOPT_A_FS" ;;
+                            /mnt/ledger)   printf '%s\n' "$ADOPT_L_FS" ;;
+                        esac ;;
+        *)              printf '%s\n' "$FINDMNT_SRC" ;;
     esac
 }
 export DEEPLOY_DIR="$WORK/checkout"; mkdir -p "$DEEPLOY_DIR"
@@ -195,6 +215,10 @@ check "refuse clobbering real dir" "$?" "1"
 
 echo "== emergency layout (1 NVMe + system, no second NVMe, no RAID0) =="
 : >"$CALLS"
+# This scenario is a FIRST install, so the recorded layout has to be empty: a box
+# already laid out on data disks now refuses to fall back to the system disk, and
+# earlier cases in this file leave disk_layout=two-nvme behind.
+state_clear disk_layout 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/disk_layout"
 LSBLK_ENUM='nvme0n1 2000398934016 disk 0 OnlyOneNVMe
 sdb 256060514304 disk 0 BootSSD'
 _mp_for() { case "$1" in */sdb) printf '/\n';; *) printf '';; esac; }
@@ -423,6 +447,94 @@ check "the pre-wipe guard refuses"          "$?" "1"
 check "  and calls no umount"               "$(grep -c '^umount' "$CALLS")" "0"
 ( _disk_assert_not_mounted /dev/nvme1n1 ) >/dev/null 2>&1
 check "  and passes an unmounted disk"      "$?" "0"
+
+echo "== 9: a re-run of a box we already laid out is a different question =="
+# The X2 refusal answered "which disk may be erased?" first, and DeePloy's own
+# mounted data disks became ineligible — so no layout resolved to two-nvme,
+# _disk_two_nvme was never called, its skip-the-wipe branch was unreachable, and
+# a working box fell through to the emergency layout, which rewrites the recorded
+# paths onto the system disk. Recognition now happens before classification.
+adopt_reset() {
+    ADOPT_A_SRC=""; ADOPT_L_SRC=""; ADOPT_A_FS="xfs"; ADOPT_L_FS="xfs"
+    unset ACCOUNTS_DISK LEDGER_DISK DISK_LAYOUT
+    ACCOUNTS_MOUNT=/mnt/accounts; LEDGER_MOUNT=/mnt/ledger
+    : >"$CALLS"
+    printf 'UUID=AAAA /mnt/accounts xfs defaults,noatime 0 2\nUUID=LLLL /mnt/ledger xfs defaults,noatime 0 2\n' >"$FSTAB_FILE"
+}
+blkid() { case "${!#}" in */nvme0n1) echo AAAA;; */nvme1n1) echo LLLL;; *) echo XXXX;; esac; }
+_disk_symlink_home() { :; }
+fstab_for() { awk -v m="$1" '$2==m{print $1}' "$FSTAB_FILE"; }
+
+adopt_reset; ADOPT_A_SRC=/dev/nvme0n1; ADOPT_L_SRC=/dev/nvme1n1
+_disk_adopt_existing_layout >/dev/null 2>&1
+check "both mounted on our own NVMe -> adopted"   "$?" "0"
+check "  accounts taken from its mount point"     "$ACCOUNTS_DISK" "/dev/nvme0n1"
+check "  ledger taken from its mount point"       "$LEDGER_DISK"   "/dev/nvme1n1"
+check "  layout is two-nvme, not emergency"       "$DISK_LAYOUT"   "two-nvme"
+check "  nothing was erased"                      "$(grep -cE 'blkdiscard|mkfs\.xfs' "$CALLS")" "0"
+check "  and the menu was never asked"            "$(grep -c 'ask_choice' "$CALLS")" "0"
+
+# The older hazard, and it has nothing to do with X2: a re-run used to ask the
+# menu again, and _fstab_ensure keys on the MOUNT POINT, so answering in the
+# opposite order replaced each mount's line with the other disk's UUID and the
+# two swapped after the reboot. Taking the device FROM the mount point cannot.
+adopt_reset; ADOPT_A_SRC=/dev/nvme1n1; ADOPT_L_SRC=/dev/nvme0n1
+_disk_adopt_existing_layout >/dev/null 2>&1
+check "mounted crosswise -> still adopted"        "$?" "0"
+check "  fstab: accounts keeps ITS device"        "$(fstab_for /mnt/accounts)" "UUID=LLLL"
+check "  fstab: ledger keeps ITS device"          "$(fstab_for /mnt/ledger)"   "UUID=AAAA"
+# Control: the two lines really are different, so the pair above cannot both be
+# satisfied by a single value written twice.
+check "  control: the two entries differ"         "$([[ "$(fstab_for /mnt/accounts)" != "$(fstab_for /mnt/ledger)" ]] && echo differ || echo same)" "differ"
+
+adopt_reset; ADOPT_A_SRC=/dev/nvme0n1
+AOUT=$( _disk_adopt_existing_layout 2>&1 ); ARC=$?
+check "only one mounted -> refused"               "$ARC" "1"
+check "  and it names which one"                  "$(grep -c '/mnt/accounts is mounted' <<<"$AOUT")" "1"
+
+adopt_reset; ADOPT_A_SRC=/dev/nvme0n1; ADOPT_L_SRC=/dev/nvme1n1; ADOPT_L_FS=ext4
+AOUT=$( _disk_adopt_existing_layout 2>&1 ); ARC=$?
+check "ledger is not xfs -> refused"              "$ARC" "1"
+check "  and it says what it found"               "$(grep -c 'is ext4, not xfs' <<<"$AOUT")" "1"
+
+adopt_reset; ADOPT_A_SRC=/dev/nvme0n1; ADOPT_L_SRC="/dev/sda3[/srv/ledger]"
+AOUT=$( _disk_adopt_existing_layout 2>&1 ); ARC=$?
+check "a bind mount -> refused"                   "$ARC" "1"
+check "  and it says it is not a whole NVMe"      "$(grep -c 'not a whole NVMe disk' <<<"$AOUT")" "1"
+
+adopt_reset; ADOPT_A_SRC=/dev/nvme0n1; ADOPT_L_SRC=/dev/nvme0n1
+AOUT=$( _disk_adopt_existing_layout 2>&1 ); ARC=$?
+check "both on the same device -> refused"        "$ARC" "1"
+check "  and it says they must differ"            "$(grep -c 'must be different physical disks' <<<"$AOUT")" "1"
+
+# Control the other way: a clean first install must be untouched by any of this.
+adopt_reset
+_disk_adopt_existing_layout >/dev/null 2>&1
+check "nothing mounted -> not a re-run, carry on" "$?" "1"
+check "  and it set no layout"                    "${DISK_LAYOUT:-unset}" "unset"
+
+echo "== 10: a laid-out box never falls back to the system disk =="
+# The emergency layout writes no filesystem, but _disk_record_paths repoints
+# solana_home, ledger_path, snapshots_path and accounts_path at /root/solana —
+# so a validator would come back with its real ledger unreferenced.
+adopt_reset
+LSBLK_ENUM='sda 256060514304 disk 0 SATA_ONLY'
+_mp_for() { case "$1" in */sda) printf '/\n';; *) printf '';; esac; }
+FINDMNT_SRC=/dev/sda; CK_MOUNT="/"
+export PROC_MDSTAT="$WORK/nomd_e"; : >"$PROC_MDSTAT"
+state_set disk_layout two-nvme
+# Not "the state is empty" — earlier cases in this file recorded paths. What must
+# hold is that the refusal changed NOTHING: the box is left exactly as it was.
+HOME_BEFORE=$(state_get solana_home)
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "state says two-nvme, no disks now -> refused" "$ERC" "1"
+check "  and it names the recorded layout"           "$(grep -c 'was laid out as two-nvme' <<<"$EOUT")" "1"
+check "  and the recorded paths are untouched"       "$(state_get solana_home)" "$HOME_BEFORE"
+check "  and the layout is still what it was"        "$(state_get disk_layout)" "two-nvme"
+state_clear disk_layout 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/disk_layout"
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "control: a first install still gets emergency" "$ERC" "0"
+check "  and says so"                                 "$(grep -c 'No eligible NVMe' <<<"$EOUT")" "1"
 
 echo ""
 echo "==================================="

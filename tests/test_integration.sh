@@ -82,7 +82,27 @@ lsblk()       { local last=${!#}; case "$*" in *"NAME,SIZE,TYPE,ROTA,MODEL"*) pr
                               *"-b -o SIZE"*) echo 1920383410176;; *"-o MODEL"*) echo SAMSUNG;;
                               *"-nr -o MOUNTPOINT"*) case "$last" in */sda) echo "/";; *) echo "";; esac;;
                               *"-nr -o FSTYPE"*) echo "";; *) echo "  (tree)";; esac; }
-findmnt()     { echo "/dev/sda2"; }
+# findmnt is asked four different questions now, and a mock that answers them all
+# with one string answers the wrong one: phase 3 asks whether ACCOUNTS_MOUNT and
+# LEDGER_MOUNT are already mounted, and a blanket reply made this fixture look
+# like a box whose two data mounts sit on the same device. This walkthrough is a
+# FIRST install: nothing is mounted at either, which is what mountpoint() below
+# already says.
+findmnt() {
+    local last=${!#}
+    case "$*" in
+        *"-no TARGET"*)
+            case "$*" in
+                *--target*) echo "/" ;;                # which filesystem holds a path
+                *) case "$last" in
+                       "$ACCOUNTS_MOUNT"|"$LEDGER_MOUNT") : ;;   # not mounted
+                       *) echo "/" ;;
+                   esac ;;
+            esac ;;
+        *"-no FSTYPE"*) : ;;
+        *) echo "/dev/sda2" ;;                          # SOURCE of / — the root backstop
+    esac
+}
 blkid()       { local d=${!#}; echo "UUID-${d##*/}"; }
 mountpoint()  { return 1; }
 timedatectl() { echo yes; }

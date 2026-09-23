@@ -383,6 +383,17 @@ _disk_resolve() {
         DISK_LAYOUT=raid-volume
         _disk_set_raid_volume "$_DISK_RAID0_VOL"
     else
+        # A box that was laid out on data disks does not quietly move to the
+        # system disk. The emergency layout writes no filesystem, but it DOES
+        # rewrite solana_home, ledger_path, snapshots_path and accounts_path
+        # through _disk_record_paths, so a validator would come back pointed at
+        # /root/solana with its real ledger sitting untouched on a disk nothing
+        # references. Refusing is the only honest answer: the disks that were
+        # here are not here now, and this phase cannot find out why.
+        local prev; prev=$(state_get disk_layout "")
+        if [[ "$prev" == "two-nvme" || "$prev" == "raid-volume" ]]; then
+            fail "Refusing: this box was laid out as ${prev}, and no eligible data disk or usable RAID volume is visible now. Falling back to the system disk would repoint the ledger and accounts paths at ${SOLANA_HOME:-/root/solana} and leave the real data unreferenced. Attach the data disks and run again, or clear the recorded layout deliberately if this box really is being rebuilt."
+        fi
         DISK_LAYOUT=emergency
         warn "No eligible NVMe (>= ${DISK_MIN_GB} GB, non-system) and no usable RAID0 volume found."
         SOLANA_HOME="${SOLANA_HOME:-/root/solana}"
@@ -397,6 +408,67 @@ _disk_resolve() {
         state_set ledger_disk "$LEDGER_DISK"
     fi
     state_set disk_layout "$DISK_LAYOUT"
+}
+
+# --- is this a re-run of a box we already laid out? ---------------------------
+# Asked BEFORE _disk_resolve, and that ordering is the whole point. "Which disk
+# may be erased?" and "is this our own box again?" are different questions, and
+# answering the first one first is what broke: the X2 refusal put DeePloy's own
+# mounted data disks into the ineligible list, no layout resolved to two-nvme,
+# and _disk_two_nvme — which holds the skip-the-wipe branch — was never reached.
+# The run fell through to the emergency layout and rewrote the recorded paths
+# onto the system disk. Measured on fixtures, not deduced.
+#
+# It also closes an older hazard that has nothing to do with X2. A re-run used to
+# ask the menu again, and _disk_finalize_two_nvme writes fstab keyed by MOUNT
+# POINT, so answering in the opposite order replaced each mount's line with the
+# other disk's UUID and the two swapped after the next reboot. Measured on a
+# fixture: /mnt/accounts -> the ledger UUID and /mnt/ledger -> the accounts UUID.
+# Taking each device FROM the mount point it is actually mounted at cannot
+# produce that, because the answer comes from the kernel rather than a prompt.
+_disk_mount_source() { findmnt -no SOURCE "$1" 2>/dev/null; }
+_disk_mount_fstype() { findmnt -no FSTYPE "$1" 2>/dev/null; }
+_disk_is_mounted()   { [[ -n "$(findmnt -no TARGET "$1" 2>/dev/null)" ]]; }
+
+# Whole NVMe disk, not a partition, not a mapper device, not a bind mount. A
+# bind mount's SOURCE carries a [subpath] and fails this by construction.
+_disk_is_whole_nvme() { [[ "${1##*/}" =~ ^nvme[0-9]+n[0-9]+$ ]]; }
+
+_disk_adopt_existing_layout() {                   # 0 = adopted (caller returns), 1 = not a re-run
+    have findmnt || fail "Refusing: findmnt is not installed, so whether ${ACCOUNTS_MOUNT} and ${LEDGER_MOUNT} are already mounted cannot be answered. This phase erases disks; it will not guess."
+    local a_m l_m; a_m=$(_disk_is_mounted "$ACCOUNTS_MOUNT" && echo y || echo n)
+    l_m=$(_disk_is_mounted "$LEDGER_MOUNT" && echo y || echo n)
+    [[ "$a_m" == "n" && "$l_m" == "n" ]] && return 1        # nothing mounted: a first install
+
+    # Half a layout is not a layout. Refusing here rather than falling through:
+    # the fall-through is what put a working box into the emergency layout.
+    if [[ "$a_m" != "$l_m" ]]; then
+        local one; [[ "$a_m" == "y" ]] && one="$ACCOUNTS_MOUNT" || one="$LEDGER_MOUNT"
+        fail "Refusing: ${one} is mounted but its counterpart is not, so this is neither a clean install nor a re-run of a layout DeePloy made. Mount both, or unmount ${one}, then run again."
+    fi
+
+    local a_src l_src a_fs l_fs
+    a_src=$(_disk_mount_source "$ACCOUNTS_MOUNT"); l_src=$(_disk_mount_source "$LEDGER_MOUNT")
+    a_fs=$(_disk_mount_fstype "$ACCOUNTS_MOUNT");  l_fs=$(_disk_mount_fstype "$LEDGER_MOUNT")
+    local why=""
+    [[ -n "$a_src" && -n "$l_src" ]]                 || why="findmnt could not name the device behind one of them"
+    [[ -z "$why" ]] && { [[ "$a_src" != "$l_src" ]]  || why="both are the same device (${a_src}); accounts and ledger must be different physical disks"; }
+    [[ -z "$why" ]] && { _disk_is_whole_nvme "$a_src" || why="${ACCOUNTS_MOUNT} is backed by ${a_src}, which is not a whole NVMe disk"; }
+    [[ -z "$why" ]] && { _disk_is_whole_nvme "$l_src" || why="${LEDGER_MOUNT} is backed by ${l_src}, which is not a whole NVMe disk"; }
+    [[ -z "$why" ]] && { [[ "$a_fs" == "xfs" ]]      || why="${ACCOUNTS_MOUNT} is ${a_fs:-of unknown type}, not xfs"; }
+    [[ -z "$why" ]] && { [[ "$l_fs" == "xfs" ]]      || why="${LEDGER_MOUNT} is ${l_fs:-of unknown type}, not xfs"; }
+    [[ -z "$why" ]] && { _disk_subtree_has_system "${a_src##*/}" && why="${a_src} carries a system mount"; }
+    [[ -z "$why" ]] && { _disk_subtree_has_system "${l_src##*/}" && why="${l_src} carries a system mount"; }
+    [[ -n "$why" ]] && fail "Refusing: ${ACCOUNTS_MOUNT} and ${LEDGER_MOUNT} are mounted, but this is not a layout DeePloy would have made — ${why}. Unmount them if these disks really are the targets, then run again."
+
+    ACCOUNTS_DISK="$a_src"; LEDGER_DISK="$l_src"
+    DISK_LAYOUT=two-nvme
+    ok "Data disks already mounted: ${ACCOUNTS_MOUNT} on ${ACCOUNTS_DISK}, ${LEDGER_MOUNT} on ${LEDGER_DISK} — adopting them, nothing is erased"
+    state_set accounts_disk "$ACCOUNTS_DISK"
+    state_set ledger_disk   "$LEDGER_DISK"
+    state_set disk_layout   "$DISK_LAYOUT"
+    _disk_finalize_two_nvme
+    return 0
 }
 
 # --- two-NVMe (destructive) --------------------------------------------------
@@ -546,6 +618,7 @@ fs.xfs.xfssyncd_centisecs=${XFS_SYNCD_CENTISECS}
 # --- orchestrator ------------------------------------------------------------
 disk_run() {
     require_root
+    _disk_adopt_existing_layout && return 0        # a re-run is a different question
     _disk_resolve
     case "$DISK_LAYOUT" in
         two-nvme)    _disk_two_nvme ;;
