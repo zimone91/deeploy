@@ -105,6 +105,53 @@ verify_run >"$WORK/run" 2>&1
 check "R10-2: verify_run (the post-reboot check) reads every CPU" "$(grep -c 'governor = performance on 1/4 CPUs' "$WORK/run")" "1"
 mkcpus performance performance 4
 
+echo "== R10-3: every mlx5 IRQ of the default-route NIC off the isolated CPUs, but an XDP core's own queue =="
+# Fake /proc: pirq <n> <name> <effective cpu>. _vf_isolated says 1-2,10,25-26,34.
+P="$WORK/proc"; export VF_PROC="$P"
+pirq() { mkdir -p "$P/irq/$1"; echo "$3" >"$P/irq/$1/effective_affinity_list"
+    printf ' %s:  0  0  IR-PCI-MSIX-%s  0-edge  %s\n' "$1" "${2#*@pci:}" "$2" >>"$P/interrupts"; }
+ip()      { echo "default via 10.0.0.1 dev enp133s0f0np0 proto static"; }
+ethtool() { printf 'driver: mlx5_core\nbus-info: %s\n' "${MOCK_BUS-0000:85:00.0}"; }
+state_set nic_driver mlx5_core; state_set xdp_cores 1-2
+# The rc9 box after the old map (§9): comp10/25-28 moved, comp34 left on CPU34;
+# the other port's comp0 is put on an isolated CPU — not this NIC's, not flagged.
+rm -rf "$P"; mkdir -p "$P"; : >"$P/interrupts"
+pirq 253 mlx5_async0@pci:0000:85:00.0 20; pirq 254 mlx5_comp0@pci:0000:85:00.0 0
+pirq 256 mlx5_async0@pci:0000:85:00.1 21; pirq 257 mlx5_comp0@pci:0000:85:00.1 10
+for i in $(seq 1 47); do pirq $((260 + i)) "mlx5_comp$i@pci:0000:85:00.0" "$i"; done
+for p in 270:11 285:7 286:8 287:9 288:12; do echo "${p#*:}" >"$P/irq/${p%:*}/effective_affinity_list"; done
+reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: comp34 on CPU34 -> WARN naming it alone" "$_VF_WARN|$(grep -c 'isolated CPUs: mlx5_comp34(irq 294)->cpu34 (' "$WORK/nicirq")" "1|1"
+verify_run >"$WORK/run" 2>&1
+check "R10-3: verify_run (the post-reboot check) runs it" "$(grep -c 'mlx5_comp34(irq 294)->cpu34' "$WORK/run")" "1"
+echo 26 >"$P/irq/286/effective_affinity_list"; echo 10,34 >"$P/irq/253/effective_affinity_list"
+reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: every one listed, once each, in /proc/interrupts order" \
+    "$(grep -c 'CPUs: mlx5_async0(irq 253)->cpu10 mlx5_comp26(irq 286)->cpu26 mlx5_comp34(irq 294)->cpu34 (' "$WORK/nicirq")" "1"
+echo 8 >"$P/irq/286/effective_affinity_list"; echo 20 >"$P/irq/253/effective_affinity_list"; echo 5 >"$P/irq/294/effective_affinity_list"
+reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: none on an isolated CPU but the XDP cores' own queues (comp1, comp2) -> ok" "$_VF_WARN|$(grep -c 'none of 49 on an isolated CPU but an XDP core' "$WORK/nicirq")" "0|1"
+echo 1 >"$P/irq/275/effective_affinity_list"
+reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: another queue's IRQ on an XDP core (comp15 on CPU1) -> WARN naming it" "$_VF_WARN|$(grep -c 'isolated CPUs: mlx5_comp15(irq 275)->cpu1 (' "$WORK/nicirq")" "1|1"
+echo 15 >"$P/irq/275/effective_affinity_list"; echo 10 >"$P/irq/261/effective_affinity_list"
+reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: an XDP core's own queue on another isolated CPU (comp1 on CPU10) -> WARN" "$_VF_WARN|$(grep -c 'isolated CPUs: mlx5_comp1(irq 261)->cpu10 (' "$WORK/nicirq")" "1|1"
+echo 1 >"$P/irq/261/effective_affinity_list"
+MOCK_BUS=0000:99:00.0; reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: no mlx5 IRQ of that PCI address -> WARN" "$_VF_WARN|$(grep -c 'none found for enp133s0f0np0 (pci 0000:99:00.0)' "$WORK/nicirq")" "1|1"
+MOCK_BUS=""; reset; verify_nic_irqs >"$WORK/nicirq" 2>&1; unset MOCK_BUS
+check "R10-3: no PCI address -> WARN" "$_VF_WARN|$(grep -c 'no PCI address for enp133s0f0np0' "$WORK/nicirq")" "1|1"
+ip() { :; }; reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: no default-route NIC -> WARN" "$_VF_WARN|$(grep -c 'mlx5 IRQs: no default-route NIC' "$WORK/nicirq")" "1|1"
+ip() { echo "default via 10.0.0.1 dev enp133s0f0np0 proto static"; }
+state_set nic_driver bnxt_en; reset; verify_nic_irqs >"$WORK/nicirq" 2>&1
+check "R10-3: not mlx5 -> no check, no output" "$_VF_WARN|$(wc -c <"$WORK/nicirq" | tr -d ' ')" "0|0"
+state_set nic_driver mlx5_core; export VF_PROC="$WORK/noproc"
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; verify_nic_irqs ) 2>&1 )
+check "R10-3: real probe, no /proc/interrupts, ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+export VF_PROC="$P"; state_clear nic_driver
+
 echo "== R10-6: identity — on the sync key is a WARN that names both cases =="
 STK=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu; SYN=SyncPk1111111111111111111111111111111111111
 LIVE=""; _vf_identity() { printf '%s' "$LIVE"; }; _vf_sync_pubkey() { printf '%s' "$SYN"; }

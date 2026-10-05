@@ -39,15 +39,67 @@ state_set solana_home /root/solana
 export MLX5_IRQ_SCRIPT="$WORK/mlx5.sh" MLX5_IRQ_SERVICE="$WORK/mlx5.service"
 export NIC_TUNING_SCRIPT="$WORK/nic.sh" NIC_TUNING_SERVICE="$WORK/nic.service"
 
-echo "== mlx5 IRQ script (hardcoded PoH=10/XDP=1-2 map) =="
-M=$(_nic_render_mlx5_irq_script)
-check "comp10 -> cpu11 (off PoH)"     "$(grep -c '10:11' <<<"$M")" "1"
-check "comp25-28 -> 7,8,9,12"         "$(grep -c '25:7 26:8 27:9 28:12' <<<"$M")" "1"
-check "comp0-4 -> 0-4"                "$(grep -c '0:0 1:1 2:2 3:3 4:4' <<<"$M")" "1"
+echo "== mlx5 IRQ script: no hardcoded map; the XDP set rendered in =="
+M=$(_nic_render_mlx5_irq_script "1-2")
+check "R10-3: no hardcoded MAP, no TODO"   "$(grep -c '^MAP=' <<<"$M")|$(grep -ci 'TODO' <<<"$M")" "0|0"
+check "R10-3: XDP_CORES rendered in"       "$(grep -c '^XDP_CORES="1-2"$' <<<"$M")" "1"
 check "interface via ip route (not hardcoded)" "$(grep -c 'ip route show default' <<<"$M")" "1"
 check "no hardcoded enp interface"    "$(grep -c 'enp133' <<<"$M")" "0"
 check "writes smp_affinity_list"      "$(grep -c 'smp_affinity_list' <<<"$M")" "1"
-check "TODO dynamic note"             "$(grep -ci 'TODO' <<<"$M")" "1"
+
+echo "== R10-3: the map is computed at boot (the script run on a fake /proc and /sys) =="
+# mkroot <online> <isolated>; irq <n> <name> <effective cpu>; aff <n> = what the script left
+R="$WORK/root"
+mkroot() { rm -rf "$R"; mkdir -p "$R/sys/devices/system/cpu" "$R/proc/irq"
+    echo "$1" >"$R/sys/devices/system/cpu/online"; echo "$2" >"$R/sys/devices/system/cpu/isolated"
+    echo "           CPU0       CPU1" >"$R/proc/interrupts"; }
+irq() { mkdir -p "$R/proc/irq/$1"; echo "$3" >"$R/proc/irq/$1/effective_affinity_list"; echo "$3" >"$R/proc/irq/$1/smp_affinity_list"
+    printf ' %s:  0  0  IR-PCI-MSIX-%s  0-edge  %s\n' "$1" "${2#*@pci:}" "$2" >>"$R/proc/interrupts"; }
+aff() { cat "$R/proc/irq/$1/smp_affinity_list"; }
+runmap() {    # <xdp cores> [bus-info] [default-route NIC] -> the script's log + rc in $WORK/irq.log
+    _nic_render_mlx5_irq_script "$1" >"$WORK/map.sh"; : >"$WORK/irq.log"
+    ( MOCK_BUS=${2-0000:85:00.0} MOCK_NIC=${3-enp133s0f0np0}
+      ip()      { [[ -n "$MOCK_NIC" ]] && echo "default via 10.0.0.1 dev $MOCK_NIC proto static"; }
+      ethtool() { printf 'driver: mlx5_core\nbus-info: %s\n' "$MOCK_BUS"; }
+      logger()  { shift 2; echo "$*" >>"$IRQLOG"; }
+      export -f ip ethtool logger; export MOCK_BUS MOCK_NIC IRQLOG="$WORK/irq.log" MLX5_IRQ_ROOT="$R"
+      bash "$WORK/map.sh"; echo "rc=$?" >>"$WORK/irq.log" ); }
+# The rc9 box (§9): port 0 is the default route, port 1 is down; comp<i> -> CPU i.
+mkroot 0-47 "1-2,10,25-26,34"
+irq 253 mlx5_async0@pci:0000:85:00.0 20; irq 254 mlx5_comp0@pci:0000:85:00.0 0
+irq 256 mlx5_async0@pci:0000:85:00.1 21; irq 257 mlx5_comp0@pci:0000:85:00.1 0
+for i in $(seq 1 47); do irq $((260 + i)) "mlx5_comp$i@pci:0000:85:00.0" "$i"; done
+echo 0-47 >"$R/proc/irq/253/smp_affinity_list"; echo 0-47 >"$R/proc/irq/256/smp_affinity_list"   # as measured: smp 0-47, effective 20/21
+runmap 1-2
+check "R10-3: rc9 layout: comp10, 25, 26, 34 -> 0 3 4 5 (round-robin, non-isolated)" "$(aff 270) $(aff 285) $(aff 286) $(aff 294)" "0 3 4 5"
+check "R10-3: rc9 layout: the XDP cores keep their own queue (comp1 -> 1, comp2 -> 2)" \
+    "$(grep -cxE 'mlx5_comp1@pci:0000:85:00.0 irq261 -> cpu1|mlx5_comp2@pci:0000:85:00.0 irq262 -> cpu2' "$WORK/irq.log")" "2"
+check "R10-3: rc9 layout: 6 writes, nothing else (async0 judged by its effective CPU); port 1 untouched; rc 0" \
+    "$(grep -c ' -> cpu' "$WORK/irq.log")|$(aff 253) $(aff 256) $(aff 257)|$(grep -c '^rc=0$' "$WORK/irq.log")" "6|0-47 0-47 0|1"
+# Another layout: 32 CPUs, PoH 6, one XDP core (1); both ports up, the default
+# route on the second, whose lines come AFTER the first port's.
+mkroot 0-31 "1,6,17,22"
+for i in $(seq 0 15); do irq $((100 + i)) "mlx5_comp$i@pci:0000:41:00.0" "$i"; done
+irq 200 mlx5_async0@pci:0000:41:00.1 17,22                                  # two isolated CPUs: moved once
+for i in $(seq 0 15); do irq $((201 + i)) "mlx5_comp$i@pci:0000:41:00.1" "$i"; done
+echo 5 >"$R/proc/irq/202/effective_affinity_list"; echo 5 >"$R/proc/irq/202/smp_affinity_list"   # comp1 away from its XDP core
+echo 1 >"$R/proc/irq/216/effective_affinity_list"; echo 1 >"$R/proc/irq/216/smp_affinity_list"   # comp15 on XDP core 1, not its queue: moves
+runmap 1 0000:41:00.1 enp65s0f1np1
+check "R10-3: 2nd layout: async0 (CPUs 17,22) and comp6 move to 0 2; comp1 back on XDP core 1" "$(aff 200) $(aff 207) $(aff 202)" "0 2 1"
+check "R10-3: 2nd layout: comp15 leaves XDP core 1 for 3; the other port's comp1/comp6 stay; 4 writes" \
+    "$(aff 216)|$(aff 101) $(aff 106)|$(grep -c ' -> cpu' "$WORK/irq.log")" "3|1 6|4"
+runmap 1,20 0000:41:00.1 enp65s0f1np1
+check "R10-3: an XDP core without its queue IRQ is logged, one with it is not" \
+    "$(grep -c '^XDP core 20: no mlx5_comp20@pci:0000:41:00.1$' "$WORK/irq.log")|$(grep -c '^XDP core 1:' "$WORK/irq.log")" "1|0"
+runmap 1 0000:99:00.0 enp65s0f1np1
+check "R10-3: no mlx5 IRQ of that PCI address -> logged, nothing written" "$(grep -c 'no mlx5 IRQ of pci:0000:99:00.0' "$WORK/irq.log")|$(grep -c ' -> cpu' "$WORK/irq.log")" "1|0"
+runmap 1 "" enp65s0f1np1
+check "R10-3: no PCI address from ethtool -> rc 1, logged" "$(grep -c 'no PCI address' "$WORK/irq.log")|$(grep -c '^rc=1$' "$WORK/irq.log")" "1|1"
+runmap 1 0000:41:00.1 ""
+check "R10-3: no default-route NIC -> rc 1, logged" "$(grep -c 'no default-route NIC' "$WORK/irq.log")|$(grep -c '^rc=1$' "$WORK/irq.log")" "1|1"
+mkroot 0-3 0-3; irq 10 mlx5_comp0@pci:0000:85:00.0 0
+runmap 1-2
+check "R10-3: no non-isolated CPU -> rc 1, logged, nothing written" "$(grep -c 'no non-isolated online CPU' "$WORK/irq.log")|$(grep -c '^rc=1$' "$WORK/irq.log")|$(aff 10)" "1|1|0"
 
 echo "== mlx5 service =="
 MS=$(_nic_render_mlx5_service)
@@ -67,12 +119,17 @@ check "Before=solana.service" "$(grep -c 'Before=solana.service' <<<"$BS")" "1"
 check "RemainAfterExit=yes"   "$(grep -c 'RemainAfterExit=yes' <<<"$BS")" "1"
 
 echo "== dispatch: mlx5_core =="
-state_set nic_driver mlx5_core; : >"$CALLS"
+state_set nic_driver mlx5_core; state_set xdp_cores 1-2; : >"$CALLS"
 nic_run >/dev/null 2>&1
 check_true  "mlx5 script written"  "[[ -x \"$WORK/mlx5.sh\" ]]"
 check_true  "mlx5 service written" "[[ -f \"$WORK/mlx5.service\" ]]"
 check "mlx5 service enabled"       "$(grep -c 'systemctl enable mlx5-irq-affinity.service' "$CALLS")" "1"
 check_false "no nic-tuning for mlx5" "[[ -f \"$WORK/nic.service\" ]]"
+check "R10-3: the script carries state's XDP set" "$(grep -c '^XDP_CORES="1-2"$' "$WORK/mlx5.sh")" "1"
+state_set xdp_cores '1;reboot'
+RC=$( (nic_run >/dev/null 2>&1); echo $? )
+check "R10-3: xdp_cores not a CPU list -> fails, not rendered" "$([[ $RC != 0 ]] && echo y || echo n)|$(grep -c 'reboot' "$WORK/mlx5.sh")" "y|0"
+state_set xdp_cores 1-2
 
 echo "== dispatch: bnxt_en =="
 state_set nic_driver bnxt_en; : >"$CALLS"; rm -f "$WORK/nic.sh" "$WORK/nic.service"

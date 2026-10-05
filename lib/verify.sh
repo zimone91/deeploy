@@ -3,9 +3,10 @@
 # DeePloy — lib/verify.sh   (post-install verification; also `deeploy verify`)
 # Read-only diagnostic ported from the operator's verification block. Checks
 # that the tuning actually took: process limits, priority/OOM, CPU isolation
-# (vs the recorded isolated set), PoH thread affinity (vs POH_CORE), governor/
-# THP/KSM/NUMA, sysctl buffers, disk layout, catchup, the poh-pin timer, and
-# whether the node runs on the staked identity.
+# (vs the recorded isolated set), PoH thread affinity (vs POH_CORE), the mlx5
+# NIC's IRQs (off the isolated CPUs), governor/THP/KSM/NUMA, sysctl buffers,
+# disk layout, catchup, the poh-pin timer, and whether the node runs on the
+# staked identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
 # Requires: common.sh sourced (constants.sh optional).
@@ -42,6 +43,16 @@ _vf_governors() {               # stdout: "cpuN <governor>" per cpufreq CPU; VF_
         c=${f%/cpufreq/scaling_governor}
         printf '%s %s\n' "${c##*/}" "$(cat "$f" 2>/dev/null || true)"
     done
+}
+_vf_nic()          { ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true; }
+_vf_nic_bus()      { ethtool -i "$1" 2>/dev/null | awk -F': ' '/^bus-info:/{print $2; exit}' || true; }
+_vf_mlx5_irqs() {               # <pci addr>; stdout: "<irq> <name> <effective CPUs>" per mlx5 IRQ; VF_PROC = tests' fake /proc
+    local p=${VF_PROC:-/proc} irq name
+    awk -v bus="$1" '{n = $NF; at = index(n, "@pci:")}
+        at && substr(n, at + 5) == bus {sub(":", "", $1); print $1, n}' "$p/interrupts" 2>/dev/null |
+        while read -r irq name; do
+            printf '%s %s %s\n' "$irq" "$name" "$(cat "$p/irq/$irq/effective_affinity_list" 2>/dev/null || true)"
+        done || true
 }
 _vf_thp()          { cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true; }
 _vf_ksm()          { cat /sys/kernel/mm/ksm/run 2>/dev/null || true; }
@@ -95,6 +106,41 @@ verify_poh_affinity() {
     aff=$(_vf_taskset "$tid")
     if [[ -n "$poh" && "$aff" == "$poh" ]]; then vf_ok "PoH thread pinned to core $poh"
     else vf_warn "PoH thread affinity = ${aff:-?} (expected $poh)"; fi
+}
+
+_vf_cpus() {                    # "1-2,10" -> " 1 2 10 "
+    local part i out=" "
+    for part in ${1//,/ }; do
+        if [[ "$part" == *-* ]]; then for ((i = ${part%-*}; i <= ${part#*-}; i++)); do out+="$i "; done
+        else out+="$part "; fi
+    done
+    printf '%s' "$out"
+}
+
+# Every mlx5 IRQ of the default-route NIC, not the queues a map names: comp34
+# sat on the PoH core's SMT sibling, outside the old hardcoded map. The only
+# IRQ an isolated CPU may keep is an XDP core's own queue. (R10-3)
+verify_nic_irqs() {
+    [[ "$(state_get nic_driver "")" == mlx5_core ]] || return 0
+    local nic bus iso xdp list irq name eff q c bad="" total=0
+    nic=$(_vf_nic)
+    [[ -n "$nic" ]] || { vf_warn "mlx5 IRQs: no default-route NIC"; return 0; }
+    bus=$(_vf_nic_bus "$nic")
+    [[ -n "$bus" ]] || { vf_warn "mlx5 IRQs: no PCI address for $nic (ethtool -i)"; return 0; }
+    iso=$(_vf_cpus "$(_vf_isolated)"); xdp=$(_vf_cpus "$(state_get xdp_cores "")")
+    list=$(_vf_mlx5_irqs "$bus")
+    while read -r irq name eff; do
+        [[ -n "$irq" ]] || continue
+        total=$((total + 1))
+        q=${name#mlx5_comp}; q=${q%%@*}   # the queue of mlx5_comp<q>; not a number for any other name
+        for c in $(_vf_cpus "$eff"); do
+            if [[ "$c" == "$q" && "$xdp" == *" $c "* ]]; then continue; fi    # an XDP core's own queue
+            if [[ "$iso" == *" $c "* ]]; then bad+="${bad:+ }${name%%@*}(irq $irq)->cpu$c"; break; fi
+        done
+    done <<<"$list"
+    if (( total == 0 )); then vf_warn "mlx5 IRQs: none found for $nic (pci $bus)"
+    elif [[ -z "$bad" ]]; then vf_ok "mlx5 IRQs of $nic: none of ${total} on an isolated CPU but an XDP core's own queue"
+    else vf_warn "mlx5 IRQs of $nic on isolated CPUs: ${bad} (mlx5-irq-affinity.service should have moved them)"; fi
 }
 
 # Every cpufreq CPU, not cpu0 alone (R10-2): after a reboot the cpufrequtils
@@ -165,6 +211,7 @@ verify_run() {
     verify_priority
     verify_isolation
     verify_poh_affinity
+    verify_nic_irqs
     verify_perf_tweaks
     verify_sysctl
     verify_catchup

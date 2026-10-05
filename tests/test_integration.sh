@@ -142,6 +142,7 @@ _vf_pid(){ echo 12345; }; _vf_proc_limits(){ printf 'Max open files 2000000 2000
 _vf_proc_nice(){ echo -10; }; _vf_oom_score(){ echo -1000; }; _vf_poh_thread(){ echo 999; }; _vf_taskset(){ sget poh_core; }
 _vf_isolated(){ sget isolated_set; }; _vf_governors(){ echo "cpu0 performance"; }; _vf_thp(){ echo "[never]"; }; _vf_ksm(){ echo 0; }; _vf_numa(){ echo 0; }
 _vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "0 slot(s) behind"; }; _vf_timer_active(){ echo active; }
+_vf_nic(){ echo enp1s0; }; _vf_nic_bus(){ echo 0000:85:00.0; }; _vf_mlx5_irqs(){ echo "254 mlx5_comp0@pci:0000:85:00.0 0"; }
 # post-reboot isolation read (mock /sys agreeing with the recorded set)
 _install_read_isolated(){ sget isolated_set; }; _install_read_cmdline(){ echo "isolcpus=domain,managed_irq,$(sget isolated_set)"; }
 
