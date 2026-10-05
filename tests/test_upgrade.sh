@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Self-contained tests for lib/upgrade.sh — no network, no build, no validator.
 # toolchain functions, identity probes, release API, systemctl are mocked.
-# Focus: the STAKED-identity guard, no-auto-jump tag selection, toolchain reuse
+# Focus: the live-identity guard (getIdentity, before the build and before every
+# restart, --rollback included), no-auto-jump tag selection, toolchain reuse
 # (no flag drift), and rollback (one symlink flip).
 #
 # Mocks shadow real commands and are invoked indirectly.
@@ -84,26 +85,113 @@ check "v4.3.0-jito.0 -> the choice stands"    "$(lines_with CHOSEN "$UPJ")" "CHO
 check "v4.3.0-jito.0 -> no warning"           "$(lines_with WARN "$UPJ")" ""
 unset -f ask
 
-echo "== STAKED-identity guard =="
-# Staked + non-interactive: require_yes refuses -> ABORT (no restart of a staked node).
-_upgrade_running_identity() { echo "StakedPubAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; }
-_upgrade_staked_pubkey()    { echo "StakedPubAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; }
-( upgrade_identity_guard ) >/dev/null 2>&1
-check "staked + non-interactive -> ABORT" "$?" "1"
-# Staked + explicit yes: proceeds and flags STAKED_RESTART.
-require_yes() { return 0; }
-STAKED_RESTART=0
-upgrade_identity_guard >/dev/null 2>&1
-check "staked + confirmed -> proceed" "$?" "0"
-check "STAKED_RESTART flagged"        "$STAKED_RESTART" "1"
-# Unstaked running -> proceed.
-_upgrade_running_identity() { echo "FakePubBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"; }
-upgrade_identity_guard >/dev/null 2>&1
-check "unstaked running -> proceed" "$?" "0"
-# Not running -> proceed.
-_upgrade_running_identity() { echo ""; }
-upgrade_identity_guard >/dev/null 2>&1
-check "not running -> proceed" "$?" "0"
+echo "== R10-1: live-identity guard (getIdentity, fail-closed) =="
+# Only system-level seams are mocked — pgrep (is the process up), curl (the
+# local RPC) and a solana-keygen stub — so the same cases also run against the
+# rc9 guard, which read argv and a staked keypair file. On the box argv is the
+# sync identity whatever set-identity did; that guard is red on every case
+# below that expects a prompt.
+SYNC_PK="SyncPubCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+STAKED_PK="StakedPubAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+mkdir -p "$WORK/bin"
+cat >"$WORK/bin/solana-keygen" <<EOF
+#!/bin/bash
+[[ "\$1" == pubkey ]] || exit 1
+case "\$2" in *sync-identity*) echo "$SYNC_PK";; *) echo "OtherPubDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";; esac
+EOF
+chmod +x "$WORK/bin/solana-keygen"
+SOLANA_BIN="$WORK/bin"
+: >"$WORK/sync-identity.json"
+state_set sync_identity "$WORK/sync-identity.json"
+PROC_UP=1
+pgrep() { [[ "$PROC_UP" == 1 ]] && echo 4242; }
+# One answer per getIdentity call — a pubkey, DOWN or GARBAGE; the last repeats.
+RPCQ="$WORK/rpc-queue"
+rpc_answers() { printf '%s\n' "$@" >"$RPCQ"; }
+curl() {
+    [[ "$*" == *getIdentity* ]] || return 7
+    local a; a=$(head -1 "$RPCQ")
+    if (( $(wc -l <"$RPCQ") > 1 )); then tail -n +2 "$RPCQ" >"$RPCQ.next"; mv "$RPCQ.next" "$RPCQ"; fi
+    case "$a" in
+        DOWN)    return 7 ;;
+        GARBAGE) echo '<html>502 Bad Gateway</html>' ;;
+        *)       printf '{"jsonrpc":"2.0","result":{"identity":"%s"},"id":1}\n' "$a" ;;
+    esac
+}
+GATES="$WORK/gates"
+require_yes() { echo GATE >>"$GATES"; return "${GATE_RC:-1}"; }
+gates() { local n; n=$(wc -l <"$GATES"); echo $((n)); }
+reset_case() { : >"$GATES"; : >"$CALLS"; GATE_RC=1; PROC_UP=1; }
+
+reset_case; rpc_answers "$SYNC_PK"
+GOUT=$( ( upgrade_identity_guard "before the build" ) 2>&1 ); GRC=$?
+check "RPC = sync -> proceeds"                     "$GRC" "0"
+check "RPC = sync -> no prompt"                    "$(gates)" "0"
+check "RPC = sync -> names the sync identity"      "$(grep -c "on the sync identity ($SYNC_PK" <<<"$GOUT")" "1"
+
+reset_case; rpc_answers "$STAKED_PK"
+( upgrade_identity_guard ) >/dev/null 2>&1; GRC=$?
+check "RPC = another pubkey -> prompt"             "$(gates)" "1"
+check "RPC = another pubkey, non-interactive -> ABORT" "$GRC" "1"
+reset_case; rpc_answers "$STAKED_PK"; GATE_RC=0; STAKED_RESTART=0
+upgrade_identity_guard >/dev/null 2>&1; GRC=$?
+check "RPC = another pubkey, confirmed -> proceed" "$GRC" "0"
+check "... and STAKED_RESTART is flagged"          "$STAKED_RESTART" "1"
+
+reset_case; rpc_answers DOWN
+( upgrade_identity_guard ) >/dev/null 2>&1; GRC=$?
+check "RPC down, process up -> prompt"             "$(gates)" "1"
+check "RPC down, process up -> ABORT"              "$GRC" "1"
+
+reset_case; rpc_answers GARBAGE
+( upgrade_identity_guard ) >/dev/null 2>&1; GRC=$?
+check "process up, identity unparsable -> prompt"  "$(gates)" "1"
+
+# Under DeePloy's ERR trap a non-zero status inside $( ) prints a stray
+# "[FAIL] line N" (ERR-NOISE-SUBST); the probes must stay quiet on failure.
+reset_case; rpc_answers DOWN; GATE_RC=0
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; upgrade_identity_guard ) 2>&1 )
+check "RPC down -> no stray [FAIL] line from the ERR trap" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+
+reset_case; PROC_UP=0; rpc_answers DOWN
+( upgrade_identity_guard ) >/dev/null 2>&1; GRC=$?
+check "not running (no answer, no process) -> proceed" "$GRC" "0"
+check "not running (no answer, no process) -> no prompt" "$(gates)" "0"
+
+# The node's answer decides, not the argv pattern: pgrep is asked only when
+# getIdentity is silent.
+reset_case; PROC_UP=0; rpc_answers "$STAKED_PK"
+( upgrade_identity_guard ) >/dev/null 2>&1; GRC=$?
+check "no process found, RPC = another pubkey -> prompt" "$(gates)" "1"
+reset_case; PROC_UP=0; rpc_answers "$SYNC_PK"
+( upgrade_identity_guard ) >/dev/null 2>&1; GRC=$?
+check "no process found, RPC = sync -> no prompt"  "$(gates)" "0"
+
+# The whole upgrade: sync before the build, another key right before the
+# restart. Build and release check are stubbed inside the subshell only.
+reset_case; rpc_answers "$SYNC_PK" "$STAKED_PK"
+( require_root() { :; }; upgrade_check_releases() { UPGRADE_TAG=v4.3.0-jito.0; }
+  upgrade_build() { JITO_TAG="$UPGRADE_TAG"; echo build >>"$CALLS"; }
+  upgrade_run ) >/dev/null 2>&1
+check "identity changes during the build -> prompt before the restart" "$(gates)" "1"
+check "... non-interactive -> no restart"          "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
+check "... the build itself ran"                   "$(grep -c '^build$' "$CALLS")" "1"
+
+# --rollback restarts solana too: same guard, before anything is flipped.
+mkdir -p "$WORK/rb/old" "$WORK/rb/new"; ln -sfn "$WORK/rb/new" "$WORK/rb/active"
+state_set previous_release "$WORK/rb/old"
+reset_case; rpc_answers "$STAKED_PK"
+( require_root() { :; }; ACTIVE_RELEASE="$WORK/rb/active" ROLLBACK=1 upgrade_run ) >/dev/null 2>&1
+check "--rollback, RPC = another pubkey -> prompt" "$(gates)" "1"
+check "... declined -> no restart"                 "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
+check "... declined -> active_release untouched"   "$(readlink "$WORK/rb/active")" "$WORK/rb/new"
+reset_case; rpc_answers "$SYNC_PK"
+( require_root() { :; }; ACTIVE_RELEASE="$WORK/rb/active" ROLLBACK=1 upgrade_run ) >/dev/null 2>&1
+check "--rollback, RPC = sync -> no prompt"        "$(gates)" "0"
+check "--rollback, RPC = sync -> restarted"        "$(grep -c 'systemctl restart solana' "$CALLS")" "1"
+check "--rollback, RPC = sync -> flipped"          "$(readlink "$WORK/rb/active")" "$WORK/rb/old"
+state_clear previous_release
+PROC_UP=0                     # below: the validator is not running
 
 echo "== upgrade_build reuses the toolchain (identical recipe, no drift) =="
 BUILDLOG="$WORK/build"; : >"$BUILDLOG"

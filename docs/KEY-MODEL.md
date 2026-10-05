@@ -4,7 +4,7 @@ DeePloy never **generates, copies, moves, or transmits** your real staked
 validator key, and never places it on the box for you. The node syncs on a
 throwaway identity and you swap the staked key in manually (step 2). The tool
 does **read** the keypair file in two narrow, local, read-only ways — to derive
-its **public** key (the identity≠vote check and the upgrade staked-restart guard)
+its **public** key (the check that it is not the sync identity)
 and to produce a single DoubleZero passport signature during `dz-connect` — but
 the private key is never written, copied, or sent off the box. Understand the
 flow before you run it; this is what separates "fine on testnet" from "I know

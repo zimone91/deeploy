@@ -7,8 +7,12 @@
 #     operator picks/confirms a jito-solana TAG (default = current — never
 #     auto-jumps to latest); a tag not shaped like one — a bare Agave v4.3.0
 #     included — is refused before anything is built;
-#   * detect the RUNNING identity: if staked -> warn + require explicit "yes"
-#     (prefer the failover path); if unstaked/not-running -> proceed;
+#   * ask the node which identity it RUNS on — getIdentity on the local RPC,
+#     because set-identity changes it at runtime and argv always shows the sync
+#     identity — before the build AND right before every restart, --rollback
+#     included: the sync identity -> proceed; anything else (staked, unknown,
+#     no answer while the process is up) -> warn + require explicit "yes"
+#     (prefer the failover path); not running -> proceed;
 #   * rebuild via the SAME toolchain functions (identical --release-with-lto
 #     --no-build-platform-tools / RUSTFLAGS / 5-cap setcap — no flag drift),
 #     overlay-aware (vanilla unless private patch applies);
@@ -56,39 +60,52 @@ upgrade_check_releases() {
         || fail "refusing to upgrade to '${UPGRADE_TAG}': ${why}. The validator.sh on this box passes --no-xdp and --poh-pinned-cpu-core, which only exist from ${DEEPLOY_MIN_JITO_TAG} on. Choose ${DEEPLOY_MIN_JITO_TAG} or newer."
 }
 
-# --- staked-identity guard (mockable probes) ---------------------------------
-_upgrade_running_identity() {
-    local pid idfile
-    pid=$(pgrep -f '^agave-validator --identity' 2>/dev/null | head -1 || true)
-    [[ -z "$pid" ]] && return 0
-    idfile=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed -nE 's/.*--identity[[:space:]=]+([^[:space:]]+).*/\1/p' | head -1 || true)
-    [[ -n "$idfile" ]] && "$SOLANA_BIN/solana-keygen" pubkey "$idfile" 2>/dev/null
+# --- live-identity guard (mockable probes) -----------------------------------
+# The staked identity is applied at runtime with set-identity, so argv
+# (/proc/<pid>/cmdline) always shows the sync identity and a keypair file proves
+# nothing about the running process. Only the node itself can tell: getIdentity
+# on the local RPC. Fail-closed: anything but the sync identity — the staked
+# key, an unknown key, no answer, an unparsable answer — goes through require_yes.
+# The value probes print nothing on failure and always return 0: a non-zero
+# status inside $( ) wakes the ERR trap and prints a stray [FAIL] line.
+_upgrade_validator_running() { pgrep -f '^agave-validator --identity' >/dev/null 2>&1; }   # if-condition only
+_upgrade_live_identity() {      # stdout: the base58 identity, or nothing (no answer / unparsable)
+    local port out
+    port=$(state_get rpc_port 8899)
+    out=$(curl -sS -m 5 -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' "http://127.0.0.1:${port}" 2>/dev/null || true)
+    printf '%s\n' "$out" | sed -nE 's/.*"identity"[[:space:]]*:[[:space:]]*"([1-9A-HJ-NP-Za-km-z]{32,44})".*/\1/p' | head -1
 }
-_upgrade_staked_pubkey() {
-    local sk; sk=$(state_get staked_keypair "")
-    [[ -f "$sk" ]] && "$SOLANA_BIN/solana-keygen" pubkey "$sk" 2>/dev/null
+_upgrade_sync_pubkey() {        # stdout: the sync pubkey, or nothing
+    local f; f=$(state_get sync_identity "")
+    if [[ -n "$f" && -f "$f" ]]; then "$SOLANA_BIN/solana-keygen" pubkey "$f" 2>/dev/null || true; fi
 }
 
-upgrade_identity_guard() {
-    step "Identity check before rebuild/restart"
-    local running staked
-    running=$(_upgrade_running_identity || true)
-    if [[ -z "$running" ]]; then
-        info "Validator not running (or identity undetectable) — no staked-restart risk"
+upgrade_identity_guard() {      # <when> — runs before the build and before every restart
+    local when=${1:-"before the restart"} live sync
+    step "Identity check ${when}"
+    STAKED_RESTART=0
+    live=$(_upgrade_live_identity)          # the node first; pgrep only when it does not answer
+    if [[ -z "$live" ]] && ! _upgrade_validator_running; then
+        info "Validator not running (no answer from getIdentity, no process) — no staked-restart risk"
         return 0
     fi
-    staked=$(_upgrade_staked_pubkey || true)
-    if [[ -n "$staked" && "$running" == "$staked" ]]; then
-        warn "The validator is running on the STAKED identity: ${running}"
-        warn "Rebuilding + restarting it WILL skip leader slots during the restart."
-        warn "Safer: use the failover tool (swap to standby, upgrade this box, swap back)."
-        if ! require_yes "Proceed anyway and restart the STAKED validator for this upgrade?"; then
-            fail "Upgrade aborted — staked node left running. Use the failover path."
+    sync=$(_upgrade_sync_pubkey)
+    if [[ -n "$live" ]]; then
+        if [[ -n "$sync" && "$live" == "$sync" ]]; then
+            ok "Validator running on the sync identity (${live}, from getIdentity) — safe to restart"
+            return 0
         fi
-        STAKED_RESTART=1
+        warn "The validator is running on ${live} (getIdentity), not on the sync identity ${sync:-(sync pubkey unreadable)}."
+        warn "That is the staked key or an unknown one. A restart brings the node back on the sync identity: it stops voting and skips its leader slots."
     else
-        ok "Validator running on a non-staked identity (${running}) — safe to upgrade"
+        warn "The validator process is up, but its identity is unknown: getIdentity on the local RPC did not answer or could not be parsed."
     fi
+    warn "Safer: use the failover tool (swap to standby, upgrade this box, swap back)."
+    if ! require_yes "Proceed anyway and restart this validator?"; then
+        fail "Upgrade aborted — validator left running. Use the failover path."
+    fi
+    STAKED_RESTART=1
 }
 
 # --- rebuild (reuses toolchain functions: identical flags, no drift) ---------
@@ -108,8 +125,9 @@ upgrade_build() {
 }
 
 upgrade_restart() {
+    upgrade_identity_guard "right before the restart"   # re-read: the build is long; the identity can change meanwhile
     step "Restarting solana.service on ${JITO_TAG}"
-    [[ "${STAKED_RESTART:-0}" == "1" ]] && warn "Restarting a STAKED validator — expect a brief skipped-leader-slot window."
+    [[ "${STAKED_RESTART:-0}" == "1" ]] && warn "Restarting a validator that is not on the sync identity — expect a brief skipped-leader-slot window."
     run systemctl restart solana
     ok "Upgraded to ${JITO_TAG}."
     local prev; prev=$(state_get previous_release "")
@@ -120,6 +138,7 @@ upgrade_restart() {
 upgrade_rollback() {
     local prev; prev=$(state_get previous_release "")
     [[ -n "$prev" && -d "$prev" ]] || fail "No previous release recorded — cannot rollback"
+    upgrade_identity_guard "before the rollback restart"   # declined -> nothing flipped, nothing restarted
     step "Rolling back active_release -> ${prev}"
     run ln -sfn "$prev" "${ACTIVE_RELEASE:?}"
     run systemctl restart solana
@@ -132,7 +151,7 @@ upgrade_run() {
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (identity guard reads pubkeys via solana-keygen)
     if [[ "${ROLLBACK:-0}" == "1" ]]; then upgrade_rollback; return; fi
     upgrade_check_releases
-    upgrade_identity_guard
+    upgrade_identity_guard "before the build"      # early exit before a long build
     upgrade_build
     upgrade_restart
 }
