@@ -64,8 +64,11 @@ doublezero()      { echo "doublezero $*" >>"$CALLS"
                      ' BGP Session Up | doublezero1 | dz-syn1-sw01 | metro-a | P:edge-solana-shreds ';; esac; }
 # find-validator now emits JSON (--json-compact); DZ_FV_JSON overrides per-test.
 DZ_FV_JSON='{"cluster":"mainnet-beta","in_leader_schedule":true,"role":"primary","visible_in_gossip":true}'
+# A sent request prints its transaction signature (64 bytes, base58). (R10-11)
+DZ_TX=ap24ym79C6mLcbSqzKkGfcb33ybxVnqQK74ncx54RgFwF1HkoDZn63o1f18Xvsd6TP9LBtKPnHi8HJYXKEhhArM
 doublezero-solana(){ echo "doublezero-solana $*" >>"$CALLS"
-    case "$*" in *find-validator*) echo "$DZ_FV_JSON";; esac; }
+    case "$*" in *find-validator*) echo "$DZ_FV_JSON";;
+                 *request-validator-access*) echo "Request Solana validator access: $DZ_TX";; esac; }
 ufw()             { echo "ufw $*" >>"$CALLS"; }
 systemctl()       { echo "systemctl $*" >>"$CALLS"; }
 apt-get()         { echo "apt-get $*" >>"$CALLS"; }
@@ -363,6 +366,7 @@ doublezero() { case "$*" in status)
   *) :;; esac; }
 WOUT=$( DZ_MCAST_RETRIES=3 DZ_MCAST_INTERVAL=0 dz_show_status 2>&1 )
 check "status-poll: mcast-stuck -> warns IBRL up but multicast pending" "$(grep -c 'Multicast BGP session is still' <<<"$WOUT")" "1"
+check "R10-11: multicast stuck -> the multicast command, not dz-connect" "$(grep -cF "run 'doublezero connect multicast --publish edge-solana-shreds' — not dz-connect" <<<"$WOUT")|$(grep -c "re-run '.*dz-connect'" <<<"$WOUT")" "1|0"
 check "status-poll: mcast-stuck polled the full timeout (3x)" "$(wc -l <"$SPOLL" | tr -d ' ')" "3"
 # restore the simple status mock for any later use
 doublezero() { echo "doublezero $*" >>"$CALLS"; case "$*" in address) echo "DZid11111111111111111111111111111111111111";;
@@ -429,7 +433,7 @@ case "$1" in sign-offchain-message) echo "SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxC
              balance) echo "0.5 SOL";; esac
 EOF
 chmod +x "$WORK/bin/solana-keygen" "$WORK/bin/solana"
-DZ_DRY=ok
+DZ_DRY=ok; DZ_REQ=sent
 doublezero-solana() { echo "doublezero-solana $*" >>"$CALLS"
     case "$*" in
         *find-validator*)    echo '{"cluster":"mainnet-beta","in_leader_schedule":true,"role":"primary","visible_in_gossip":true}' ;;
@@ -443,8 +447,18 @@ doublezero-solana() { echo "doublezero-solana $*" >>"$CALLS"
                 badsig) echo "Error: Signature verification failed" >&2; return 1 ;;
                 nosim)  echo "Request Solana validator access: 5TxSig" ;;          # rc 0, simulated nothing
                 both)   printf 'Errors found:\n - x\nSimulated program logs:\n  Program dzPass success\n' ;;
+                pending) echo "Error: Access request already exists: ReqPda1111111111111111111111111111111111111" >&2; return 1 ;;
+                sentanyway) echo "Request Solana validator access: $DZ_TX" ;;   # the CLI sent instead of simulating
             esac ;;
-        *request-validator-access*) echo "Request Solana validator access: 5TxSig" ;;
+        *request-validator-access*)
+            case "$DZ_REQ" in
+                sent)    echo "Request Solana validator access: $DZ_TX" ;;
+                errors)  printf '\nErrors found:\n - Validator is not in gossip\n'; return 0 ;;
+                pending) echo "Error: Access request already exists: ReqPda1111111111111111111111111111111111111" >&2; return 1 ;;
+                failed)  echo "Error: RPC request timed out" >&2; return 1 ;;
+                garbled) echo "Request Solana validator access: 5TxSig" ;;
+                sentrc1) echo "Request Solana validator access: $DZ_TX"; echo "Error: verbose output failed" >&2; return 1 ;;
+            esac ;;
     esac; }
 off_state() {
     rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
@@ -542,6 +556,80 @@ check "offbox dz_resolve_config: a stale staked path is not resolved" "$(cat "$W
 off_state; state_set sync_identity "$WORK/no-such-sync.json"
 OUT=$( dz_connect_run 2>&1 ); RC=$?
 check "offbox gate: the paying sync identity missing -> fail" "$RC|$(grep -c 'pays for the passport request, but it is not on this box' <<<"$OUT")" "1|1"
+
+echo "== R10-11: the passport outcome comes from the CLI's output, not its exit code =="
+file_state() {
+    rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+    state_set solana_home /root/solana; state_set dz_enabled true; state_set staked_key_mode file
+    state_set staked_keypair "$WORK/mainnet-validator-keypair.json"; printf '[9]' >"$WORK/mainnet-validator-keypair.json"
+    : >"$CALLS"; : >"$KEYGENLOG"
+}
+filepass() { NONINTERACTIVE=1 STAKED_KEY_MODE=file STAKED_KEYPAIR="$WORK/mainnet-validator-keypair.json" \
+             dz_passport DZid1111 Stakedid111111111111111111111111111111111 2>&1; }
+file_state; DZ_REQ=sent
+OUT=$(filepass); RC=$?
+check "R10-11 sent (64-byte tx printed): requested"     "$RC|$(grep -c 'Passport access requested' <<<"$OUT")" "0|1"
+file_state; DZ_REQ=errors
+OUT=$(filepass); RC=$?
+check "R10-11 'Errors found:' with exit 0: fail, NOT 'requested'" "$RC|$(grep -c 'Passport access requested' <<<"$OUT")|$(grep -c 'was NOT sent' <<<"$OUT")" "1|0|1"
+check "R10-11 'Errors found:': the CLI's errors are shown" "$(grep -c 'Validator is not in gossip' <<<"$OUT")" "1"
+file_state; DZ_REQ=pending
+OUT=$(filepass); RC=$?
+check "R10-11 already pending: not sent again, goes on" "$RC|$(grep -c 'already pending — not sent again' <<<"$OUT")|$(grep -c 'Passport access requested' <<<"$OUT")" "0|1|0"
+file_state; DZ_REQ=failed
+OUT=$(filepass); RC=$?
+check "R10-11 CLI error: fail, not 'requested', names the check" "$RC|$(grep -c 'Passport access requested' <<<"$OUT")|$(grep -c 'passport fetch --access-request DZid1111 -u mainnet-beta' <<<"$OUT")" "1|0|1"
+file_state; DZ_REQ=garbled
+OUT=$(filepass); RC=$?
+check "R10-11 success line without a 64-byte tx: not confirmed" "$RC|$(grep -c 'Passport access requested' <<<"$OUT")" "1|0"
+file_state; DZ_REQ=sentrc1
+OUT=$(filepass); RC=$?
+check "R10-11 tx printed but exit 1: not claimed, check named" "$RC|$(grep -c 'Passport access requested' <<<"$OUT")|$(grep -c 'not confirmed' <<<"$OUT")" "1|0|1"
+file_state; DZ_REQ=pending
+printf '[1,2,3]' >"$DZ_KEYPAIR"; rm -f "$WORK/dzconfig/id.json"
+read() { local v="${!#}"; eval "$v=y"; }
+( NONINTERACTIVE=0 dz_connect_run ) >/dev/null 2>&1; RC=$?
+unset -f read
+check "R10-11 pending, whole dz-connect: goes on to connect" "$RC|$(grep -c 'doublezero connect ibrl' "$CALLS")" "0|1"
+DZ_REQ=sent
+off_state; DZ_DRY=pending
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "R10-11 offbox: dry-run says pending -> nothing sent, goes on" "$RC|$(grep -c 'request-validator-access' "$CALLS")|$(grep -c 'already pending' <<<"$OUT")" "0|1|1"
+off_state; DZ_DRY=sentanyway
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "R10-11 offbox: a dry-run that sent -> never sent twice" "$RC|$(grep -c 'request-validator-access' "$CALLS")|$(grep -c 'not sending another' <<<"$OUT")" "0|1|1"
+off_state; DZ_DRY=ok; DZ_REQ=errors
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "R10-11 offbox: the real request's 'Errors found:' -> fail" "$RC|$(grep -c 'Passport access requested' <<<"$OUT")" "1|0"
+DZ_DRY=ok; DZ_REQ=sent
+# What the run did is kept for an exhausted connect's message. Each call runs in
+# a subshell that prints the variable afterwards; a fail() there prints nothing.
+outcome_after() { local mode=$1; shift
+    ( DZ_PASSPORT_OUTCOME=""
+      if [[ "$mode" == file ]]; then file_state; filepass >/dev/null 2>&1
+      else off_state; DZ_SIGNATURE="$OFF_SIG" offpass >/dev/null 2>&1; fi
+      printf '%s' "$DZ_PASSPORT_OUTCOME" ); }
+check "R10-11 sent: recorded for the connect message"    "$(DZ_REQ=sent outcome_after file)"          "sent"
+check "R10-11 pending: recorded for the connect message" "$(DZ_REQ=pending outcome_after file)"       "pending"
+check "R10-11 offbox dry-run pending: recorded"          "$(DZ_DRY=pending outcome_after offbox)"     "pending"
+check "R10-11 offbox dry-run that sent: recorded"        "$(DZ_DRY=sentanyway outcome_after offbox)"  "sent"
+DZ_DRY=ok; DZ_REQ=sent
+
+echo "== R10-11: an exhausted connect says what this run sent, and when a re-run costs =="
+_r11_race() { echo "Error: Access Pass not found" >&2; return 1; }
+state_set dz_id DZid1111
+for o in sent pending none; do
+    OUT=$( DZ_PASSPORT_OUTCOME="${o/none/}" DZ_PASS_RETRIES=2 DZ_PASS_INTERVAL=0 _dz_connect_with_retry _r11_race 2>&1 ); RC=$?
+    case "$o" in
+        sent)    want='The access request was sent in this run.' ;;
+        pending) want='An access request for this DoubleZero ID was already pending.' ;;
+        none)    want='No access request was sent in this run.' ;;
+    esac
+    check "R10-11 exhausted ($o): fail, says what happened" "$RC|$(grep -cF "$want" <<<"$OUT")" "1|1"
+    check "R10-11 exhausted ($o): no 'WAS submitted' / 'idempotent'" "$(grep -c -e 'WAS submitted' -e 'idempotent' <<<"$OUT")" "0"
+done
+check "R10-11 exhausted: names the check, the costly re-run, the deposit" "$(grep -cF 'passport fetch --access-request DZid1111 -u mainnet-beta' <<<"$OUT")|$(grep -c 'would send, and pay for, a new request, and a deny keeps the deposit' <<<"$OUT")|$(grep -cF "retry only '_r11_race'" <<<"$OUT")" "1|1|1"
+unset -f _r11_race
 
 echo ""
 echo "==================================="

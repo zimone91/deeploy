@@ -398,12 +398,42 @@ dz_passport() {
     sig_raw=$("$SOLANA_BIN/solana" sign-offchain-message "service_key=${dz_id}" -k "$STAKED_KEYPAIR" 2>/dev/null || true)
     sig=$(printf '%s\n' "$sig_raw" | awk 'NF{last=$0} END{print last}' | tr -d '[:space:]')
     [[ "$sig" =~ ^[1-9A-HJ-NP-Za-km-z]{40,}$ ]] || fail "Could not parse a base58 signature from sign-offchain-message output"
-    # run_redacted: the signature is an offchain-message secret — keep it out of
-    # $LOG_FILE (debug logs argv). Executes the real argv unchanged. (X4)
-    run_redacted --signature doublezero-solana passport request-validator-access \
-        --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
-        --signature "$sig" -u "$DZ_ENV" -k "$STAKED_KEYPAIR"
-    ok "Passport access requested"
+    _dz_passport_send "$dz_id" "$staked_id" "$sig" "$STAKED_KEYPAIR"
+}
+
+# What the passport CLI did, read from its output (R10-11). request-validator-
+# access exits 0 and sends nothing when its own checks fail (it prints "Errors
+# found:"), and exits non-zero while a request for this DoubleZero ID is still
+# pending ("Access request already exists"). Only "Request Solana validator
+# access: <tx>", with a 64-byte transaction signature, shows a request went out.
+_dz_passport_outcome() {        # <cli output> <rc> -> sent|pending|errors|simulated|failed
+    local out=$1 rc=$2 tx
+    tx="$(sed -nE 's/^Request Solana validator access: ([1-9A-HJ-NP-Za-km-z]+)[[:space:]]*$/\1/p' <<<"$out" | head -1)"
+    if grep -q 'Access request already exists' <<<"$out"; then echo pending
+    elif grep -q 'Errors found:' <<<"$out"; then echo errors
+    elif [[ $rc -eq 0 && "$(b58_len "$tx")" == 64 ]]; then echo sent
+    elif [[ $rc -eq 0 ]] && grep -q 'Simulated program logs:' <<<"$out"; then echo simulated
+    else echo failed; fi
+}
+
+# Send the request and act on what the CLI says happened: sent and pending go on
+# to connect, anything else stops dz-connect here. DZ_PASSPORT_OUTCOME (sent |
+# pending) tells an exhausted connect retry what this run did. run_redacted: the
+# signature is an offchain-message secret — keep it out of $LOG_FILE (debug
+# logs argv); the real argv runs unchanged. (X4)
+_dz_passport_send() {           # <dz_id> <staked_id> <signature> <payer keypair>
+    local out rc
+    if out="$(run_redacted --signature doublezero-solana passport request-validator-access \
+            --doublezero-address "$1" --primary-validator-id "$2" \
+            --signature "$3" -u "$DZ_ENV" -k "$4" 2>&1)"; then rc=0; else rc=$?; fi
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    DZ_PASSPORT_OUTCOME="$(_dz_passport_outcome "$out" "$rc")"
+    case "$DZ_PASSPORT_OUTCOME" in
+        sent)    ok "Passport access requested" ;;
+        pending) info "An access request for this DoubleZero ID is already pending — not sent again; going on to connect" ;;
+        errors)  fail "The passport request was NOT sent: the CLI's own checks found the errors above. Fix them, then re-run '${DEEPLOY_CMD} dz-connect'." ;;
+        *)       fail "The passport request was not confirmed (output above). It may still land: check  doublezero-solana passport fetch --access-request $1 -u ${DZ_ENV}  before you re-run — while a request is listed, a re-run sends no new one." ;;
+    esac
 }
 
 # offbox passport (R10-6). The staked key is not on this box: the operator signs
@@ -412,7 +442,8 @@ dz_passport() {
 # passport instruction takes the program config, the payer and the request PDA;
 # the validator key only signs the off-chain message, which the CLI verifies
 # before it builds the transaction. A --dry-run goes first, so a wrong
-# signature, a validation error or a short balance stops here with nothing sent.
+# signature, a validation error or a short balance stops here with nothing sent,
+# and a request still pending for this DoubleZero ID goes on to connect unsent.
 _dz_sync_pubkey()     { "$SOLANA_BIN/solana-keygen" pubkey "$SYNC_IDENTITY" 2>/dev/null || true; }
 _dz_balance()         { "$SOLANA_BIN/solana" balance "$1" -u "$DZ_ENV" 2>/dev/null | head -1 || true; }
 _dz_request_deposit() {         # stdout: the program's request deposit in SOL, or nothing
@@ -449,16 +480,23 @@ _dz_passport_offbox() {
             --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
             --signature "$sig" -u "$DZ_ENV" -k "$SYNC_IDENTITY" --dry-run 2>&1)"; then rc=0; else rc=$?; fi
     [[ -n "$out" ]] && printf '%s\n' "$out"
-    if [[ $rc -ne 0 ]] || grep -q 'Errors found:' <<<"$out" || ! grep -q 'Simulated program logs:' <<<"$out"; then
-        short="$(sed -nE 's/.*Transfer: insufficient lamports ([0-9]+), need ([0-9]+).*/\1 \2/p' <<<"$out" | head -1)"
-        [[ -n "$short" ]] && warn "The sync identity is short by $(( ${short#* } - ${short% *} )) lamports: it has ${short% *}, the request needs ${short#* }."
-        fail "The passport request failed its dry-run (output above) — nothing was sent. Short balance: fund the sync identity ${payer}. Wrong signature: sign exactly  ${sign_cmd}. Then re-run '${DEEPLOY_CMD} dz-connect'."
-    fi
+    case "$(_dz_passport_outcome "$out" "$rc")" in
+        simulated) ;;
+        pending)
+            DZ_PASSPORT_OUTCOME=pending
+            info "An access request for this DoubleZero ID is already pending — not sent again; going on to connect"
+            return 0 ;;
+        sent)                           # the CLI sent instead of simulating: never send twice
+            DZ_PASSPORT_OUTCOME=sent
+            warn "The --dry-run call reports a sent request (it did not simulate) — not sending another"
+            return 0 ;;
+        *)
+            short="$(sed -nE 's/.*Transfer: insufficient lamports ([0-9]+), need ([0-9]+).*/\1 \2/p' <<<"$out" | head -1)"
+            [[ -n "$short" ]] && warn "The sync identity is short by $(( ${short#* } - ${short% *} )) lamports: it has ${short% *}, the request needs ${short#* }."
+            fail "The passport request failed its dry-run (output above) — nothing was sent. Short balance: fund the sync identity ${payer}. Wrong signature: sign exactly  ${sign_cmd}. Then re-run '${DEEPLOY_CMD} dz-connect'." ;;
+    esac
     ok "Dry-run passed: the signature verifies and the sync identity covers the request"
-    run_redacted --signature doublezero-solana passport request-validator-access \
-        --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
-        --signature "$sig" -u "$DZ_ENV" -k "$SYNC_IDENTITY"
-    ok "Passport access requested"
+    _dz_passport_send "$dz_id" "$staked_id" "$sig" "$SYNC_IDENTITY"
 }
 
 # Run a `doublezero connect ...` with a bounded retry ONLY on the access-pass
@@ -466,9 +504,12 @@ _dz_passport_offbox() {
 # resulting Access Pass isn't immediately visible to `connect` (~1 min lag, seen
 # on-box). Retry specifically on "Access Pass not found"; ANY other connect error
 # fails FAST so a real failure is never masked. On exhausted retries, fail with an
-# actionable message (the request was submitted; re-run dz-connect — idempotent). (F2)
+# actionable message. (F2) It says only what is true (R10-11): whether this run
+# sent a request, and that a re-run of dz-connect is free only while the request
+# is pending — once it is granted or denied, a re-run sends and pays for a new
+# one, and a deny keeps the deposit.
 _dz_connect_with_retry() {
-    local i out
+    local i out why
     if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} $*"; return 0; fi
     for ((i=1; i<=DZ_PASS_RETRIES; i++)); do
         if out="$("$@" 2>&1)"; then
@@ -483,7 +524,12 @@ _dz_connect_with_retry() {
         [[ -n "$out" ]] && printf '%s\n' "$out" >&2
         fail "DoubleZero connect failed ('$*') — not an access-pass race, so not retried. See the error above."
     done
-    fail "DoubleZero Access Pass never propagated after $((DZ_PASS_RETRIES * DZ_PASS_INTERVAL))s. The access request WAS submitted; wait ~1 min and re-run '${DEEPLOY_CMD} dz-connect' (it is idempotent — request is a no-op, connect picks up the pass)."
+    case "${DZ_PASSPORT_OUTCOME:-}" in
+        sent)    why="The access request was sent in this run." ;;
+        pending) why="An access request for this DoubleZero ID was already pending." ;;
+        *)       why="No access request was sent in this run." ;;
+    esac
+    fail "DoubleZero Access Pass never propagated after $((DZ_PASS_RETRIES * DZ_PASS_INTERVAL))s. ${why} Before you re-run, check the request:  doublezero-solana passport fetch --access-request $(state_get dz_id '<DoubleZero ID>') -u ${DZ_ENV}. While it is listed it is pending: a re-run of '${DEEPLOY_CMD} dz-connect' sends no new one and goes on to connect. Once it is no longer listed it was granted or denied: retry only '$*' — a re-run of dz-connect would send, and pay for, a new request, and a deny keeps the deposit."
 }
 
 dz_connect_ibrl() {
@@ -612,7 +658,7 @@ dz_show_status() {
     if [[ "$ibrl" == *"BGP Session Up"* && "$mcast" == *"BGP Session Up"* && "$mgroup" == *edge-solana-shreds* ]]; then
         ok "DZ connected — IBRL via ${device} (${metro}), publishing shreds to edge-solana-shreds."
     elif [[ "$ibrl" == *"BGP Session Up"* && "$mcast" != *"BGP Session Up"* ]]; then
-        warn "IBRL is up (via ${device:-?}/${metro:-?}) but the Multicast BGP session is still '${mcast:-pending}' after ~$((DZ_MCAST_RETRIES * DZ_MCAST_INTERVAL))s. It often comes up shortly after — re-check with 'doublezero status'; if it stays pending, re-run '${DEEPLOY_CMD} dz-connect'."
+        warn "IBRL is up (via ${device:-?}/${metro:-?}) but the Multicast BGP session is still '${mcast:-pending}' after ~$((DZ_MCAST_RETRIES * DZ_MCAST_INTERVAL))s. It often comes up shortly after — re-check with 'doublezero status'; if it stays pending, run 'doublezero connect multicast --publish edge-solana-shreds' — not dz-connect: after the grant it pays for a new passport request."
     else
         warn "DZ not fully up — IBRL='${ibrl:-?}' Multicast='${mcast:-?}' groups='${mgroup:-?}'. Inspect 'doublezero status'."
     fi

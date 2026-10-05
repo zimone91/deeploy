@@ -312,7 +312,8 @@ check "N1 exit-shape: install completes under -Eeuo (rc0)" "$N1RC" "0"
 check "N1 exit-shape: dz_resume was attempted"             "$(grep -c '^dz_resume$' "$RAN")" "1"
 check "N1 exit-shape: start_run STILL ran (phase 8)"       "$(grep -c '^start_run$' "$RAN")" "1"
 check "N1 exit-shape: reboot_done latched"                 "$(state_has reboot_done && echo y || echo n)" "y"
-check "N1 exit-shape: warns + points at dz-connect"        "$(grep -c 'reconnect manually' <<<"$N1OUT")" "1"
+check "N1 exit-shape: warns + reconnect commands (R10-11)" "$(grep -cF "reconnect manually: 'doublezero connect ibrl', then 'doublezero connect multicast --publish edge-solana-shreds'" <<<"$N1OUT")" "1"
+check "R10-11: no advice to run dz-connect after the grant" "$(grep -c 'reconnect manually with: .*dz-connect' <<<"$N1OUT")" "0"
 # plain return-1 shape: identical outcome (the pre-existing guard, still covered)
 dz_resume() { echo 'dz_resume' >>"$RAN"; return 1; }
 reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"

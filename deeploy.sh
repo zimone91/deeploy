@@ -169,7 +169,7 @@ _install_post_reboot_proceed() {
     # BEFORE reboot_done and phase 8, so the staked validator never started, on
     # every boot. A failed DZ restore must never block the validator start.
     if [[ "$(state_get dz_connected "")" != "" ]] && declare -F dz_resume >/dev/null 2>&1; then
-        ( dz_resume ) || warn "DoubleZero post-reboot restore FAILED — continuing the resume (the validator still starts); reconnect manually with: ${DEEPLOY_CMD} dz-connect"
+        ( dz_resume ) || warn "DoubleZero post-reboot restore FAILED — continuing the resume (the validator still starts); reconnect manually: 'doublezero connect ibrl', then 'doublezero connect multicast --publish edge-solana-shreds' — not dz-connect: the pass is granted already, and dz-connect would pay for a new passport request."
     fi
     state_set reboot_done "$(_ts)"
     return 0
