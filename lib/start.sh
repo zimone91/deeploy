@@ -3,11 +3,13 @@
 # DeePloy — lib/start.sh   (Phase 8: start -> catchup 0 -> verify)
 # Pre-start free-disk check -> enable+start solana.service -> wait for the node
 # to catch up (catchup 0) -> pin the PoH thread -> run the verification block ->
-# print the final summary with the MANUAL staked-key hot-swap (path form) and a
-# pointer to the separate failover tool.
+# print the final summary with the MANUAL staked-key hot-swap (path form, the
+# tower moved first; keys_print_swap_steps) and a pointer to the separate
+# failover tool.
 #
-# Requires: common.sh sourced (verify.sh for the verification block). All
-# mutations go through run(); probes are mockable for tests.
+# Requires: common.sh sourced (verify.sh for the verification block, keys.sh
+# for the swap steps in the summary). All mutations go through run(); probes
+# are mockable for tests.
 # ============================================================================
 
 [[ -n "${_DEEPLOY_START_SOURCED:-}" ]] && return 0
@@ -142,9 +144,7 @@ start_print_summary() {
     info "MANUAL staked-key hot-swap (DeePloy never generates, copies, or transmits it):"
     info "  1) Place the real staked keypair at:  ${STAKED_KEYPAIR}   (chmod 600)"
     info "  2) Swap identity (path-as-argument form):"
-    info "       ${SOLANA_BIN}/agave-validator --ledger ${LEDGER_PATH} set-identity ${STAKED_KEYPAIR}"
-    info "       ${SOLANA_BIN}/agave-validator --ledger ${LEDGER_PATH} authorized-voter add ${STAKED_KEYPAIR}"
-    info "     No tower transfer needed: a fresh node rebuilds its vote floor from the cluster."
+    keys_print_swap_steps "${SOLANA_BIN}/agave-validator" "$LEDGER_PATH" "$STAKED_KEYPAIR"
     info ""
     [[ "$DZ_ENABLED" == "true" ]] && info "DoubleZero: after the swap, run  ${DEEPLOY_CMD} dz-connect  (passport + ibrl + multicast)."
     info ""

@@ -109,10 +109,32 @@ keys_print_manual() {
     info ""
     info "1) Place your real staked keypair at:"
     info "     ${STAKED_KEYPAIR}     (chmod 600; never commit; never paste its contents)"
-    info "2) After the node reaches 'catchup 0', swap identity (also printed in the final summary):"
-    info "     agave-validator --ledger ${LEDGER_PATH} set-identity ${STAKED_KEYPAIR}"
-    info "     agave-validator --ledger ${LEDGER_PATH} authorized-voter add ${STAKED_KEYPAIR}"
-    info "   No tower transfer needed: a fresh node with no local tower rebuilds its vote floor from the cluster."
+    info "2) After the node reaches 'catchup 0', hot-swap (also printed in the final summary):"
+    keys_print_swap_steps agave-validator "$LEDGER_PATH" "$STAKED_KEYPAIR"
+}
+
+# --- the hot swap, path form — printed in phase 5 and in the final summary ---
+# A hot swap moves the tower. The old validator stops voting first — and a
+# restart of it must come back unstaked, or two nodes vote — its tower file
+# comes here, and set-identity --require-tower refuses without it: without the
+# tower, votes the old node cast that have not landed are unknown here and
+# their lockouts can be violated. A cold bring-up (old validator stopped, the
+# cluster finalized at least 300 slots past the vote account's lastVote) needs
+# no tower.
+keys_print_swap_steps() {      # <agave-validator command> <ledger> <staked keypair>
+    local av=$1 ledger=$2 key=$3
+    info "     a) OLD validator first — stop voting as staked:"
+    info "          agave-validator --ledger <old-ledger> set-identity <old-unstaked-keypair.json>"
+    info "        Make sure a restart of the OLD validator comes back unstaked: point its startup"
+    info "        --identity (argv or symlink) at the unstaked key, and turn off any failover automation."
+    info "     b) Copy its tower here (not a secret; after Alpenglow, vote_history-<staked-pubkey>.bin too):"
+    info "          scp <old>:<old-ledger>/tower-1_9-<staked-pubkey>.bin <this-box>:${ledger}/"
+    info "     c) This box — take the identity; --require-tower refuses without the tower:"
+    info "          ${av} --ledger ${ledger} set-identity --require-tower ${key}"
+    info "          ${av} --ledger ${ledger} authorized-voter add ${key}"
+    info "     Cold bring-up instead, no tower: only when the old validator is stopped and the"
+    info "     finalized slot is at least 300 slots past the vote account's lastVote — step c"
+    info "     without --require-tower."
 }
 
 # --- orchestrator ------------------------------------------------------------

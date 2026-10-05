@@ -22,6 +22,8 @@ export SOLANA_BIN="$WORK/bin"
 source "$ROOT/lib/common.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/start.sh
 source "$ROOT/lib/start.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/keys.sh
+source "$ROOT/lib/keys.sh"            # keys_print_swap_steps: the summary prints the swap
 
 PASS=0; FAIL=0
 check()       { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"
@@ -142,12 +144,18 @@ OUT=$( set -Eeuo pipefail; SET_POH_SCRIPT="$WORK/failpin.sh" start_pin_poh 2>&1 
 check    "pin failure does not abort phase 8 (rc 0)" "$RC" "0"
 check_ge "pin failure surfaced as a warning"         "$(grep -ci 'did not succeed' <<<"$OUT")" "1"
 
-echo "== final summary: set-identity PATH form, no stdin, failover pointer =="
+echo "== final summary: hot swap with the tower (PATH form), no stdin, failover pointer =="
 SUM=$(start_print_summary 2>&1)
-check    "set-identity path form"      "$(grep -c 'set-identity /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
+check    "set-identity --require-tower, path form" "$(grep -c 'set-identity --require-tower /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
 check    "authorized-voter add path"   "$(grep -c 'authorized-voter add /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
-check    "NO stdin redirect form"      "$(grep -c 'set-identity <' <<<"$SUM")" "0"
-check_ge "tower-rebuild note"          "$(grep -ci 'tower' <<<"$SUM")" "1"
+check    "NO stdin redirect form"      "$(grep -cE 'set-identity <[^a-z]' <<<"$SUM")" "0"   # '<old-…>' is a placeholder, '< file' a redirect
+# R10-9: the step is called a hot swap, so it moves the tower; the cold path is
+# a separate line that states its condition.
+check    "old validator stops voting first"  "$(grep -c 'OLD validator first' <<<"$SUM")" "1"
+check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a restart of the OLD validator comes back unstaked' <<<"$SUM")" "1"
+check    "tower copied to this ledger"       "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$SUM")" "1"
+check    "cold bring-up states its condition" "$(grep -c "finalized slot is at least 300 slots past the vote account's lastVote" <<<"$SUM")" "1"
+check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$SUM")" "0"
 check_ge "dz-connect mentioned (DZ on)" "$(grep -c 'dz-connect' <<<"$SUM")" "1"
 # Fix #2: the printed command must be runnable — './deeploy.sh dz-connect' (or an
 # absolute path via DEEPLOY_SELF), never bare 'deeploy dz-connect' (no PATH entry).

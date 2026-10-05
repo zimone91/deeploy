@@ -99,11 +99,17 @@ check "combined call has --url"        "$(grep -c 'config set --url https://api.
 check "combined call has real keypair" "$(grep -c -- '--keypair /root/solana/mainnet-validator-keypair.json' "$CALLS")" "1"
 MAN=$(STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json LEDGER_PATH=/root/solana/ledger keys_print_manual 2>&1)
 check_ge "manual shows real-key path"        "$(grep -c '/root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
-check    "set-identity path-form"            "$(grep -c 'set-identity /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
+check    "set-identity --require-tower path-form" "$(grep -c 'set-identity --require-tower /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
 check    "authorized-voter add path-form"    "$(grep -c 'authorized-voter add /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
 check    "NO stdin redirect form (dropped)"  "$(grep -c 'set-identity < ' <<<"$MAN")" "0"
 check_ge "never-touch wording"               "$(grep -ci 'never' <<<"$MAN")" "1"
-check_ge "tower-rebuild note present"        "$(grep -ci 'tower' <<<"$MAN")" "1"
+# R10-9: hot swap = the old validator stops, its tower moves here, then
+# --require-tower; the cold line carries its condition.
+check    "old validator stops voting first"  "$(grep -c 'OLD validator first' <<<"$MAN")" "1"
+check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a restart of the OLD validator comes back unstaked' <<<"$MAN")" "1"
+check    "tower copied to this ledger"       "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
+check    "cold bring-up states its condition" "$(grep -c "finalized slot is at least 300 slots past the vote account's lastVote" <<<"$MAN")" "1"
+check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$MAN")" "0"
 
 echo ""
 echo "==================================="
