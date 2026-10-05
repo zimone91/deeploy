@@ -215,6 +215,8 @@ check "5 ambient caps"          "$(grep -c 'AmbientCapabilities=CAP_NET_RAW CAP_
 check "Nice=-10"                "$(grep -c 'Nice=-10' <<<"$S")" "1"
 check "OOMScoreAdjust=-1000"    "$(grep -c 'OOMScoreAdjust=-1000' <<<"$S")" "1"
 check "LimitNOFILE 2000000"     "$(grep -c 'LimitNOFILE=2000000' <<<"$S")" "1"
+check "R10-10: LimitCORE=0 (no core dumps)"              "$(grep -c '^LimitCORE=0$' <<<"$S")" "1"
+check "R10-10: CoredumpFilter=elf-headers (no heap/stack)" "$(grep -c '^CoredumpFilter=elf-headers$' <<<"$S")" "1"
 check "ExecStartPost poh-pin"   "$(grep -c 'ExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service' <<<"$S")" "1"
 check "metrics = BAM endpoint"  "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$S")" "1"
 check "RequiresMountsFor (two-nvme)" "$(grep -c 'RequiresMountsFor=/mnt/accounts /mnt/ledger' <<<"$S")" "1"

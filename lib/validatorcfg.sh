@@ -350,6 +350,12 @@ CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_SYS_NICE
 LimitNOFILE=2000000
 LimitMEMLOCK=2000000000
 LimitNICE=40
+# No core dumps: the validator's memory holds its identity key. LimitCORE=0
+# sets the soft and hard limit to 0. With a pipe core_pattern (apport) the
+# kernel hands the core to the helper whatever the limit, so
+# CoredumpFilter=elf-headers keeps the heap and stack out of it too. (R10-10)
+LimitCORE=0
+CoredumpFilter=elf-headers
 LogRateLimitIntervalSec=0
 
 # Priority

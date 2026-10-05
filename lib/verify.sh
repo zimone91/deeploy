@@ -28,6 +28,7 @@ _vf_expect() { if [[ "$2" == "$3" ]]; then vf_ok "$1 = $3"; else vf_warn "$1 = $
 # output by design (`[[ -z ... ]]` / `_vf_expect`).
 _vf_pid()          { pgrep -f '^agave-validator --identity' 2>/dev/null | head -1 || true; }
 _vf_proc_limits()  { cat "/proc/$1/limits" 2>/dev/null || true; }
+_vf_coredump_filter() { cat "/proc/$1/coredump_filter" 2>/dev/null || true; }
 _vf_oom_score()    { cat "/proc/$1/oom_score_adj" 2>/dev/null || true; }
 _vf_proc_nice()    { ps -o ni= -p "$1" 2>/dev/null | tr -d ' ' || true; }
 _vf_poh_thread()   { ps -T -p "$1" -o spid,comm 2>/dev/null | awk '/solPohTickProd/{print $1; exit}' || true; }
@@ -50,12 +51,16 @@ verify_process() {
 
 verify_limits() {
     [[ -n "${VF_PID:-}" ]] || return 0
-    local lim nofile
+    local lim nofile core
     lim=$(_vf_proc_limits "$VF_PID")
     nofile=$(awk '/Max open files/{print $4}' <<<"$lim")
     _vf_expect "open files limit" "$nofile" "2000000"
     if grep -qE 'Max locked memory[[:space:]]+(unlimited|[0-9])' <<<"$lim"; then vf_ok "locked memory limit set"
     else vf_warn "locked memory limit not set"; fi
+    # No core dumps: the validator's memory holds its identity key (R10-10).
+    core=$(awk '/^Max core file size/{print $5 "/" $6}' <<<"$lim")
+    _vf_expect "core dump limit (soft/hard)" "$core" "0/0"
+    _vf_expect "coredump_filter" "$(_vf_coredump_filter "$VF_PID")" "00000010"
 }
 
 verify_priority() {

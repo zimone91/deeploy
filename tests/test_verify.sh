@@ -29,7 +29,8 @@ state_set poh_core 10
 
 # "Good" system
 _vf_pid()          { echo 12345; }
-_vf_proc_limits()  { printf 'Max open files            2000000     2000000     files\nMax locked memory         unlimited   unlimited   bytes\n'; }
+_vf_proc_limits()  { printf 'Max core file size        0           0           bytes\nMax open files            2000000     2000000     files\nMax locked memory         unlimited   unlimited   bytes\n'; }
+_vf_coredump_filter() { echo 00000010; }
 _vf_proc_nice()    { echo "-10"; }
 _vf_oom_score()    { echo "-1000"; }
 _vf_poh_thread()   { echo 999; }
@@ -81,6 +82,28 @@ _vf_governor() { echo performance; }
 _vf_catchup() { echo "85 slot(s) behind (us:10 them:95)"; }
 reset; verify_catchup >/dev/null 2>&1; check "behind -> warn" "$_VF_WARN" "1"
 _vf_catchup() { echo "0 slot(s) behind"; }
+
+echo "== R10-10: no core dumps (the validator's memory holds its identity key) =="
+reset; verify_limits >"$WORK/lim" 2>&1
+check "R10-10: core 0/0 -> ok"                 "$(grep -cF 'core dump limit (soft/hard) = 0/0' "$WORK/lim")" "1"
+check "R10-10: coredump_filter 00000010 -> ok" "$(grep -cF 'coredump_filter = 00000010' "$WORK/lim")" "1"
+# 00000033 is the kernel default, measured on the rc9 box.
+_vf_coredump_filter() { echo 00000033; }
+reset; verify_limits >/dev/null 2>&1; check "R10-10: coredump_filter 00000033 -> warn" "$_VF_WARN" "1"
+_vf_coredump_filter() { echo 00000010; }
+_vf_proc_limits() { printf 'Max core file size        unlimited   unlimited   bytes\nMax open files            2000000     2000000     files\nMax locked memory         unlimited   unlimited   bytes\n'; }
+reset; verify_limits >/dev/null 2>&1; check "R10-10: core unlimited -> warn" "$_VF_WARN" "1"
+# Soft 0 / hard unlimited was measured on the rc9 box: the process may raise it.
+_vf_proc_limits() { printf 'Max core file size        0           unlimited   bytes\nMax open files            2000000     2000000     files\nMax locked memory         unlimited   unlimited   bytes\n'; }
+reset; verify_limits >/dev/null 2>&1; check "R10-10: core soft 0 / hard unlimited -> warn" "$_VF_WARN" "1"
+_vf_proc_limits() { printf 'Max core file size        0           0           bytes\nMax open files            2000000     2000000     files\nMax locked memory         unlimited   unlimited   bytes\n'; }
+# The real probes, on a pid that cannot exist, under DeePloy's ERR trap: a probe
+# that fails inside $( ) would print a stray "[FAIL] line N" (ERR-NOISE-SUBST).
+NOISE=$( ( unset _DEEPLOY_VERIFY_SOURCED
+           # shellcheck source-path=SCRIPTDIR source=../lib/verify.sh
+           source "$ROOT/lib/verify.sh"
+           set -E; deeploy_init_traps; trap - EXIT; VF_PID=999999999; verify_limits ) 2>&1 )
+check "R10-10: real probes, no such pid -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
 
 echo "== verify_run summary =="
 verify_run >/dev/null 2>&1; check "all-good verify_run passes" "$?" "0"

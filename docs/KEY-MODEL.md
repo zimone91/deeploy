@@ -30,6 +30,12 @@ what I'm doing on mainnet":
    and may still hold a lockout — the node rebuilds its lockouts from the vote
    account's on-chain state.
 4. The node uses `--private-rpc` bound to `127.0.0.1`; RPC is never exposed.
+5. **No core dumps.** The validator's memory holds its identity key, so a crash
+   must not write that memory to disk. `solana.service` sets `LimitCORE=0`
+   (soft and hard) and `CoredumpFilter=elf-headers`: with a pipe `core_pattern`
+   such as apport's, the kernel hands the core to the helper whatever the limit,
+   and the filter keeps the heap and stack out of it. `deeploy.sh verify` checks
+   both on the running process.
 
 If you don't want a node to come up and start voting on a fresh identity, **do not
 run the final start phase on a key that is already staked elsewhere.**
