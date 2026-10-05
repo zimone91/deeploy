@@ -118,28 +118,26 @@ _vf_cpus() {                    # "1-2,10" -> " 1 2 10 "
 }
 
 # Every mlx5 IRQ of the default-route NIC, not the queues a map names: comp34
-# sat on the PoH core's SMT sibling, outside the old hardcoded map. The only
-# IRQ an isolated CPU may keep is an XDP core's own queue. (R10-3)
+# sat on the PoH core's SMT sibling, outside the old hardcoded map. An
+# isolated CPU keeps none, an XDP core included. (R10-3, R10-3b)
 verify_nic_irqs() {
     [[ "$(state_get nic_driver "")" == mlx5_core ]] || return 0
-    local nic bus iso xdp list irq name eff q c bad="" total=0
+    local nic bus iso list irq name eff c bad="" total=0
     nic=$(_vf_nic)
     [[ -n "$nic" ]] || { vf_warn "mlx5 IRQs: no default-route NIC"; return 0; }
     bus=$(_vf_nic_bus "$nic")
     [[ -n "$bus" ]] || { vf_warn "mlx5 IRQs: no PCI address for $nic (ethtool -i)"; return 0; }
-    iso=$(_vf_cpus "$(_vf_isolated)"); xdp=$(_vf_cpus "$(state_get xdp_cores "")")
+    iso=$(_vf_cpus "$(_vf_isolated)")
     list=$(_vf_mlx5_irqs "$bus")
     while read -r irq name eff; do
         [[ -n "$irq" ]] || continue
         total=$((total + 1))
-        q=${name#mlx5_comp}; q=${q%%@*}   # the queue of mlx5_comp<q>; not a number for any other name
         for c in $(_vf_cpus "$eff"); do
-            if [[ "$c" == "$q" && "$xdp" == *" $c "* ]]; then continue; fi    # an XDP core's own queue
             if [[ "$iso" == *" $c "* ]]; then bad+="${bad:+ }${name%%@*}(irq $irq)->cpu$c"; break; fi
         done
     done <<<"$list"
     if (( total == 0 )); then vf_warn "mlx5 IRQs: none found for $nic (pci $bus)"
-    elif [[ -z "$bad" ]]; then vf_ok "mlx5 IRQs of $nic: none of ${total} on an isolated CPU but an XDP core's own queue"
+    elif [[ -z "$bad" ]]; then vf_ok "mlx5 IRQs of $nic: none of ${total} on an isolated CPU"
     else vf_warn "mlx5 IRQs of $nic on isolated CPUs: ${bad} (mlx5-irq-affinity.service should have moved them)"; fi
 }
 
