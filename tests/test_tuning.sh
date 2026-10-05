@@ -165,7 +165,7 @@ printf '%s\n' "$EXPECT" 'GRUB_TIMEOUT=5' >"$WORK/grub_expected"
 check_true "canonical fixture: byte-identical file" "cmp -s \"$GB\" \"$WORK/grub_expected\""
 
 echo "== writers produce expected content =="
-PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
+CPUFREQ_DEFAULT_FILE="$WORK/cpufrequtils" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
 check "perf script governor"   "$(grep -c 'scaling_governor' "$WORK/perf.sh")" "1"
 check_true "perf script +x"    "[[ -x \"$WORK/perf.sh\" ]]"
 check "perf service oneshot"   "$(grep -c 'Type=oneshot' "$WORK/perf.service")" "1"
@@ -186,6 +186,19 @@ echo "== H3: performance-tweaks runs Before=solana.service =="
 check "perf unit Before=solana.service"              "$(grep -c '^Before=solana.service' "$WORK/perf.service")" "1"
 check "perf unit dropped After=multi-user.target (would cycle)" "$(grep -c '^After=multi-user.target' "$WORK/perf.service")" "0"
 check "perf unit enable semantics unchanged (WantedBy)" "$(grep -c 'WantedBy=multi-user.target' "$WORK/perf.service")" "1"
+echo "== R10-2: the cpufrequtils boot script sets performance too, and runs first =="
+check "R10-2: /etc/default/cpufrequtils names performance" "$(grep -c '^GOVERNOR="performance"$' "$WORK/cpufrequtils")" "1"
+check "R10-2: perf unit After=cpufrequtils.service"        "$(grep -c '^After=cpufrequtils.service$' "$WORK/perf.service")" "1"
+cp "$WORK/cpufrequtils" "$WORK/cpufreq.1" 2>/dev/null || true
+CPUFREQ_DEFAULT_FILE="$WORK/cpufrequtils" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
+check "R10-2: a re-run leaves the file byte-identical" "$(cmp -s "$WORK/cpufrequtils" "$WORK/cpufreq.1" && echo same || echo differs)" "same"
+# The operator's file: other lines stay, ONE GOVERNOR= line at the first one's place.
+printf '%s\n' '# GOVERNOR="ondemand"' 'MAX_SPEED="3000000"' 'GOVERNOR="ondemand"' 'MIN_SPEED="0"' '  GOVERNOR="powersave"' >"$WORK/cpufreq.op"
+CPUFREQ_DEFAULT_FILE="$WORK/cpufreq.op" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
+check "R10-2: an operator's file keeps its lines, one GOVERNOR= line" "$(tr '\n' '|' <"$WORK/cpufreq.op")" '# GOVERNOR="ondemand"|MAX_SPEED="3000000"|GOVERNOR="performance"|MIN_SPEED="0"|'
+printf '%s\n' 'ENABLE="true"' >"$WORK/cpufreq.op"
+CPUFREQ_DEFAULT_FILE="$WORK/cpufreq.op" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
+check "R10-2: an operator's file without GOVERNOR= gets it appended" "$(tr '\n' '|' <"$WORK/cpufreq.op")" 'ENABLE="true"|GOVERNOR="performance"|'
 
 echo "== Phase 2 sysctl: tolerant apply does NOT abort under set -Eeuo on a box w/o XFS =="
 # Reproduce the real-box crash conditions: production flags + a sysctl that

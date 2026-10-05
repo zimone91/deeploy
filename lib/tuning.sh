@@ -274,8 +274,34 @@ tuning_grub() {
 }
 
 # --- performance tweaks (governor/THP/KSM/NUMA) ------------------------------
+# cpufrequtils (a base package) sets every CPU's governor at boot from
+# /etc/default/cpufrequtils — ondemand when the file is absent — and nothing
+# ordered it against this unit: after a reboot 32 of 48 CPUs stayed on ondemand.
+# So the file names performance too, and this unit runs after that boot script.
+# The file may be the operator's (ENABLE, MAX_SPEED, MIN_SPEED), and the boot
+# script sources it, so the LAST GOVERNOR= wins: leave EXACTLY ONE GOVERNOR=
+# line, at the first one's position (append if none), and keep every other
+# line. Routed through _commit, so a re-run is a no-op. (R10-2)
+_tuning_write_cpufreq_governor() {                # <file>
+    local f=$1 tmp
+    _ensure_parent "$f"
+    tmp=$(_mktemp)
+    if [[ -e "$f" ]]; then
+        awk -v repl='GOVERNOR="performance"' '
+            /^[[:space:]]*GOVERNOR=/ { if (!done) { print repl; done=1 }; next }
+            { print }
+            END { if (!done) print repl }
+        ' "$f" >"$tmp"
+    else
+        printf '%s\n' '# Written by DeePloy: the cpufrequtils boot script sets this governor on every CPU.' \
+            'GOVERNOR="performance"' >"$tmp"
+    fi
+    _commit "$f" "$tmp" "cpufrequtils GOVERNOR=performance (single line)"
+}
+
 tuning_perf() {
     step "performance-tweaks.service"
+    _tuning_write_cpufreq_governor "${CPUFREQ_DEFAULT_FILE:-/etc/default/cpufrequtils}"
     write_file "${PERF_SCRIPT_FILE:-/usr/local/bin/performance-tweaks.sh}" \
 '#!/bin/bash
 echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
@@ -291,6 +317,9 @@ Description=Apply performance tuning parameters
 # start first AND would form an ordering cycle combined with Before= (solana
 # is itself pulled in by multi-user.target). Matches the shape of the NIC units.
 Before=solana.service
+# After=cpufrequtils.service (R10-2): the cpufrequtils boot script sets the
+# governor too; running after it keeps performance the value that stays.
+After=cpufrequtils.service
 
 [Service]
 Type=oneshot

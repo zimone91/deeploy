@@ -23,7 +23,7 @@ trap 'rm -rf "$WORK"' EXIT
 # --- sandbox EVERY writable path into the temp tree --------------------------
 export DEEPLOY_STATE_DIR="$WORK/state" DEEPLOY_BACKUP_DIR="$WORK/backups" DEEPLOY_LOG_DIR="$WORK/logs"
 export NONINTERACTIVE=1 DEEPLOY_COLOR=never
-export GRUB_FILE="$WORK/etc/default/grub" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service"
+export GRUB_FILE="$WORK/etc/default/grub" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" CPUFREQ_DEFAULT_FILE="$WORK/etc/default/cpufrequtils"
 export SYSCTL_FILE="$WORK/21.conf" SYSCTL_SERVICE_FILE="$WORK/sysctl.service" LIMITS_FILE="$WORK/limits.conf" SYSTEM_CONF="$WORK/system.conf"
 export FSTAB_FILE="$WORK/etc/fstab" LEDGER_MOUNT="$WORK/mnt/ledger" ACCOUNTS_MOUNT="$WORK/mnt/accounts" SOLANA_LINK="$WORK/root/solana"
 export XFS_SYSCTL_FILE="$WORK/etc/22-agave-xfs.conf" XFS_MODLOAD_FILE="$WORK/etc/modules-load-xfs.conf"
@@ -140,7 +140,7 @@ for s in toolchain_deps toolchain_rust toolchain_anza_cli toolchain_fetch_source
 # verify probes: simulate a correctly-isolated, running node
 _vf_pid(){ echo 12345; }; _vf_proc_limits(){ printf 'Max open files 2000000 2000000 files\nMax locked memory unlimited unlimited bytes\n'; }
 _vf_proc_nice(){ echo -10; }; _vf_oom_score(){ echo -1000; }; _vf_poh_thread(){ echo 999; }; _vf_taskset(){ sget poh_core; }
-_vf_isolated(){ sget isolated_set; }; _vf_governor(){ echo performance; }; _vf_thp(){ echo "[never]"; }; _vf_ksm(){ echo 0; }; _vf_numa(){ echo 0; }
+_vf_isolated(){ sget isolated_set; }; _vf_governors(){ echo "cpu0 performance"; }; _vf_thp(){ echo "[never]"; }; _vf_ksm(){ echo 0; }; _vf_numa(){ echo 0; }
 _vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "0 slot(s) behind"; }; _vf_timer_active(){ echo active; }
 # post-reboot isolation read (mock /sys agreeing with the recorded set)
 _install_read_isolated(){ sget isolated_set; }; _install_read_cmdline(){ echo "isolcpus=domain,managed_irq,$(sget isolated_set)"; }

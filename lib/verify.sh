@@ -35,7 +35,14 @@ _vf_proc_nice()    { ps -o ni= -p "$1" 2>/dev/null | tr -d ' ' || true; }
 _vf_poh_thread()   { ps -T -p "$1" -o spid,comm 2>/dev/null | awk '/solPohTickProd/{print $1; exit}' || true; }
 _vf_taskset()      { taskset -cp "$1" 2>/dev/null | awk '{print $NF}' || true; }
 _vf_isolated()     { cat /sys/devices/system/cpu/isolated 2>/dev/null || true; }
-_vf_governor()     { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true; }
+_vf_governors() {               # stdout: "cpuN <governor>" per cpufreq CPU; VF_CPU_SYSFS = tests' fake sysfs
+    local f c
+    for f in "${VF_CPU_SYSFS:-/sys/devices/system/cpu}"/cpu[0-9]*/cpufreq/scaling_governor; do
+        [[ -r "$f" ]] || continue
+        c=${f%/cpufreq/scaling_governor}
+        printf '%s %s\n' "${c##*/}" "$(cat "$f" 2>/dev/null || true)"
+    done
+}
 _vf_thp()          { cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true; }
 _vf_ksm()          { cat /sys/kernel/mm/ksm/run 2>/dev/null || true; }
 _vf_numa()         { cat /proc/sys/kernel/numa_balancing 2>/dev/null || true; }
@@ -90,9 +97,22 @@ verify_poh_affinity() {
     else vf_warn "PoH thread affinity = ${aff:-?} (expected $poh)"; fi
 }
 
+# Every cpufreq CPU, not cpu0 alone (R10-2): after a reboot the cpufrequtils
+# boot script and performance-tweaks raced and left a mix, 32 of 48 CPUs on
+# ondemand. cpu0 cannot show a mix, and performance there would hide one.
+verify_governors() {
+    local list perf total others
+    list=$(_vf_governors)
+    read -r perf total <<<"$(awk 'NF{t++; if ($2 == "performance") p++} END{print p+0, t+0}' <<<"$list")"
+    if (( total == 0 )); then vf_warn "governor = ? (no cpufreq CPU found; expected performance)"; return 0; fi
+    if (( perf == total )); then vf_ok "governor = performance on ${perf}/${total} CPUs"; return 0; fi
+    others=$(awk 'NF && $2 != "performance"' <<<"$list" | sort -t u -k2,2n | awk '{printf "%s%s(%s)", s, $1, ($2 == "" ? "?" : $2); s = " "}')
+    vf_warn "governor = performance on ${perf}/${total} CPUs (expected all); the others: ${others}"
+}
+
 verify_perf_tweaks() {
     local t; t=$(_vf_thp)
-    _vf_expect "governor" "$(_vf_governor)" "performance"
+    verify_governors
     if [[ "$t" == *"[never]"* ]]; then vf_ok "THP = never"; else vf_warn "THP = ${t:-?} (expected [never])"; fi
     _vf_expect "KSM"            "$(_vf_ksm)"  "0"
     _vf_expect "numa_balancing" "$(_vf_numa)" "0"

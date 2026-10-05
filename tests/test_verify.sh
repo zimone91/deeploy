@@ -36,7 +36,11 @@ _vf_oom_score()    { echo "-1000"; }
 _vf_poh_thread()   { echo 999; }
 _vf_taskset()      { echo "10"; }
 _vf_isolated()     { echo "1-2,10,25-26,34"; }
-_vf_governor()     { echo performance; }
+# Fake cpufreq sysfs (R10-2): mkcpus <gov of cpu0> <gov of the others> <count>
+mkcpus() { local i; rm -rf "$WORK/cpu"
+    for ((i = 0; i < $3; i++)); do mkdir -p "$WORK/cpu/cpu$i/cpufreq"
+        if (( i == 0 )); then echo "$1"; else echo "$2"; fi >"$WORK/cpu/cpu$i/cpufreq/scaling_governor"; done; }
+mkcpus performance performance 4; export VF_CPU_SYSFS="$WORK/cpu"
 _vf_thp()          { echo "always madvise [never]"; }
 _vf_ksm()          { echo 0; }
 _vf_numa()         { echo 0; }
@@ -76,12 +80,30 @@ VF_PID=12345   # restore (the no-process test left it empty)
 _vf_taskset() { echo "5"; }
 reset; verify_poh_affinity >/dev/null 2>&1; check "poh wrong core -> warn" "$_VF_WARN" "1"
 _vf_taskset() { echo "10"; }
-_vf_governor() { echo powersave; }
+mkcpus powersave powersave 4
 reset; verify_perf_tweaks >/dev/null 2>&1; check "bad governor -> >=1 warn" "$([[ $_VF_WARN -ge 1 ]] && echo y || echo n)" "y"
-_vf_governor() { echo performance; }
+mkcpus performance performance 4
 _vf_catchup() { echo "85 slot(s) behind (us:10 them:95)"; }
 reset; verify_catchup >/dev/null 2>&1; check "behind -> warn" "$_VF_WARN" "1"
 _vf_catchup() { echo "0 slot(s) behind"; }
+
+echo "== R10-2: the governor of every cpufreq CPU, not cpu0 alone =="
+mkcpus performance ondemand 12
+reset; verify_governors >"$WORK/gov" 2>&1
+check "R10-2: cpu0 performance, 11 ondemand -> WARN with the count" "$_VF_WARN|$(grep -c 'governor = performance on 1/12 CPUs' "$WORK/gov")" "1|1"
+check "R10-2: the others listed, in CPU order" "$(grep -c 'the others: cpu1(ondemand) cpu2(ondemand) .* cpu10(ondemand) cpu11(ondemand)$' "$WORK/gov")" "1"
+mkcpus performance performance 12; mkdir -p "$WORK/cpu/cpu12"     # cpu12: no cpufreq dir, not counted
+reset; verify_governors >"$WORK/gov" 2>&1
+check "R10-2: all performance -> ok, CPUs without cpufreq skipped" "$_VF_WARN|$(grep -c 'governor = performance on 12/12 CPUs' "$WORK/gov")" "0|1"
+rm -rf "$WORK/cpu"; mkdir -p "$WORK/cpu"
+reset; verify_governors >"$WORK/gov" 2>&1
+check "R10-2: no cpufreq CPU at all -> WARN" "$_VF_WARN|$(grep -c 'no cpufreq CPU found' "$WORK/gov")" "1|1"
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; verify_governors ) 2>&1 )
+check "R10-2: real probe, empty sysfs, ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+mkcpus performance ondemand 4
+verify_run >"$WORK/run" 2>&1
+check "R10-2: verify_run (the post-reboot check) reads every CPU" "$(grep -c 'governor = performance on 1/4 CPUs' "$WORK/run")" "1"
+mkcpus performance performance 4
 
 echo "== R10-6: identity — on the sync key is a WARN that names both cases =="
 STK=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu; SYN=SyncPk1111111111111111111111111111111111111
