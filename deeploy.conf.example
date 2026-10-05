@@ -37,9 +37,11 @@ JITO_TAG="v4.3.0-jito.0"               # see github.com/jito-foundation/jito-sol
 #                                      # MINIMUM SUPPORTED: v4.2.0-jito (older
 #                                      # clients lack --no-xdp / --poh-pinned-cpu-core)
 
-# --- Keys: PATHS ONLY (no key material). Vote is a PUBLIC pubkey. ---
+# --- Keys: PATHS and PUBKEYS only (no key material). ---
 UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"   # the unstaked SYNC identity the node runs under until the swap
-STAKED_KEYPAIR="/root/solana/mainnet-validator-keypair.json"   # PATH only; placed by YOU, manually
+STAKED_KEY_MODE="file"                 # file: you place the staked keypair on this box; offbox: it never has to be here
+STAKED_KEYPAIR="/root/solana/mainnet-validator-keypair.json"   # file mode: PATH only; placed by YOU, manually
+#STAKED_PUBKEY="YourStakedNodePubkey33333333333333333333333"   # offbox mode: REQUIRED — the staked identity's PUBKEY
 VOTE_ACCOUNT_PUBKEY="YourVoteAccountPubkey22222222222222222222222"   # REQUIRED: replace with yours
 
 # --- MEV (BAM by default; commission tied to mode) ---

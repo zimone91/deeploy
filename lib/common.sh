@@ -274,6 +274,47 @@ deeploy_solana_bin() {
     printf '%s' "${SOLANA_INSTALL_HOME:-/root}/.local/share/solana/install/active_release/bin"
 }
 
+# --- identities (read-only; shared by upgrade.sh and verify.sh) ---------------
+# The staked identity is applied at runtime with set-identity, so argv
+# (/proc/<pid>/cmdline) always shows the sync identity and a keypair file proves
+# nothing about the running process. Only the node itself can tell: getIdentity
+# on the local RPC. The value probes print nothing on failure and always return
+# 0: a non-zero status inside $( ) wakes the ERR trap and prints a stray [FAIL]
+# line.
+deeploy_live_identity() {       # stdout: the base58 identity, or nothing (no answer / unparsable)
+    local port out
+    port=$(state_get rpc_port 8899)
+    out=$(curl -sS -m 5 -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' "http://127.0.0.1:${port}" 2>/dev/null || true)
+    printf '%s\n' "$out" | sed -nE 's/.*"identity"[[:space:]]*:[[:space:]]*"([1-9A-HJ-NP-Za-km-z]{32,44})".*/\1/p' | head -1
+}
+deeploy_sync_pubkey() {         # stdout: the sync identity's pubkey, or nothing
+    local f; f=$(state_get sync_identity "")
+    if [[ -n "$f" && -f "$f" ]]; then "$SOLANA_BIN/solana-keygen" pubkey "$f" 2>/dev/null || true; fi
+}
+
+# b58_len <string> — how many bytes <string> decodes to as base58 (the alphabet
+# Solana uses), or nothing when a character is outside the alphabet. A pubkey
+# is 32 bytes and a signature 64; a 32-44 character regex alone lets 23-33 byte
+# values through. Pure bash on base-256 digits; always returns 0.
+b58_len() {
+    local s=$1 alpha=123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
+    local -a b=()
+    local i j n=0 z=0 carry rest
+    [[ -n "$s" ]] || return 0
+    while [[ "${s:z:1}" == 1 ]]; do z=$((z + 1)); done     # each leading '1' is a zero byte
+    for ((i = 0; i < ${#s}; i++)); do
+        rest=${alpha%%"${s:i:1}"*}
+        (( ${#rest} < 58 )) || return 0                    # not in the alphabet
+        carry=${#rest}
+        for ((j = 0; j < n; j++)); do
+            carry=$(( b[j] * 58 + carry )); b[j]=$(( carry & 255 )); carry=$(( carry >> 8 ))
+        done
+        while (( carry > 0 )); do b[n]=$(( carry & 255 )); n=$((n + 1)); carry=$(( carry >> 8 )); done
+    done
+    printf '%s\n' $(( n + z ))
+}
+
 ensure_cargo_env() {
     local ch="${CARGO_HOME:-$HOME/.cargo}"
     # shellcheck disable=SC1090,SC1091

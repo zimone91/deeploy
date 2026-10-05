@@ -179,6 +179,8 @@ type_reject "bps junk"           'COMMISSION_BPS="1e9"'
 # so 2^64+10000 would pass an uncapped `<= 10000` — the digit cap must hold.
 type_reject "bps 2^64 wrap"      'COMMISSION_BPS="18446744073709561616"'
 type_reject "bps 6 digits"       'COMMISSION_BPS="100000"'
+type_reject "R10-6: keymode not file/offbox" 'STAKED_KEY_MODE="both"'
+type_reject "R10-6: staked pubkey charset" 'STAKED_PUBKEY="0OIl1111111111111111111111111111111"'
 
 echo "== S2: VALID values of every type ACCEPTED (incl. portrange under set -u) =="
 type_accept() {   # <desc> <conf line> <KEY> <expected-global>
@@ -196,6 +198,8 @@ type_accept "url"        'BAM_URL="https://a.b.jito.wtf"'   BAM_URL             
 type_accept "bool"       'DZ_ENABLED="true"'                DZ_ENABLED          "true"
 type_accept "bps 0"      'COMMISSION_BPS="0"'               COMMISSION_BPS      "0"
 type_accept "bps 10000"  'COMMISSION_BPS="10000"'           COMMISSION_BPS      "10000"
+type_accept "R10-6: keymode offbox" 'STAKED_KEY_MODE="offbox"' STAKED_KEY_MODE "offbox"
+type_accept "R10-6: keymode file"   'STAKED_KEY_MODE="file"'   STAKED_KEY_MODE "file"
 
 echo "== S2: unknown key ignored — sets no global, parse still succeeds =="
 unset EVIL 2>/dev/null || true
@@ -278,6 +282,20 @@ check "every _config_keys key has a type"      "$sync_missing" "0"
 keys_set="$(_config_keys     | awk '$1!="@"{print $1}' | sort)"
 types_set="$(_config_key_types | awk '{print $1}'      | sort)"
 check "typed-key set == _config_keys key set"  "$types_set" "$keys_set"
+
+echo "== R10-6: offbox round-trips — mode + pubkey out, no staked path, back in =="
+seed_state
+state_clear staked_keypair                       # offbox keeps no staked path
+state_set staked_key_mode offbox; state_set staked_pubkey kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu
+config_export >/dev/null 2>&1
+check "offbox export: mode"                  "$(grep -c '^STAKED_KEY_MODE="offbox"$' "$CONFIG_FILE")" "1"
+check "offbox export: staked pubkey"         "$(grep -c '^STAKED_PUBKEY="kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu"$' "$CONFIG_FILE")" "1"
+check "offbox export: no STAKED_KEYPAIR"     "$(grep -c '^STAKED_KEYPAIR=' "$CONFIG_FILE")" "0"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+unset STAKED_KEY_MODE STAKED_PUBKEY STAKED_KEYPAIR
+RESCORE=0 config_import >/dev/null 2>&1
+check "offbox import: mode + pubkey back in state" "$(state_get staked_key_mode)|$(state_get staked_pubkey)" "offbox|kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu"
+check "offbox import: no staked path appears"      "$(state_get staked_keypair '<unset>')" "<unset>"
 
 echo ""
 echo "==================================="

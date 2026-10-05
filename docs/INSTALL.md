@@ -33,7 +33,7 @@ never auto-wipe.
 | 2 | Tuning | **dynamic CPU isolation → GRUB**, performance-tweaks, sysctl, NOFILE → reboot gate |
 | 3 | Disk | detect → confirm → blkdiscard + mkfs.xfs + mount + fstab + symlink |
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
-| 5 | Keys | generate the unstaked sync identity; print where the real key goes |
+| 5 | Keys | generate the unstaked sync identity; ask where the staked key lives (`file` on the box, or `offbox`); print the hot swap |
 | 6 | Validator config | generate `validator.sh`, `solana.service`, logrotate, PoH-pin, NIC setup |
 | 7 | DoubleZero | (optional, prompted) PREPARE only: packages, env→mainnet-beta, ufw (GRE, BGP, 44880) + old-server-disconnect reminder + pointer — ID-migration, passport, and connect are the separate post-swap `dz-connect` step |
 | 8 | Start | free-disk precheck → start → `catchup 0` → pin PoH → verify → summary |

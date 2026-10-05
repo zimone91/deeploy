@@ -60,37 +60,23 @@ upgrade_check_releases() {
         || fail "refusing to upgrade to '${UPGRADE_TAG}': ${why}. The validator.sh on this box passes --no-xdp and --poh-pinned-cpu-core, which only exist from ${DEEPLOY_MIN_JITO_TAG} on. Choose ${DEEPLOY_MIN_JITO_TAG} or newer."
 }
 
-# --- live-identity guard (mockable probes) -----------------------------------
-# The staked identity is applied at runtime with set-identity, so argv
-# (/proc/<pid>/cmdline) always shows the sync identity and a keypair file proves
-# nothing about the running process. Only the node itself can tell: getIdentity
-# on the local RPC. Fail-closed: anything but the sync identity — the staked
-# key, an unknown key, no answer, an unparsable answer — goes through require_yes.
-# The value probes print nothing on failure and always return 0: a non-zero
-# status inside $( ) wakes the ERR trap and prints a stray [FAIL] line.
+# --- live-identity guard -----------------------------------------------------
+# The running identity comes from the node itself: getIdentity on the local RPC
+# (deeploy_live_identity, common.sh — verify uses the same probe). Fail-closed:
+# anything but the sync identity — the staked key, an unknown key, no answer, an
+# unparsable answer — goes through require_yes.
 _upgrade_validator_running() { pgrep -f '^agave-validator --identity' >/dev/null 2>&1; }   # if-condition only
-_upgrade_live_identity() {      # stdout: the base58 identity, or nothing (no answer / unparsable)
-    local port out
-    port=$(state_get rpc_port 8899)
-    out=$(curl -sS -m 5 -H 'Content-Type: application/json' \
-        -d '{"jsonrpc":"2.0","id":1,"method":"getIdentity"}' "http://127.0.0.1:${port}" 2>/dev/null || true)
-    printf '%s\n' "$out" | sed -nE 's/.*"identity"[[:space:]]*:[[:space:]]*"([1-9A-HJ-NP-Za-km-z]{32,44})".*/\1/p' | head -1
-}
-_upgrade_sync_pubkey() {        # stdout: the sync pubkey, or nothing
-    local f; f=$(state_get sync_identity "")
-    if [[ -n "$f" && -f "$f" ]]; then "$SOLANA_BIN/solana-keygen" pubkey "$f" 2>/dev/null || true; fi
-}
 
 upgrade_identity_guard() {      # <when> — runs before the build and before every restart
     local when=${1:-"before the restart"} live sync
     step "Identity check ${when}"
     STAKED_RESTART=0
-    live=$(_upgrade_live_identity)          # the node first; pgrep only when it does not answer
+    live=$(deeploy_live_identity)           # the node first; pgrep only when it does not answer
     if [[ -z "$live" ]] && ! _upgrade_validator_running; then
         info "Validator not running (no answer from getIdentity, no process) — no staked-restart risk"
         return 0
     fi
-    sync=$(_upgrade_sync_pubkey)
+    sync=$(deeploy_sync_pubkey)
     if [[ -n "$live" ]]; then
         if [[ -n "$sync" && "$live" == "$sync" ]]; then
             ok "Validator running on the sync identity (${live}, from getIdentity) — safe to restart"
@@ -148,6 +134,7 @@ upgrade_rollback() {
 # --- orchestrator ------------------------------------------------------------
 upgrade_run() {
     require_root
+    # shellcheck disable=SC2034  # read by deeploy_sync_pubkey (common.sh) in the identity guard
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (identity guard reads pubkeys via solana-keygen)
     if [[ "${ROLLBACK:-0}" == "1" ]]; then upgrade_rollback; return; fi
     upgrade_check_releases

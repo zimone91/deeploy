@@ -250,6 +250,7 @@ check "connect: latency display ran"         "$(grep -c 'doublezero latency' "$C
 check "connect: status display ran"          "$(grep -c 'doublezero status' "$CALLS")" "1"
 check "connect: NO validator restart"        "$(grep -c 'systemctl restart solana' "$CALLS")" "0"
 check "connect: dz_connected recorded"       "$(state_has dz_connected && echo y || echo n)" "y"
+check "R10-6 file mode: the derived staked pubkey is recorded" "$(state_get staked_pubkey)" "Stakedid111111111111111111111111111111111"
 
 echo "== dz-connect GATE: --yes ignored, non-interactive aborts before connect ibrl =="
 read() { local v="${!#}"; eval "$v=N"; }
@@ -402,6 +403,145 @@ check "resume connected+up: no reconnect"      "$(grep -c 'connect ibrl' "$CALLS
 dz_resume >/dev/null 2>&1
 check "resume connected+down: reconnects"      "$(grep -c 'connect ibrl' "$CALLS")" "1"
 check "resume NEVER re-places a key"           "$(grep -c 'install -m 600' "$CALLS")" "0"
+
+echo "== R10-6: offbox dz-connect — no staked file; signature from outside; the sync identity pays, dry-run first =="
+ip() { case "$*" in *"route get"*) echo "1.1.1.1 dev eth0 src 203.0.113.7";; *"link show"*) return 0;; *) echo x;; esac; }
+OFF_STAKED=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu
+OFF_SIG=4XR92Zct9ZodXzisJ4kov3upmTvMotYVrg65MHP8aoCjSPJwUa7vjaXK5VhDF7ZiiF16v7cY5BPazCLnVqZ3yzb
+check "fixtures: staked pubkey 32 bytes, signature 64" "$(b58_len "$OFF_STAKED")|$(b58_len "$OFF_SIG")" "32|64"
+# Logging stubs: every solana / solana-keygen argv lands in $KEYGENLOG, so a read
+# of the staked keypair would show up there.
+export STUB_EVIL_PK="$OFF_STAKED"
+cat >"$WORK/bin/solana-keygen" <<'EOF'
+#!/bin/bash
+echo "solana-keygen $*" >>"$KEYGENLOG"
+case "$1" in
+  pubkey) case "$2" in *mainnet-validator-keypair*) echo "Stakedid111111111111111111111111111111111";;
+                       *unstaked-identity*) echo "SyncPayer11111111111111111111111111111111111";;
+                       *evil-dz*) echo "$STUB_EVIL_PK";;
+                       *) echo "Other11111111111111111111111111111111111111";; esac ;;
+esac
+EOF
+cat >"$WORK/bin/solana" <<'EOF'
+#!/bin/bash
+echo "solana $*" >>"$KEYGENLOG"
+case "$1" in sign-offchain-message) echo "SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567";;
+             balance) echo "0.5 SOL";; esac
+EOF
+chmod +x "$WORK/bin/solana-keygen" "$WORK/bin/solana"
+DZ_DRY=ok
+doublezero-solana() { echo "doublezero-solana $*" >>"$CALLS"
+    case "$*" in
+        *find-validator*)    echo '{"cluster":"mainnet-beta","in_leader_schedule":true,"role":"primary","visible_in_gossip":true}' ;;
+        *"fetch --config"*)  echo '{"program_config":"PCfg","is_paused":false,"is_request_access_paused":false,"request_deposit_sol":1.5,"request_fee_sol":0.00025}' ;;
+        *request-validator-access*--dry-run*)
+            case "$DZ_DRY" in
+                ok)     printf 'Compute units consumed: 9876\nSimulated program logs:\n  Program dzPass invoke [1]\n  Program dzPass success\n' ;;
+                short)  printf 'Simulated program logs:\n  Program 11111111111111111111111111111111 invoke [2]\n  Transfer: insufficient lamports 1000, need 1501000\n'
+                        echo "Error: Simulation failed" >&2; return 1 ;;
+                errors) printf '\nErrors found:\n - Validator is not in gossip\n'; return 0 ;;
+                badsig) echo "Error: Signature verification failed" >&2; return 1 ;;
+                nosim)  echo "Request Solana validator access: 5TxSig" ;;          # rc 0, simulated nothing
+                both)   printf 'Errors found:\n - x\nSimulated program logs:\n  Program dzPass success\n' ;;
+            esac ;;
+        *request-validator-access*) echo "Request Solana validator access: 5TxSig" ;;
+    esac; }
+off_state() {
+    rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+    state_set solana_home /root/solana; state_set dz_enabled true
+    state_set staked_key_mode offbox; state_set staked_pubkey "$OFF_STAKED"; state_set sync_identity "$SYNC_KP"
+    printf '[1,2,3]' >"$DZ_KEYPAIR"; rm -f "$WORK/dzconfig/id.json"
+    : >"$CALLS"; : >"$KEYGENLOG"; : >"$LOG_FILE"
+}
+SYNC_KP="$WORK/unstaked-identity.json"; printf '[1]' >"$SYNC_KP"
+rm -f "$WORK/mainnet-validator-keypair.json"                # no staked file anywhere
+
+off_state
+read() { local v="${!#}"; eval "$v=y"; }                    # old-server gate ack
+OFFOUT=$( NONINTERACTIVE=0 DZ_SIGNATURE="$OFF_SIG" dz_connect_run 2>&1 ); RC=$?
+unset -f read
+check "offbox: full flow with no staked file -> rc0"   "$RC" "0"
+check "offbox: prepare names the staked pubkey (state)" "$(grep -c "prepare-validator-access .* --primary-validator-id $OFF_STAKED" "$CALLS")" "1"
+check "offbox: the first request is the dry-run, -k sync" "$(grep 'request-validator-access' "$CALLS" | head -1 | grep -c -- "--signature $OFF_SIG -u mainnet-beta -k $SYNC_KP --dry-run\$")" "1"
+check "offbox: then the request, -k sync, same signature" "$(grep 'request-validator-access' "$CALLS" | sed -n 2p | grep -c -- "--signature $OFF_SIG -u mainnet-beta -k $SYNC_KP\$")" "1"
+check "offbox: two request calls in all"               "$(grep -c 'request-validator-access' "$CALLS")" "2"
+check "offbox: nothing signed on this box"             "$(grep -c 'sign-offchain-message' "$KEYGENLOG")" "0"
+check "offbox: payer and balance shown"                "$(grep -c 'The sync identity pays for the request: SyncPayer11111111111111111111111111111111111 (balance: 0.5 SOL)' <<<"$OFFOUT")" "1"
+check "offbox: deposit from the program config shown" "$(grep -c "request deposit (1.5 SOL)" <<<"$OFFOUT")" "1"
+check "offbox: a grant refunds the sync identity"      "$(grep -c 'come back to the sync identity' <<<"$OFFOUT")" "1"
+check "X4 offbox: both calls logged with --signature ***" "$(grep -c -- 'request-validator-access.*--signature \*\*\*' "$LOG_FILE")" "2"
+check "X4 offbox: the signature never reaches the log" "$(grep -c "$OFF_SIG" "$LOG_FILE")" "0"
+check "offbox: dz_connected recorded"                  "$(state_has dz_connected && echo y || echo n)" "y"
+
+# Read trap: a keypair fixture at the default staked path, and a stale staked
+# path in state (an old conf). offbox must never open or name it.
+off_state
+printf '[9]' >"$WORK/mainnet-validator-keypair.json"; state_set staked_keypair "$WORK/mainnet-validator-keypair.json"
+read() { local v="${!#}"; eval "$v=y"; }
+( NONINTERACTIVE=0 DZ_SIGNATURE="$OFF_SIG" dz_connect_run ) >/dev/null 2>&1; RC=$?
+unset -f read
+check "offbox read trap: flow rc0"                     "$RC" "0"
+check "offbox read trap: no solana/keygen call names the staked file" "$(grep -c 'mainnet-validator-keypair' "$KEYGENLOG")" "0"
+check "offbox read trap: no DZ CLI call names it"      "$(grep -c 'mainnet-validator-keypair' "$CALLS")" "0"
+rm -f "$WORK/mainnet-validator-keypair.json"
+
+echo "== R10-6: offbox passport — every way it must stop before anything is sent =="
+offpass() { NONINTERACTIVE=1 STAKED_KEY_MODE=offbox SYNC_IDENTITY="$SYNC_KP" dz_passport DZid1111 "$OFF_STAKED" 2>&1; }
+off_state; DZ_DRY=badsig
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "wrong signature: the dry-run fails -> fail"     "$RC" "1"
+check "wrong signature: the CLI's reason is shown"     "$(grep -c 'Signature verification failed' <<<"$OUT")" "1"
+check "wrong signature: nothing sent, exact sign cmd"  "$(grep -c 'nothing was sent' <<<"$OUT")|$(grep -cF 'sign exactly  solana sign-offchain-message "service_key=DZid1111" -k <staked.json>' <<<"$OUT")" "1|1"
+check "wrong signature: only the dry-run ran"          "$(grep -c 'request-validator-access' "$CALLS")|$(grep -c -- '--dry-run' "$CALLS")" "1|1"
+off_state; DZ_DRY=short
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "short balance: fail with the shortfall"         "$RC|$(grep -c 'short by 1500000 lamports: it has 1000, the request needs 1501000' <<<"$OUT")" "1|1"
+check "short balance: only the dry-run ran"            "$(grep -c 'request-validator-access' "$CALLS")" "1"
+off_state; DZ_DRY=errors
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "'Errors found:' with exit 0: still a fail"      "$RC|$(grep -c 'Validator is not in gossip' <<<"$OUT")" "1|1"
+check "'Errors found:': only the dry-run ran"          "$(grep -c 'request-validator-access' "$CALLS")" "1"
+off_state; DZ_DRY=nosim
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "dry-run printed no simulation (rc 0): fail"   "$RC|$(grep -c 'request-validator-access' "$CALLS")" "1|1"
+off_state; DZ_DRY=both
+OUT=$( DZ_SIGNATURE="$OFF_SIG" offpass ); RC=$?
+check "simulation printed AND 'Errors found:' (rc 0): fail" "$RC|$(grep -c 'request-validator-access' "$CALLS")" "1|1"
+off_state; DZ_DRY=ok
+OUT=$( unset DZ_SIGNATURE; offpass ); RC=$?
+check "no signature, non-interactive -> fail"          "$RC" "1"
+check "no signature: prints the exact command and the flag" "$(grep -cF 'run exactly:  solana sign-offchain-message "service_key=DZid1111" -k <staked.json>' <<<"$OUT")|$(grep -c 'dz-connect --dz-signature' <<<"$OUT")" "1|1"
+check "no signature: no request call"                  "$(grep -c 'request-validator-access' "$CALLS")" "0"
+off_state
+OUT=$( DZ_SIGNATURE="SigVa1idBase58Test2ZqWeRtYuPaSdFgHjKxCvBnM34567" offpass ); RC=$?
+check "not a 64-byte signature -> fail before any request" "$RC|$(grep -c 'not a 64-byte base58 signature' <<<"$OUT")|$(grep -c 'request-validator-access' "$CALLS")" "1|1|0"
+off_state
+ask() { REPLY="$OFF_SIG"; }                                 # the operator pastes it (common.sh's ask is unset above)
+OUT=$( unset DZ_SIGNATURE; NONINTERACTIVE=0 STAKED_KEY_MODE=offbox SYNC_IDENTITY="$SYNC_KP" dz_passport DZid1111 "$OFF_STAKED" 2>&1 ); RC=$?
+unset -f ask
+check "interactive: shows the command, takes the pasted signature" "$RC|$(grep -c 'Where the staked key lives, run exactly:' <<<"$OUT")|$(grep -c 'request-validator-access' "$CALLS")" "0|1|2"
+
+echo "== R10-6: offbox guards — the DZ-ID check compares pubkeys; the gate needs pubkey + payer =="
+off_state
+EVIL="$WORK/evil-dz.json"; printf '[7]' >"$EVIL"
+OUT=$( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$OFF_STAKED" _dz_assert_not_staked_key "$EVIL" 2>&1 ); RC=$?
+check "offbox: a DZ ID with the staked pubkey -> REFUSED" "$RC|$(grep -c 'REFUSED' <<<"$OUT")" "1|1"
+( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$OFF_STAKED" _dz_assert_not_staked_key "$DZ_KEYPAIR" ) >/dev/null 2>&1
+check "offbox: a different DZ ID -> passes"            "$?" "0"
+state_clear staked_pubkey
+OUT=$( STAKED_KEY_MODE=offbox STAKED_PUBKEY="" _dz_assert_not_staked_key "$DZ_KEYPAIR" 2>&1 ); RC=$?
+check "offbox: no staked pubkey -> fail-closed"        "$RC|$(grep -c 'no staked pubkey is recorded' <<<"$OUT")" "1|1"
+check "offbox DZ-ID check: the staked file never named" "$(grep -c 'mainnet-validator-keypair' "$KEYGENLOG")" "0"
+off_state; state_clear staked_pubkey
+OUT=$( dz_connect_run 2>&1 ); RC=$?
+check "offbox gate: no staked pubkey -> fail"          "$RC|$(grep -cF 'set STAKED_PUBKEY (or re-run phase 5)' <<<"$OUT")" "1|1"
+( off_state; state_set staked_keypair "$WORK/stale/mainnet-validator-keypair.json"
+  STAKED_KEYPAIR=/env/mainnet-validator-keypair.json; dz_resolve_config
+  printf '%s|%s' "${STAKED_KEYPAIR:-<empty>}" "$STAKED_KEY_MODE" ) >"$WORK/dzrc" 2>/dev/null
+check "offbox dz_resolve_config: a stale staked path is not resolved" "$(cat "$WORK/dzrc")" "<empty>|offbox"
+off_state; state_set sync_identity "$WORK/no-such-sync.json"
+OUT=$( dz_connect_run 2>&1 ); RC=$?
+check "offbox gate: the paying sync identity missing -> fail" "$RC|$(grep -c 'pays for the passport request, but it is not on this box' <<<"$OUT")" "1|1"
 
 echo ""
 echo "==================================="

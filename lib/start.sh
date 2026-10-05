@@ -3,9 +3,9 @@
 # DeePloy — lib/start.sh   (Phase 8: start -> catchup 0 -> verify)
 # Pre-start free-disk check -> enable+start solana.service -> wait for the node
 # to catch up (catchup 0) -> pin the PoH thread -> run the verification block ->
-# print the final summary with the MANUAL staked-key hot-swap (path form, the
-# tower moved first; keys_print_swap_steps) and a pointer to the separate
-# failover tool.
+# print the final summary with the MANUAL staked-key hot-swap (the tower moved
+# first; keys_print_swap_steps: path form in file mode, stdin form in offbox
+# mode) and a pointer to the separate failover tool.
 #
 # Requires: common.sh sourced (verify.sh for the verification block, keys.sh
 # for the swap steps in the summary). All mutations go through run(); probes
@@ -25,7 +25,11 @@ start_resolve_config() {
     LEDGER_PATH="$(state_get ledger_path "$SOLANA_HOME/ledger")"
     ACCOUNTS_PATH="$(state_get accounts_path /mnt/accounts/solana/accounts)"
     SNAPSHOTS_PATH="$(state_get snapshots_path "$SOLANA_HOME/snapshots")"
-    STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
+    # offbox mode (R10-6): no staked keypair path at all — only the pubkey.
+    STAKED_KEY_MODE="$(state_get staked_key_mode file)"
+    STAKED_PUBKEY="$(state_get staked_pubkey "")"
+    STAKED_KEYPAIR=""
+    [[ "$STAKED_KEY_MODE" == offbox ]] || STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
     VOTE_ACCOUNT_PUBKEY="$(state_get vote_account_pubkey "")"
     SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
     DZ_ENABLED="$(state_get dz_enabled false)"   # was dz_multicast (latent bug): the finalize pointer keys on ENABLEMENT
@@ -142,11 +146,18 @@ start_print_summary() {
     [[ "$verify_rc" -ne 0 ]] && warn "Post-install verification reported issues — review them above and run '${DEEPLOY_CMD} verify' before the staked-key swap."
     info ""
     info "MANUAL staked-key hot-swap (DeePloy never generates, copies, or transmits it):"
-    info "  1) Place the real staked keypair at:  ${STAKED_KEYPAIR}   (chmod 600)"
-    info "  2) Swap identity (path-as-argument form):"
-    keys_print_swap_steps "${SOLANA_BIN}/agave-validator" "$LEDGER_PATH" "$STAKED_KEYPAIR"
+    if [[ "$STAKED_KEY_MODE" == offbox ]]; then
+        info "  The staked key stays off this box — DeePloy knows only its pubkey (${STAKED_PUBKEY:-<unset>})."
+        info "  Swap identity (stdin form, from the machine that holds the key):"
+        keys_print_swap_steps "${SOLANA_BIN}/agave-validator" "$LEDGER_PATH"
+    else
+        info "  1) Place the real staked keypair at:  ${STAKED_KEYPAIR}   (chmod 600)"
+        info "  2) Swap identity (path-as-argument form):"
+        keys_print_swap_steps "${SOLANA_BIN}/agave-validator" "$LEDGER_PATH" "$STAKED_KEYPAIR"
+    fi
     info ""
     [[ "$DZ_ENABLED" == "true" ]] && info "DoubleZero: after the swap, run  ${DEEPLOY_CMD} dz-connect  (passport + ibrl + multicast)."
+    [[ "$DZ_ENABLED" == "true" && "$STAKED_KEY_MODE" == offbox ]] && info "  offbox: it prints the passport message to sign where the key lives; pass the result with --dz-signature."
     info ""
     info "Failover is a SEPARATE tool (not bundled): install it later via its own one-line"
     info "installer; DeePloy's exported config (${DEEPLOY_CMD} export) is reusable by it."

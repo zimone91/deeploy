@@ -4,7 +4,8 @@
 # Read-only diagnostic ported from the operator's verification block. Checks
 # that the tuning actually took: process limits, priority/OOM, CPU isolation
 # (vs the recorded isolated set), PoH thread affinity (vs POH_CORE), governor/
-# THP/KSM/NUMA, sysctl buffers, disk layout, catchup, and the poh-pin timer.
+# THP/KSM/NUMA, sysctl buffers, disk layout, catchup, the poh-pin timer, and
+# whether the node runs on the staked identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
 # Requires: common.sh sourced (constants.sh optional).
@@ -41,6 +42,8 @@ _vf_numa()         { cat /proc/sys/kernel/numa_balancing 2>/dev/null || true; }
 _vf_sysctl()       { sysctl -n "$1" 2>/dev/null || true; }
 _vf_catchup()      { "$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1 || true; }
 _vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
+_vf_identity()     { deeploy_live_identity; }     # getIdentity, local RPC (common.sh)
+_vf_sync_pubkey()  { deeploy_sync_pubkey; }
 
 # --- checks ------------------------------------------------------------------
 verify_process() {
@@ -111,6 +114,25 @@ verify_pohpin_timer() {
     else vf_warn "solana-poh-pin.timer NOT active"; fi
 }
 
+# The staked identity is set at runtime (set-identity), so any restart of solana
+# brings the node back on the sync identity, and it stops voting. Before the
+# swap that is the expected state; after it, it is the thing to catch. Needs the
+# staked pubkey: offbox records it at phase 5, file mode where it is derived.
+verify_identity() {
+    local staked live sync
+    staked=$(state_get staked_pubkey "")
+    [[ -n "$staked" ]] || { info "staked pubkey not recorded — identity check skipped"; return 0; }
+    live=$(_vf_identity)
+    [[ -n "$live" ]] || { vf_warn "identity unknown: getIdentity on the local RPC did not answer"; return 0; }
+    if [[ "$live" == "$staked" ]]; then vf_ok "running on the staked identity ${staked}"; return 0; fi
+    sync=$(_vf_sync_pubkey)
+    if [[ -n "$sync" && "$live" == "$sync" ]]; then
+        vf_warn "NOT voting as staked: the node runs on the sync identity ${sync} — expected before the swap; after a swap it means a restart reverted the identity"
+    else
+        vf_warn "identity ${live} is neither the staked ${staked} nor the sync identity ${sync:-?}"
+    fi
+}
+
 # --- orchestrator ------------------------------------------------------------
 verify_run() {
     step "Post-install verification"
@@ -126,6 +148,7 @@ verify_run() {
     verify_perf_tweaks
     verify_sysctl
     verify_catchup
+    verify_identity
     verify_pohpin_timer
     echo ""
     info "Verification: ${_VF_WARN} warning(s), ${_VF_FAIL} failure(s)"

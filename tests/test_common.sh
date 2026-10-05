@@ -475,6 +475,23 @@ check "non-root is quiet (console)"     "$(grep -c 'console only' <<<"$nonrootms
 check "non-root NOT flagged DISABLED"   "$(grep -c 'DISABLED' <<<"$nonrootmsg")"     "0"
 
 echo ""
+echo "== R10-6: b58_len — decoded byte length (pubkey 32, signature 64) =="
+rep() { local s="" i; for ((i = 0; i < $2; i++)); do s+=$1; done; printf '%s' "$s"; }
+check "32 x '1' -> 32 zero bytes (leading '1's)"   "$(b58_len "$(rep 1 32)")" "32"
+check "Vote111…(43) -> 32 bytes"                    "$(b58_len Vote111111111111111111111111111111111111111)" "32"
+check "the SPL Token program id -> 32 bytes"      "$(b58_len TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA)" "32"
+check "'2' + 42 x '1' -> 31 bytes"                  "$(b58_len "2$(rep 1 42)")" "31"
+check "44 x 'z' -> 33 bytes"                        "$(b58_len "$(rep z 44)")" "33"
+check "87 x 'z' -> 64 bytes (signature size)"       "$(b58_len "$(rep z 87)")" "64"
+check "88 x 'z' -> 65 bytes"                        "$(b58_len "$(rep z 88)")" "65"
+for c in 0 O I l; do
+    check "'$c' is outside the alphabet -> nothing" "$(b58_len "Vote1111${c}11111111111111111111111111111111")" ""
+done
+check "empty -> nothing"                            "$(b58_len "")" ""
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; b58_len "0bad"; b58_len "" ) 2>&1 )
+check "invalid input under the ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+
+echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 echo "==================================="

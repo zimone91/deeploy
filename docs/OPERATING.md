@@ -8,10 +8,11 @@ deeploy.sh verify         # run the post-install verification block on demand
 deeploy.sh export         # write deeploy.conf (paths/pubkeys/settings only)
 deeploy.sh import         # load deeploy.conf into state (import --rescore re-pings region)
 deeploy.sh dz-connect     # DoubleZero connect: passport + ibrl + multicast (run AFTER the manual staked-key swap)
+deeploy.sh dz-connect --dz-signature <sig>   # offbox: the passport signature, made where the staked key lives
 ```
 
 Flags: `--dry-run`, `--resume`, `--only <phase>`, `--force`, `--yes`,
-`--config <path>`, `--rescore`, `--rollback`.
+`--config <path>`, `--rescore`, `--rollback`, `--dz-signature <sig>`.
 
 ## Config (`deeploy.conf`)
 

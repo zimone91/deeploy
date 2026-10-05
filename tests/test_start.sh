@@ -156,6 +156,7 @@ check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a 
 check    "tower copied to this ledger"       "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$SUM")" "1"
 check    "cold bring-up states its condition" "$(grep -c "finalized slot is at least 300 slots past the vote account's lastVote" <<<"$SUM")" "1"
 check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$SUM")" "0"
+check    "R10-6: file mode also says a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$SUM")" "1"
 check_ge "dz-connect mentioned (DZ on)" "$(grep -c 'dz-connect' <<<"$SUM")" "1"
 # Fix #2: the printed command must be runnable — './deeploy.sh dz-connect' (or an
 # absolute path via DEEPLOY_SELF), never bare 'deeploy dz-connect' (no PATH entry).
@@ -164,6 +165,23 @@ check "summary: NO bare 'deeploy dz-connect'" "$(grep -cE '(^|[^.[:alnum:]/])dee
 check "summary: export shown as ./deeploy.sh export" "$(grep -c './deeploy.sh export' <<<"$SUM")" "1"
 check_ge "failover pointer"            "$(grep -ci 'failover' <<<"$SUM")" "1"
 check_ge "vote account shown"          "$(grep -c 'Vote1111' <<<"$SUM")" "1"
+
+echo "== R10-6: offbox summary — stdin form over ssh, no staked path, the passport hint =="
+OFFPK=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu
+OSUM=$(STAKED_KEY_MODE=offbox STAKED_PUBKEY="$OFFPK" STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json start_print_summary 2>&1)   # a stale path must not print
+check "offbox: the key stays off this box, pubkey named" "$(grep -c "The staked key stays off this box — DeePloy knows only its pubkey ($OFFPK)" <<<"$OSUM")" "1"
+check "offbox: set-identity fed on stdin over ssh"   "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger set-identity --require-tower' < staked.json" <<<"$OSUM")" "1"
+check "offbox: authorized-voter fed on stdin"        "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger authorized-voter add' < staked.json" <<<"$OSUM")" "1"
+check "offbox: a restart reverts the identity"       "$(grep -c 'brings this node back on the sync' <<<"$OSUM")" "1"
+check "offbox: tower step kept"                      "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$OSUM")" "1"
+check "offbox: no staked keypair path, no 'Place …'" "$(grep -c 'mainnet-validator-keypair' <<<"$OSUM")|$(grep -c 'Place the real staked keypair' <<<"$OSUM")" "0|0"
+check "offbox: dz-connect hint names --dz-signature" "$(grep -c -- '--dz-signature' <<<"$OSUM")" "1"
+# start_resolve_config in offbox resolves no staked path, even with a stale one
+# in state and another in the environment.
+( state_set staked_key_mode offbox; state_set staked_keypair /stale/mainnet-validator-keypair.json
+  STAKED_KEYPAIR=/env/mainnet-validator-keypair.json; start_resolve_config
+  printf '%s|%s' "${STAKED_KEYPAIR:-<empty>}" "$STAKED_KEY_MODE" ) >"$WORK/srcoff" 2>/dev/null
+check "offbox start_resolve_config: a stale staked path is not resolved" "$(cat "$WORK/srcoff")" "<empty>|offbox"
 
 echo "== R1: summary distinguishes a degraded/failed finish from a real success =="
 DSUM=$(start_print_summary 1 0 2>&1)   # catchup failed

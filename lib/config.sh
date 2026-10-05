@@ -44,9 +44,11 @@ ACCOUNTS_PATH accounts_path
 SNAPSHOTS_PATH snapshots_path
 @ Build
 JITO_TAG jito_tag
-@ Keys (PATHS ONLY — no key material; vote is a public pubkey)
+@ Keys (PATHS and PUBKEYS only — no key material)
 UNSTAKED_KEYPAIR sync_identity
+STAKED_KEY_MODE staked_key_mode
 STAKED_KEYPAIR staked_keypair
+STAKED_PUBKEY staked_pubkey
 VOTE_ACCOUNT_PUBKEY vote_account_pubkey
 @ MEV
 MEV_MODE mev_mode
@@ -103,7 +105,9 @@ ACCOUNTS_PATH path
 SNAPSHOTS_PATH path
 JITO_TAG tag
 UNSTAKED_KEYPAIR path
+STAKED_KEY_MODE keymode
 STAKED_KEYPAIR path
+STAKED_PUBKEY pubkey
 VOTE_ACCOUNT_PUBKEY pubkey
 MEV_MODE mev
 BAM_URL url
@@ -161,6 +165,7 @@ _cfg_t_hostport()  { [[ "$1" =~ ^[A-Za-z0-9.-]+:[0-9]+$ ]]; }
 _cfg_t_tag()       { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 _cfg_t_word()      { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
 _cfg_t_mev()       { [[ "$1" =~ ^(bam|relayer)$ ]]; }
+_cfg_t_keymode()   { [[ "$1" =~ ^(file|offbox)$ ]]; }
 _cfg_t_ip()        { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
 
 # _cfg_validate_type <type> <value> -> 0 if valid, 1 otherwise (unknown type = fail).
@@ -180,6 +185,7 @@ _cfg_validate_type() {
         tag)       _cfg_t_tag       "$2" ;;
         word)      _cfg_t_word      "$2" ;;
         mev)       _cfg_t_mev       "$2" ;;
+        keymode)   _cfg_t_keymode   "$2" ;;
         ip)        _cfg_t_ip        "$2" ;;
         *)         return 1 ;;
     esac

@@ -83,6 +83,24 @@ _vf_catchup() { echo "85 slot(s) behind (us:10 them:95)"; }
 reset; verify_catchup >/dev/null 2>&1; check "behind -> warn" "$_VF_WARN" "1"
 _vf_catchup() { echo "0 slot(s) behind"; }
 
+echo "== R10-6: identity — on the sync key is a WARN that names both cases =="
+STK=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu; SYN=SyncPk1111111111111111111111111111111111111
+LIVE=""; _vf_identity() { printf '%s' "$LIVE"; }; _vf_sync_pubkey() { printf '%s' "$SYN"; }
+state_clear staked_pubkey
+LIVE=$SYN; reset; verify_identity >"$WORK/id" 2>&1
+check "R10-6: no staked pubkey recorded -> skipped, no warn" "$_VF_WARN|$(grep -c 'identity check skipped' "$WORK/id")" "0|1"
+state_set staked_pubkey "$STK"
+LIVE=$STK; reset; verify_identity >"$WORK/id" 2>&1
+check "R10-6: live == staked -> ok"             "$_VF_WARN|$(grep -c "running on the staked identity $STK" "$WORK/id")" "0|1"
+LIVE=$SYN; reset; verify_identity >"$WORK/id" 2>&1
+check "R10-6: live == sync -> WARN"             "$_VF_WARN|$(grep -c 'NOT voting as staked' "$WORK/id")" "1|1"
+check "R10-6: the WARN names both cases"        "$(grep -c 'expected before the swap; after a swap it means a restart reverted the identity' "$WORK/id")" "1"
+LIVE=AnotherPk11111111111111111111111111111111111; reset; verify_identity >"$WORK/id" 2>&1
+check "R10-6: neither staked nor sync -> WARN"  "$_VF_WARN|$(grep -c 'is neither the staked' "$WORK/id")" "1|1"
+LIVE=""; reset; verify_identity >"$WORK/id" 2>&1
+check "R10-6: no answer from getIdentity -> WARN" "$_VF_WARN|$(grep -c 'did not answer' "$WORK/id")" "1|1"
+state_clear staked_pubkey
+
 echo "== R10-10: no core dumps (the validator's memory holds its identity key) =="
 reset; verify_limits >"$WORK/lim" 2>&1
 check "R10-10: core 0/0 -> ok"                 "$(grep -cF 'core dump limit (soft/hard) = 0/0' "$WORK/lim")" "1"

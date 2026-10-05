@@ -54,6 +54,11 @@ check "--net-test sets NET_TEST=1"          "$( NET_TEST=0; parse_args install -
 check "no --net-test leaves NET_TEST as-is" "$( NET_TEST=0; parse_args install;            echo "$NET_TEST" )" "0"
 ( parse_args install --bogus-flag ) >/dev/null 2>&1
 check "unknown flag still fails (fail-closed parse)" "$?" "1"
+# R10-6: offbox dz-connect takes the passport signature made where the key lives.
+check "R10-6: --dz-signature sets DZ_SIGNATURE" "$( DZ_SIGNATURE=""; parse_args dz-connect --dz-signature 4XR92Zct9Zod; echo "$DZ_SIGNATURE" )" "4XR92Zct9Zod"
+( parse_args dz-connect --dz-signature ) >/dev/null 2>&1
+check "R10-6: --dz-signature without a value -> fail" "$?" "1"
+check "R10-6: usage lists --dz-signature" "$(usage | grep -c -- '--dz-signature <sig>')" "1"
 
 echo "== N11: run lock — a second mutating run fails fast; read-only/dry-run bypass =="
 # flock mocked (absent on macOS; have() resolves functions): $WORK/lockheld

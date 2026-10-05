@@ -329,6 +329,7 @@ Flags:
   --config <path>      Load a deeploy.conf as defaults
   --rescore            (import) re-ping BAM/block-engine instead of reproducing the stored region
   --rollback           (upgrade) switch back to the previous release
+  --dz-signature <sig> (dz-connect, offbox) the passport signature made where the staked key lives
   --net-test           (preflight) run the opt-in uplink bandwidth probe to a public CDN
   --post-reboot        Internal: unattended resume after the reboot
   --version, -V        Print version and exit
@@ -358,6 +359,12 @@ parse_args() {
             --config)
                 [[ $# -ge 2 ]] || fail "--config requires a path"
                 CONFIG_FILE="$2"; shift ;;
+            --dz-signature)
+                # offbox dz-connect: the passport signature made where the staked
+                # key lives (checked in dz-connect; logged masked).
+                [[ $# -ge 2 ]] || fail "--dz-signature requires the base58 passport signature"
+                # shellcheck disable=SC2034  # read by dz-connect (lib/doublezero.sh)
+                DZ_SIGNATURE="$2"; shift ;;
             --version|-V)  print_version; exit 0 ;;
             -h|--help)     usage; exit 0 ;;
             *)             fail "Unknown argument: $1" ;;

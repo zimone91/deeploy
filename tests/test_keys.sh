@@ -110,6 +110,104 @@ check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a 
 check    "tower copied to this ledger"       "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
 check    "cold bring-up states its condition" "$(grep -c "finalized slot is at least 300 slots past the vote account's lastVote" <<<"$MAN")" "1"
 check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$MAN")" "0"
+# R10-6 (KEYMODEL-DZ-READS): in dz-connect the key signs twice, not "one message".
+check    "file mode names both dz-connect signatures" "$(grep -c 'signs the passport message and the request transaction it pays for' <<<"$MAN")" "1"
+check    "no 'sign one DoubleZero passport message'"  "$(grep -c 'sign one DoubleZero passport message' <<<"$MAN")" "0"
+check    "R10-6: file mode also says a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$MAN")" "1"
+
+echo "== R10-6: staked_key_mode — offbox: the pubkey only, no staked path consulted =="
+STAKED_OK=$(mkpub Staked); SHORT31="2$(printf '1%.0s' $(seq 42))"
+check "fixture: the staked pubkey decodes to 32 bytes" "$(b58_len "$STAKED_OK")" "32"
+check_true  "_keys_valid_pubkey32: 32 bytes"           "_keys_valid_pubkey32 $STAKED_OK"
+check_false "_keys_valid_pubkey32: regex-valid, 31 bytes" "_keys_valid_pubkey32 $SHORT31"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+state_set solana_home "$WORK/home"
+state_set staked_keypair "$WORK/home/mainnet-validator-keypair.json"     # left from an earlier file-mode run
+unset SYNC_IDENTITY STAKED_KEYPAIR STAKED_PUBKEY STAKED_KEY_MODE
+STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
+check "offbox: mode recorded"                       "$(state_get staked_key_mode)" "offbox"
+check "offbox: staked pubkey recorded"              "$(state_get staked_pubkey)" "$STAKED_OK"
+check "offbox: no staked keypair path in state"     "$(state_get staked_keypair '<unset>')" "<unset>"
+check "offbox: STAKED_KEYPAIR empty"                "${STAKED_KEYPAIR:-<empty>}" "<empty>"
+# A staked path handed in from the environment (or a conf) is dropped, not kept.
+STAKED_KEYPAIR="$WORK/home/mainnet-validator-keypair.json"
+STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
+check "offbox: STAKED_KEYPAIR from the environment is emptied" "${STAKED_KEYPAIR:-<empty>}" "<empty>"
+( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$SHORT31" VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config ) >/dev/null 2>&1
+check "offbox: a 31-byte pubkey -> fail"            "$?" "1"
+( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$VOTE" VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config ) >/dev/null 2>&1
+check "offbox: staked == vote -> fail"              "$?" "1"
+( rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; unset STAKED_PUBKEY
+  STAKED_KEY_MODE=offbox VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config ) >/dev/null 2>&1
+check "offbox, non-interactive, no pubkey -> fail"  "$?" "1"
+( STAKED_KEY_MODE=both VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config ) >/dev/null 2>&1
+check "unknown mode -> fail"                        "$?" "1"
+( rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; unset STAKED_KEY_MODE STAKED_KEYPAIR
+  state_set solana_home "$WORK/home"; VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
+  printf '%s|%s' "$(state_get staked_key_mode)" "$STAKED_KEYPAIR" ) >"$WORK/defmode"
+check "no mode given, non-interactive -> file (rc9 default)" "$(cat "$WORK/defmode")" "file|$WORK/home/mainnet-validator-keypair.json"
+# Back to file from offbox: the pubkey offbox recorded is dropped until phase 5
+# or dz-connect derives one from the file; file -> file keeps a derived one.
+( rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; unset STAKED_KEYPAIR STAKED_PUBKEY
+  state_set solana_home "$WORK/home"; state_set staked_key_mode offbox; state_set staked_pubkey "$STAKED_OK"
+  STAKED_KEY_MODE=file VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
+  printf '%s|%s' "$(state_get staked_key_mode)" "$(state_get staked_pubkey '<unset>')" ) >"$WORK/o2f"
+check "offbox -> file: the offbox pubkey is cleared" "$(cat "$WORK/o2f")" "file|<unset>"
+( rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; unset STAKED_KEYPAIR STAKED_PUBKEY
+  state_set solana_home "$WORK/home"; state_set staked_key_mode file; state_set staked_pubkey "$STAKED_OK"
+  STAKED_KEY_MODE=file VOTE_ACCOUNT_PUBKEY="$VOTE" keys_resolve_config >/dev/null 2>&1
+  printf '%s|%s' "$(state_get staked_key_mode)" "$(state_get staked_pubkey '<unset>')" ) >"$WORK/f2f"
+check "file -> file: a derived pubkey is kept"       "$(cat "$WORK/f2f")" "file|$STAKED_OK"
+
+# Read trap: a keypair fixture sits at the default staked path. offbox must never
+# open it — every pubkey derivation is logged and none may name that path.
+mkdir -p "$WORK/home"; printf '[9]' >"$WORK/home/mainnet-validator-keypair.json"
+PUBLOG="$WORK/pubkey.log"; : >"$PUBLOG"
+_keys_pubkey() { echo "$1" >>"$PUBLOG"; case "$1" in
+    *unstaked*)                  printf '%s' "$SYNC_PUB" ;;
+    *mainnet-validator-keypair*) printf '%s' "$STAKED_PUB" ;;
+    *)                           printf '%s' "$(mkpub Other)" ;; esac; }
+ONCHAIN=""; _keys_vote_identity() { printf '%s' "$ONCHAIN"; }
+SYNC_PUB=$(mkpub Sync); STAKED_PUB=$(mkpub Filekey)
+ONCHAIN="$STAKED_OK"
+# The fixture path is even handed in (a stale env/conf value): offbox must ignore it.
+VOUT=$( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" STAKED_KEYPAIR="$WORK/home/mainnet-validator-keypair.json" SYNC_IDENTITY="$WORK/home/unstaked-identity.json" \
+        VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate 2>&1 ); VRC=$?
+check "offbox validate: passes"                     "$VRC" "0"
+check "offbox validate: the staked file is never opened" "$(grep -c 'mainnet-validator-keypair' "$PUBLOG")" "0"
+check "offbox validate: no 'key already exists' warning" "$(grep -c 'already exists at the real-key path' <<<"$VOUT")" "0"
+check "offbox validate: vote account names the staked pubkey -> ok" "$(grep -c 'names the staked identity on-chain' <<<"$VOUT")" "1"
+ONCHAIN=$(mkpub Elsewhere)
+VOUT=$( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" SYNC_IDENTITY=/x/unstaked.json VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate 2>&1 ); VRC=$?
+check "offbox validate: on-chain identity differs -> WARN, not fail" "$VRC|$(grep -c "\[WARN\].*names $(mkpub Elsewhere) as its validator identity" <<<"$VOUT")" "0|1"
+ONCHAIN=""
+VOUT=$( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" SYNC_IDENTITY=/x/unstaked.json VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate 2>&1 ); VRC=$?
+check "offbox validate: RPC silent -> info, passes" "$VRC|$(grep -c 'Vote account not read' <<<"$VOUT")|$(grep -c '\[WARN\]' <<<"$VOUT")" "0|1|0"
+( STAKED_KEY_MODE=offbox STAKED_PUBKEY="$SYNC_PUB" SYNC_IDENTITY=/x/unstaked.json VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate ) >/dev/null 2>&1
+check "offbox validate: staked pubkey == sync -> FAIL" "$?" "1"
+# file mode: the pubkey is derived from the file anyway — record it, check it on-chain.
+state_clear staked_pubkey
+ONCHAIN="$STAKED_PUB"
+VOUT=$( STAKED_KEY_MODE=file STAKED_KEYPAIR="$WORK/home/mainnet-validator-keypair.json" SYNC_IDENTITY=/x/unstaked.json \
+        VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate 2>&1 ); VRC=$?
+check "file validate: derived pubkey recorded"      "$VRC|$(state_get staked_pubkey)" "0|$STAKED_PUB"
+check "file validate: checked on-chain too"         "$(grep -c 'names the staked identity on-chain' <<<"$VOUT")" "1"
+
+: >"$CALLS"
+STAKED_KEY_MODE=offbox STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json SYNC_IDENTITY=/root/solana/unstaked-identity.json keys_config_cli >/dev/null 2>&1
+check "offbox CLI config: default keypair = sync identity" "$(grep -c -- '--keypair /root/solana/unstaked-identity.json' "$CALLS")" "1"
+check "offbox CLI config: no staked path"           "$(grep -c 'mainnet-validator-keypair' "$CALLS")" "0"
+
+MAN=$(STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json SOLANA_BIN=/opt/bin \
+      LEDGER_PATH=/root/solana/ledger keys_print_manual 2>&1)
+check "offbox manual: says DeePloy does not read the key" "$(grep -c 'DeePloy does not read the staked key' <<<"$MAN")" "1"
+check "offbox manual: names the staked pubkey"      "$(grep -c "$STAKED_OK" <<<"$MAN")" "1"
+check "offbox manual: set-identity on stdin over ssh" "$(grep -c "ssh <this-box> 'sudo -n /opt/bin/agave-validator --ledger /root/solana/ledger set-identity --require-tower' < staked.json" <<<"$MAN")" "1"
+check "offbox manual: authorized-voter on stdin"    "$(grep -c "ssh <this-box> 'sudo -n /opt/bin/agave-validator --ledger /root/solana/ledger authorized-voter add' < staked.json" <<<"$MAN")" "1"
+check "offbox manual: ssh stays without -t"         "$(grep -c 'Keep ssh without -t: the key must reach agave-validator through a pipe, not a terminal.' <<<"$MAN")" "1"
+check "offbox manual: a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$MAN")" "1"
+check "offbox manual: tower step kept"              "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
+check "offbox manual: no staked keypair path at all" "$(grep -c 'mainnet-validator-keypair' <<<"$MAN")" "0"
 
 echo ""
 echo "==================================="

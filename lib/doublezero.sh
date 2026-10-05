@@ -26,6 +26,12 @@
 # is only true AFTER the manual swap to the staked identity — hence connect is a
 # separate manual step, never part of the install phase chain.
 #
+# Staked-key mode (keys.sh, R10-6). file: dz-connect reads the staked keypair —
+# its pubkey, the passport signature, the request transaction it pays for.
+# offbox: dz-connect reads no staked keypair. The pubkey comes from state, the
+# operator signs the passport message where the key lives (--dz-signature),
+# and the sync identity pays for the request, after a --dry-run.
+#
 # Requires: common.sh sourced. doublezero/doublezero-solana/solana(-keygen)/ufw/
 # systemctl/curl/apt-get are mockable; paths overridable for tests.
 # ============================================================================
@@ -65,8 +71,19 @@ _dz_staked_pubkey() { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null || tru
 # was skipped. Staked PRESENT but pubkeys underivable (broken/missing
 # toolchain) -> FAIL-CLOSED: refuse to copy a key we cannot identity-check —
 # this guard protects the central invariant and must not degrade to a warn.
+# offbox mode (R10-6): no staked keypair path is consulted — the candidate is
+# compared with the staked PUBKEY from state, fail-closed when either side is
+# missing. That is stronger than file mode before the swap, which skips.
 _dz_assert_not_staked_key() {                    # <candidate-file>
     local cand=$1 staked cand_pk staked_pk
+    if [[ "${STAKED_KEY_MODE:-$(state_get staked_key_mode file)}" == offbox ]]; then
+        staked_pk="${STAKED_PUBKEY:-$(state_get staked_pubkey "")}"
+        [[ -n "$staked_pk" ]] || fail "cannot verify '${cand}': offbox mode, but no staked pubkey is recorded (phase 5 records it) — refusing to copy a key that cannot be identity-checked. Nothing was copied."
+        cand_pk="$(_dz_staked_pubkey "$cand")"
+        [[ -n "$cand_pk" ]] || fail "cannot verify '${cand}' against the staked pubkey (pubkey derivation failed — is the solana toolchain installed?) — refusing to copy a key that cannot be identity-checked. Nothing was copied."
+        [[ "$cand_pk" != "$staked_pk" ]] || fail "REFUSED: '${cand}' is your STAKED validator keypair (${cand_pk}) — it must never be copied or registered as a DoubleZero ID. Point at your DoubleZero keypair (dz-keypair.json) instead; nothing was copied."
+        return 0
+    fi
     staked="${STAKED_KEYPAIR:-$(state_get staked_keypair "")}"
     if [[ -z "$staked" || ! -f "$staked" ]]; then
         warn "staked-key identity check skipped (no staked keypair on this box yet) — make sure '${cand}' is your DoubleZero ID, not a validator key"
@@ -135,7 +152,12 @@ dz_resolve_config() {
     SOLANA_BIN="$(deeploy_solana_bin)"        # $HOME-independent (dz-connect/resume run standalone)
     SOLANA_HOME="$(state_get solana_home /root/solana)"
     DZ_KEYPAIR="$(_dz_keypair_path)"
-    STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
+    # offbox (R10-6): no staked keypair path at all; the sync identity pays.
+    STAKED_KEY_MODE="$(state_get staked_key_mode file)"
+    STAKED_PUBKEY="$(state_get staked_pubkey "")"
+    SYNC_IDENTITY="$(state_get sync_identity "$SOLANA_HOME/unstaked-identity.json")"
+    STAKED_KEYPAIR=""
+    [[ "$STAKED_KEY_MODE" == offbox ]] || STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
     # No client-ip resolution: the `connect ibrl --client-ip` CLI flag is deprecated
     # and silently ignored; doublezerod auto-detects the client IP. (F6)
     state_set dz_keypair "$DZ_KEYPAIR"
@@ -365,6 +387,10 @@ dz_passport() {
     step "DoubleZero passport access (primary validator ${staked_id})"
     run doublezero-solana passport prepare-validator-access -u "$DZ_ENV" \
         --doublezero-address "$dz_id" --primary-validator-id "$staked_id"
+    if [[ "${STAKED_KEY_MODE:-file}" == offbox ]]; then
+        _dz_passport_offbox "$dz_id" "$staked_id"
+        return 0
+    fi
     if is_dry_run; then
         info "${C_DIM}[dry-run]${C_NC} would sign-offchain-message (staked key) and submit request-validator-access"
         return 0
@@ -377,6 +403,61 @@ dz_passport() {
     run_redacted --signature doublezero-solana passport request-validator-access \
         --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
         --signature "$sig" -u "$DZ_ENV" -k "$STAKED_KEYPAIR"
+    ok "Passport access requested"
+}
+
+# offbox passport (R10-6). The staked key is not on this box: the operator signs
+# the passport message where the key lives and hands over the base58 signature
+# (--dz-signature, or a prompt when interactive). The sync identity pays — the
+# passport instruction takes the program config, the payer and the request PDA;
+# the validator key only signs the off-chain message, which the CLI verifies
+# before it builds the transaction. A --dry-run goes first, so a wrong
+# signature, a validation error or a short balance stops here with nothing sent.
+_dz_sync_pubkey()     { "$SOLANA_BIN/solana-keygen" pubkey "$SYNC_IDENTITY" 2>/dev/null || true; }
+_dz_balance()         { "$SOLANA_BIN/solana" balance "$1" -u "$DZ_ENV" 2>/dev/null | head -1 || true; }
+_dz_request_deposit() {         # stdout: the program's request deposit in SOL, or nothing
+    doublezero-solana passport fetch --config -u "$DZ_ENV" --json-compact 2>/dev/null \
+        | sed -nE 's/.*"request_deposit_sol"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1 || true
+}
+
+_dz_passport_offbox() {
+    local dz_id=$1 staked_id=$2 sig payer bal dep out rc short
+    local sign_cmd="solana sign-offchain-message \"service_key=${dz_id}\" -k <staked.json>"
+    if is_dry_run; then
+        info "${C_DIM}[dry-run]${C_NC} would take the passport signature (--dz-signature or a prompt), then --dry-run and submit request-validator-access paid by the sync identity"
+        return 0
+    fi
+    sig="${DZ_SIGNATURE:-}"
+    if [[ -z "$sig" ]]; then
+        is_interactive || fail "offbox: no passport signature. Where the staked key lives, run exactly:  ${sign_cmd}  — then re-run: ${DEEPLOY_CMD} dz-connect --dz-signature <the base58 signature it prints>"
+        info "Where the staked key lives, run exactly:"
+        info "    ${sign_cmd}"
+        ask "Paste the base58 signature it printed" ""
+        sig="$REPLY"
+    fi
+    [[ "$(b58_len "$sig")" == 64 ]] || fail "That is not a 64-byte base58 signature. Where the staked key lives, sign exactly:  ${sign_cmd}"
+
+    payer="$(_dz_sync_pubkey)"; payer="${payer:-$SYNC_IDENTITY}"
+    bal="$(_dz_balance "$payer")"; dep="$(_dz_request_deposit)"
+    info "The sync identity pays for the request: ${payer} (balance: ${bal:-?})."
+    info "It needs the program's request deposit (${dep:-?} SOL), the request account's rent and the fee."
+    info "On grant the deposit and the rent, less the request fee, come back to the sync identity (you can"
+    info "withdraw them from there); a deny keeps all of it."
+
+    step "Passport request — dry-run first (nothing is sent)"
+    if out="$(run_redacted --signature doublezero-solana passport request-validator-access \
+            --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
+            --signature "$sig" -u "$DZ_ENV" -k "$SYNC_IDENTITY" --dry-run 2>&1)"; then rc=0; else rc=$?; fi
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    if [[ $rc -ne 0 ]] || grep -q 'Errors found:' <<<"$out" || ! grep -q 'Simulated program logs:' <<<"$out"; then
+        short="$(sed -nE 's/.*Transfer: insufficient lamports ([0-9]+), need ([0-9]+).*/\1 \2/p' <<<"$out" | head -1)"
+        [[ -n "$short" ]] && warn "The sync identity is short by $(( ${short#* } - ${short% *} )) lamports: it has ${short% *}, the request needs ${short#* }."
+        fail "The passport request failed its dry-run (output above) — nothing was sent. Short balance: fund the sync identity ${payer}. Wrong signature: sign exactly  ${sign_cmd}. Then re-run '${DEEPLOY_CMD} dz-connect'."
+    fi
+    ok "Dry-run passed: the signature verifies and the sync identity covers the request"
+    run_redacted --signature doublezero-solana passport request-validator-access \
+        --doublezero-address "$dz_id" --primary-validator-id "$staked_id" \
+        --signature "$sig" -u "$DZ_ENV" -k "$SYNC_IDENTITY"
     ok "Passport access requested"
 }
 
@@ -541,19 +622,32 @@ dz_connect_run() {
     require_root
     dz_resolve_config
     # Guard: enabled + the binaries are actually installed (Phase 1) + the staked
-    # key is in place (post-swap). The binaries check replaces what dz_prepared
-    # used to guarantee implicitly — a direct command-present check is reliable.
+    # key is in place (post-swap; file mode). The binaries check replaces what
+    # dz_prepared used to guarantee implicitly — a direct command-present check
+    # is reliable.
     [[ "$(state_get dz_enabled false)" == "true" ]] || fail "DoubleZero is not enabled (dz_enabled != true) — nothing to connect."
     have doublezero        || fail "DoubleZero was enabled but 'doublezero' is not installed — re-run install (Phase 1 installs it) or check Phase 1."
     have doublezero-solana || fail "DoubleZero was enabled but 'doublezero-solana' is not installed — re-run install (Phase 1) or check Phase 1."
-    [[ -f "$STAKED_KEYPAIR" ]] || fail "Staked key not at ${STAKED_KEYPAIR}. Complete the manual set-identity swap before '${DEEPLOY_CMD} dz-connect'."
+    # offbox (R10-6): no staked keypair is looked for — the pubkey is in state and
+    # the sync identity, which pays for the passport request, must be here.
+    if [[ "$STAKED_KEY_MODE" == offbox ]]; then
+        [[ -n "$STAKED_PUBKEY" ]] || fail "offbox mode, but no staked pubkey is recorded — set STAKED_PUBKEY (or re-run phase 5) before '${DEEPLOY_CMD} dz-connect'."
+        [[ -f "$SYNC_IDENTITY" ]] || fail "offbox mode: the sync identity ${SYNC_IDENTITY} pays for the passport request, but it is not on this box."
+    else
+        [[ -f "$STAKED_KEYPAIR" ]] || fail "Staked key not at ${STAKED_KEYPAIR}. Complete the manual set-identity swap before '${DEEPLOY_CMD} dz-connect'."
+    fi
 
     dz_keypair_migrate                         # HARD: mkdir + move + validate (blocks/loops if absent)
     local dz_id staked_id
     dz_id="$(state_get dz_id "")"; [[ -z "$dz_id" ]] && dz_id="$(_dz_address)"
     [[ -n "$dz_id" ]] || fail "Could not determine the DoubleZero ID (doublezero address)."
-    staked_id="$(_dz_staked_pubkey "$STAKED_KEYPAIR")"   # intentional staked-key read (passport needs it) — ONLY here
-    [[ -n "$staked_id" ]] || fail "Could not read the staked validator pubkey from ${STAKED_KEYPAIR}"
+    if [[ "$STAKED_KEY_MODE" == offbox ]]; then
+        staked_id="$STAKED_PUBKEY"
+    else
+        staked_id="$(_dz_staked_pubkey "$STAKED_KEYPAIR")"   # intentional staked-key read (passport needs it) — ONLY here
+        [[ -n "$staked_id" ]] || fail "Could not read the staked validator pubkey from ${STAKED_KEYPAIR}"
+        state_set staked_pubkey "$staked_id"                # derived here anyway; verify reads it
+    fi
 
     _dz_await_in_leader_schedule               # the 5-10 min gossip/leader-schedule window
     dz_confirm_old_server_disconnected         # blocking gate BEFORE passport/connect
