@@ -190,7 +190,11 @@ deeploy_root_surface_unsafe_reason() {            # <checkout-dir> <self> <lib-d
 }
 
 # --- client tag parsing + version floor --------------------------------------
-# jito-solana tags are vMAJOR.MINOR.PATCH[-prerelease]-jito. Three consumers
+# jito-solana version tags take the form
+# vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N] (v4.3.0-jito.0,
+# v4.2.0-beta.2-jito.1); every jito-solana release at or above the floor is
+# tagged this way (measured 2026-10-04). The jito-solana repo also carries bare
+# Agave tags (v4.3.0 among them), which do not have the form. Three consumers
 # need the same answer — the build (toolchain), the upgrade path, and the
 # RENDER (validatorcfg emits flags whose existence depends on the version) — so
 # the parser and the floor comparison live here, once. Same convention as
@@ -199,11 +203,26 @@ deeploy_root_surface_unsafe_reason() {            # <checkout-dir> <self> <lib-d
 
 # Prints "MAJOR MINOR PATCH"; returns 1 (silent) on anything that is not a
 # version tag. Prerelease shapes parse on their numeric head, so
-# v4.2.0-beta.2-jito.1 -> "4 2 0"; 'latest', 'v4.2' and '' do not parse at all
-# (they used to be substituted straight into the anza CLI URL by ${TAG%-jito}).
+# v4.2.0-beta.2-jito.1 -> "4 2 0"; 'latest', 'v4.2' and '' do not parse at all.
+# Only the numeric head is read, which is all the floor needs — so a bare Agave
+# tag (v4.3.0) parses too. Whether a tag is a jito tag at all is the question
+# deeploy_tag_agave_base answers.
 deeploy_tag_version() {                           # <tag>
     [[ "${1:-}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
     printf '%s %s %s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+# Prints the Agave base a jito-solana tag names — the name of the Anza release
+# phase 4 installs the CLI from: v4.3.0-jito.0 -> v4.3.0,
+# v4.3.0-rc.1-jito.1 -> v4.3.0-rc.1. Prints nothing and returns 1 for anything
+# else, a bare Agave tag (v4.3.0) included. The prerelease is limited to
+# -alpha.N, -beta.N or -rc.N on purpose: a free-form one would accept
+# v4.3.0-jito-jito and v4.3.0-bam-jito, whose bases have no Anza release (404)
+# — the same failure as the hand-stripped ${TAG%-jito} this replaces, which
+# leaves v4.3.0-jito.0 whole: release.anza.xyz has no release by that name.
+deeploy_tag_agave_base() {                        # <tag>
+    [[ "${1:-}" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?)-jito(\.[0-9]+)?$ ]] || return 1
+    printf '%s' "${BASH_REMATCH[1]}"
 }
 
 # Prints WHY <tag> cannot be used and returns 1; prints nothing and returns 0
@@ -212,7 +231,7 @@ deeploy_tag_floor_problem() {                     # <tag> [<floor-tag>]
     local tag=${1:-} floor=${2:-${DEEPLOY_MIN_JITO_TAG:-}} tv fv
     local tmaj tmin tpat fmaj fmin fpat tnum fnum
     if ! tv="$(deeploy_tag_version "$tag")"; then
-        printf "'%s' is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH-jito)" "$tag"
+        printf "'%s' is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N])" "$tag"
         return 1
     fi
     if ! fv="$(deeploy_tag_version "$floor")"; then

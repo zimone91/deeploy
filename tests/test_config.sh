@@ -32,6 +32,8 @@ PASS=0; FAIL=0
 check()       { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"
     else FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: [%s]\n     actual:   [%s]\n' "$1" "$3" "$2"; fi; }
 check_true()  { if eval "$2"; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; fi; }
+# lines_with <substring> <text> — every line of <text> containing it, whole
+lines_with()  { local l; while IFS= read -r l; do [[ "$l" == *"$1"* ]] && printf '%s\n' "$l"; done <<<"$2"; }
 
 DRY_RUN=0 common_init
 VOTE="Vote1111111111111111111111111111111111111111"
@@ -250,11 +252,21 @@ check "example: SSH_PORT parsed, comment ignored"  "$SSH_PORT" "22"
 check "example: SHRED hostport parsed"             "$SHRED_RECEIVER_ADDRESS" "203.0.113.7:1002"
 check "example: MEV_MODE parsed"                   "$MEV_MODE" "bam"
 # Not pinned to a literal tag (that pin drifted every bump and the test just
-# followed): assert the shipped example carries a tag that PARSES and clears our
-# own floor — i.e. `install` with the untouched example cannot stop in phase 4.
+# followed). The example tag parses, clears our floor, and maps to an Anza
+# release name by the code phase 4 uses; whether that release exists is not
+# checked here.
 check "example: JITO_TAG parsed"                   "$(deeploy_tag_version "$JITO_TAG" >/dev/null && echo parses || echo NO)" "parses"
 check_true "example: JITO_TAG meets our own floor" "deeploy_tag_floor_problem \"\$JITO_TAG\" >/dev/null"
 check "example: JITO_TAG matches the file"         "$JITO_TAG" "$(sed -n 's/^JITO_TAG="\([^"]*\)".*/\1/p' "$EX")"
+# Phase 4's own toolchain_anza_cli, dry-run, on the tag the parser just read. The
+# expected name is derived here, independently: the tag with -jito[.N] cut off.
+EXTAG="$JITO_TAG"
+EXANZA=$( (
+    # shellcheck source-path=SCRIPTDIR source=../lib/toolchain.sh
+    source "$ROOT/lib/toolchain.sh"
+    DRY_RUN=1 JITO_TAG="$EXTAG" toolchain_anza_cli
+) 2>&1 )
+check "example: phase 4 names Anza release ${EXTAG%-jito*}" "$(lines_with 'install scaffold' "$EXANZA")" "━━━ anza CLI ${EXTAG%-jito*} (PATH + install scaffold) ━━━"
 
 echo "== X6: _config_keys <-> _config_key_type are in lockstep =="
 sync_missing=0

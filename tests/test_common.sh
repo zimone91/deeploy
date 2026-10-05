@@ -410,6 +410,35 @@ for bad in latest v4.2 4.2.1-jito "" vX.Y.Z-jito; do
     check "rejects '${bad:-<empty>}'" "$?" "1"
 done
 
+echo "== jito tag shape: the Agave base a jito tag names, or nothing =="
+# The base is the Anza release name phase 4 installs the CLI from. ${TAG%-jito}
+# left v4.3.0-jito.0 whole (a 404 at release.anza.xyz), and a bare Agave tag
+# passed with a warning.
+while read -r tag want; do
+    TBASE=$(deeploy_tag_agave_base "$tag"); TBRC=$?
+    check "accepts $tag -> $want" "${TBRC}/${TBASE}" "0/${want}"
+done <<'EOT'
+v4.3.0-jito.0 v4.3.0
+v4.3.0-jito v4.3.0
+v4.2.1-jito v4.2.1
+v4.2.0-beta.2-jito.1 v4.2.0-beta.2
+v4.3.0-rc.1-jito.1 v4.3.0-rc.1
+v4.4.0-alpha.3-jito.1 v4.4.0-alpha.3
+v4.3.0-jito.12 v4.3.0
+EOT
+# A free-form prerelease would let v4.3.0-jito-jito and v4.3.0-bam-jito through,
+# and their bases have no Anza release either; a prerelease needs its number
+# (v4.3.0-rc-jito). The last four test both anchors: a leading space, a leading
+# letter, a trailing space and a trailing newline.
+SHAPE_BAD=(v4.3.0 v4.3.0-jito.x v4.3.0-jito. v4.3-jito latest "" v4.3.0-jito-jito
+           v4.3.0-bam-jito v4.3.0-rc-jito v4.3.0-JITO v4.3.0-jito.0+meta
+           v4.3.0-jito-1 v4.3.0-jito.0.1 4.3.0-jito
+           ' v4.3.0-jito.0' 'xv4.3.0-jito.0' 'v4.3.0-jito.0 ' $'v4.3.0-jito\n')
+for bad in "${SHAPE_BAD[@]}"; do
+    TBASE=$(deeploy_tag_agave_base "$bad"); TBRC=$?
+    check "refuses $(printf '%q' "$bad"), prints nothing" "${TBRC}/${TBASE}" "1/"
+done
+
 echo "== version floor: the ONE predicate behind all three checks =="
 check_true "floor constant is itself a version tag" "deeploy_tag_version \"\$DEEPLOY_MIN_JITO_TAG\" >/dev/null"
 for good in v4.2.0-jito v4.2.1-jito v4.3.0-jito v5.0.0-jito; do
@@ -426,6 +455,7 @@ check "reason names tag AND the floor"   "$(grep -c "v4.0.0-jito is older than t
 GARBWHY=$(deeploy_tag_floor_problem latest); GARBRC=$?
 check "garbage -> rc1"                   "$GARBRC" "1"
 check "reason says it is not a tag"      "$(grep -c 'is not a jito-solana version tag' <<<"$GARBWHY")" "1"
+check "reason spells out the form"       "$(grep -cF 'vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N]' <<<"$GARBWHY")" "1"
 # boundary: one patch below the floor is refused, the floor itself is not
 ( deeploy_tag_floor_problem v4.1.99-jito ) >/dev/null 2>&1; check "4.1.99 < 4.2.0" "$?" "1"
 ( deeploy_tag_floor_problem v4.2.0-jito )  >/dev/null 2>&1; check "4.2.0 == floor -> ok" "$?" "0"

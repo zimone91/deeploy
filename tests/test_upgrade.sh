@@ -28,6 +28,8 @@ PASS=0; FAIL=0
 check()      { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"
     else FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: [%s]\n     actual:   [%s]\n' "$1" "$3" "$2"; fi; }
 check_true() { if eval "$2"; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; fi; }
+# lines_with <substring> <text> — every line of <text> containing it, whole
+lines_with() { local l; while IFS= read -r l; do [[ "$l" == *"$1"* ]] && printf '%s\n' "$l"; done <<<"$2"; }
 
 DRY_RUN=0 common_init
 CALLS="$WORK/calls"; : >"$CALLS"
@@ -52,6 +54,8 @@ check "message names the floor + the flags"    "$(grep -c "only exist from ${DEE
 ask() { REPLY="v4.1.2-jito"; }                # last pre-floor release: also refused
 ( upgrade_check_releases ) >/dev/null 2>&1
 check "4.1.2 -> refused too"                  "$?" "1"
+# garbage is refused by the shape check before the floor; the floor's own
+# reason is covered in test_common
 ask() { REPLY="not-a-tag"; }
 UPG=$( ( upgrade_check_releases ) 2>&1 ); UPGRC=$?
 check "garbage tag -> aborts"                 "$UPGRC" "1"
@@ -59,6 +63,25 @@ check "garbage named as not-a-version-tag"    "$(grep -c 'is not a jito-solana v
 ask() { REPLY="v4.2.1-jito"; }
 ( upgrade_check_releases ) >/dev/null 2>&1
 check "supported tag proceeds"                "$?" "0"
+
+echo "== tag shape: the agave list is for reference; a bare Agave tag is refused =="
+# An agave tag such as v4.3.0 can appear in the agave list the picker prints;
+# v4.3.0 clears the floor on its numbers and exists in the jito-solana repo
+# too. rc8 only warned on it — and warned on v4.3.0-jito.0 as well. The marker
+# line is echoed after the call in the same subshell: present means the choice
+# stood.
+state_set jito_tag v4.2.1-jito
+ask() { REPLY="v4.3.0"; }
+UPA=$( ( upgrade_check_releases; echo "CHOSEN $UPGRADE_TAG" ) 2>&1 ); UPARC=$?
+check "bare Agave v4.3.0 -> upgrade refused"  "$([[ $UPARC -ne 0 ]] && echo refused || echo "rc=$UPARC")" "refused"
+check "refusal names the tag and the shape"   "$(grep -cF "'v4.3.0': it is not a jito-solana version tag" <<<"$UPA")" "1"
+check "refusal spells out the form"           "$(grep -cF 'vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N]' <<<"$UPA")" "1"
+check "refusal: the choice does not stand"    "$(lines_with CHOSEN "$UPA")" ""
+ask() { REPLY="v4.3.0-jito.0"; }
+UPJ=$( ( upgrade_check_releases; echo "CHOSEN $UPGRADE_TAG" ) 2>&1 ); UPJRC=$?
+check "v4.3.0-jito.0 -> proceeds"             "$UPJRC" "0"
+check "v4.3.0-jito.0 -> the choice stands"    "$(lines_with CHOSEN "$UPJ")" "CHOSEN v4.3.0-jito.0"
+check "v4.3.0-jito.0 -> no warning"           "$(lines_with WARN "$UPJ")" ""
 unset -f ask
 
 echo "== STAKED-identity guard =="

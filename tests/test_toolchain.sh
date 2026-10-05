@@ -31,6 +31,8 @@ check()       { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\
     else FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: [%s]\n     actual:   [%s]\n' "$1" "$3" "$2"; fi; }
 check_true()  { if eval "$2"; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; fi; }
 check_false() { if eval "$2"; then FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; else PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; fi; }
+# lines_with <substring> <text> — every line of <text> containing it, whole
+lines_with()  { local l; while IFS= read -r l; do [[ "$l" == *"$1"* ]] && printf '%s\n' "$l"; done <<<"$2"; }
 
 DRY_RUN=0 common_init
 CALLS="$WORK/calls"; : >"$CALLS"
@@ -53,6 +55,8 @@ TCOUT=$( ( JITO_TAG=v4.1.2-jito toolchain_resolve_config ) 2>&1 ); TCRC=$?
 check "4.1.2 (last pre-floor) -> fails"        "$TCRC" "1"
 check "message refuses by name"                "$(grep -c 'refusing to build' <<<"$TCOUT")" "1"
 check "message names the floor"                "$(grep -c "$DEEPLOY_MIN_JITO_TAG" <<<"$TCOUT")" "1"
+# garbage is refused by the shape check before the floor; the floor's own
+# reason is covered in test_common
 TCG=$( ( JITO_TAG=latest toolchain_resolve_config ) 2>&1 ); TCGRC=$?
 check "garbage tag -> fails (not \${TAG%-jito})" "$TCGRC" "1"
 check "garbage named as not-a-version-tag"     "$(grep -c 'is not a jito-solana version tag' <<<"$TCG")" "1"
@@ -62,6 +66,50 @@ JITO_TAG=v4.2.1-jito toolchain_resolve_config >/dev/null 2>&1
 check "current pin -> ok"                      "$?" "0"
 check "accepted tag recorded to state"         "$(state_get jito_tag)" "v4.2.1-jito"
 JITO_TAG="v3.1.14-jito"    # restore the suite-wide fixture for the sections below
+
+echo "== tag shape: a -jito.N tag is accepted, a bare Agave tag is refused (phase 4) =="
+# rc8 warned on v4.3.0-jito.0 ("does not end in -jito") and only warned on a bare
+# Agave v4.3.0, which clears the floor on its numbers. RESOLVED is echoed after
+# the call in the same subshell: present means the function ran to its end.
+state_clear jito_tag
+TSOUT=$( ( JITO_TAG=v4.3.0-jito.0 toolchain_resolve_config; echo RESOLVED ) 2>&1 ); TSRC=$?
+check "v4.3.0-jito.0 -> resolve ok"            "$TSRC" "0"
+check "v4.3.0-jito.0 -> ran to its end"        "$(lines_with RESOLVED "$TSOUT")" "RESOLVED"
+check "v4.3.0-jito.0 -> no warning"            "$(lines_with WARN "$TSOUT")" ""
+check "v4.3.0-jito.0 recorded to state"        "$(state_get jito_tag '<none>')" "v4.3.0-jito.0"
+state_clear jito_tag
+TSOUT=$( ( JITO_TAG=v4.3.0 toolchain_resolve_config; echo RESOLVED ) 2>&1 ); TSRC=$?
+check "bare Agave v4.3.0 -> resolve fails"     "$([[ $TSRC -ne 0 ]] && echo refused || echo "rc=$TSRC")" "refused"
+check "refusal names the tag and the shape"    "$(grep -cF "'v4.3.0': it is not a jito-solana version tag" <<<"$TSOUT")" "1"
+check "refusal spells out the form"            "$(grep -cF 'vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N]' <<<"$TSOUT")" "1"
+check "refusal stops the run"                  "$(lines_with RESOLVED "$TSOUT")" ""
+check "refusal records NO tag to state"        "$(state_get jito_tag '<none>')" "<none>"
+
+echo "== anza CLI: the Anza release is the jito tag's Agave base, never the raw tag =="
+# The real function, dry-run (test_integration.sh stubs it). Whole lines, not
+# substrings: "anza CLI v4.3.0" is also a prefix of rc8's "anza CLI v4.3.0-jito.0".
+ANZA=$( ( DRY_RUN=1 JITO_TAG=v4.3.0-jito.0 toolchain_anza_cli ) 2>&1 ); ANZARC=$?
+check "v4.3.0-jito.0 -> rc0"                         "$ANZARC" "0"
+check "step line, whole: anza CLI v4.3.0"            "$(lines_with 'install scaffold' "$ANZA")" "━━━ anza CLI v4.3.0 (PATH + install scaffold) ━━━"
+check "dry-run line, whole: anza CLI v4.3.0"         "$(lines_with 'would install' "$ANZA")" "  [dry-run] would install anza CLI v4.3.0"
+check "the raw tag never reaches the output"         "$(grep -cF 'v4.3.0-jito.0' <<<"$ANZA")" "0"
+ANZB=$( ( DRY_RUN=1 JITO_TAG=v4.3.0 toolchain_anza_cli ) 2>&1 ); ANZBRC=$?
+check "bare Agave v4.3.0 -> refused (rc != 0)"       "$([[ $ANZBRC -ne 0 ]] && echo refused || echo "rc=$ANZBRC")" "refused"
+check "refusal names the tag and the shape"          "$(grep -cF "'v4.3.0': it is not a jito-solana version tag" <<<"$ANZB")" "1"
+check "refusal spells out the form"                  "$(grep -cF 'vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N]' <<<"$ANZB")" "1"
+check "refusal: no anza CLI step in the output"      "$(grep -cF 'anza CLI' <<<"$ANZB")" "0"
+# Past dry-run: the URL curl is handed — on rc8 it named v4.3.0-jito.0, a release
+# Anza does not have (404). The stub prints only https arguments; sh runs nothing.
+anza_live() {
+    ( curl() { local a; for a; do [[ $a == https://* ]] && printf 'CURL %s\n' "$a"; done; }
+      sh() { :; }
+      DRY_RUN=0 JITO_TAG="$1" toolchain_anza_cli ) 2>&1
+}
+ANZU=$(anza_live v4.3.0-jito.0)
+check "live: curl gets the base's URL, whole line"   "$(lines_with CURL "$ANZU")" "CURL https://release.anza.xyz/v4.3.0/install"
+ANZV=$(anza_live v4.3.0)
+check "live: bare Agave v4.3.0 -> curl never called" "$(lines_with CURL "$ANZV")" ""
+check "live: the shape refusal is why"               "$(grep -cF "'v4.3.0': it is not a jito-solana version tag" <<<"$ANZV")" "1"
 
 echo "== overlay seam: no patch -> vanilla =="
 OVERLAY_DIR="$WORK/empty"; mkdir -p "$OVERLAY_DIR"

@@ -3,8 +3,10 @@
 # DeePloy — lib/upgrade.sh   (deeploy upgrade [--rollback])
 # Rebuild to a new jito-solana tag and restart. The dangerous part is that a
 # rebuild+restart of a STAKED node skips leader slots, so:
-#   * check BOTH release APIs (jito-solana + agave); operator picks/confirms a
-#     TAG (default = current — never auto-jumps to latest);
+#   * list BOTH release APIs (jito-solana + agave, the latter for reference);
+#     operator picks/confirms a jito-solana TAG (default = current — never
+#     auto-jumps to latest); a tag not shaped like one — a bare Agave v4.3.0
+#     included — is refused before anything is built;
 #   * detect the RUNNING identity: if staked -> warn + require explicit "yes"
 #     (prefer the failover path); if unstaked/not-running -> proceed;
 #   * rebuild via the SAME toolchain functions (identical --release-with-lto
@@ -41,7 +43,11 @@ upgrade_check_releases() {
     UPGRADE_TAG="$REPLY"
     [[ -n "$UPGRADE_TAG" ]] || fail "No tag chosen"
     [[ "$UPGRADE_TAG" == "$current" ]] && warn "Chosen tag equals current (${current}) — rebuilding the same version"
-    [[ "$UPGRADE_TAG" == *-jito ]] || warn "Tag '${UPGRADE_TAG}' does not end in -jito — double-check it"
+    # The agave list above is shown for reference only: its tags can clear the
+    # floor on their numbers, and the jito-solana repo carries some of them
+    # (v4.3.0 among them).
+    deeploy_tag_agave_base "$UPGRADE_TAG" >/dev/null \
+        || fail "refusing to upgrade to '${UPGRADE_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0). Pick from the jito-solana list; the agave tags are shown for reference."
     # Same floor as the install path (constants.sh): upgrading DOWN to a client
     # that predates --no-xdp / --poh-pinned-cpu-core would rebuild fine and then
     # fail to start against the validator.sh already on the box.

@@ -63,7 +63,12 @@ toolchain_resolve_config() {
         JITO_TAG="$REPLY"
     fi
     [[ -n "$JITO_TAG" ]] || fail "JITO_TAG is required"
-    [[ "$JITO_TAG" == *-jito ]] || warn "JITO_TAG '$JITO_TAG' does not end in -jito — double-check it"
+    # Shape before floor: a bare Agave tag (v4.3.0 — the jito-solana repo
+    # carries it too) clears the floor on its numbers alone, and Agave's
+    # validator source at v4.3.0 defines none of the Jito-only flags DeePloy
+    # writes into validator.sh.
+    deeploy_tag_agave_base "$JITO_TAG" >/dev/null \
+        || fail "refusing to build '${JITO_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0). Use a tag from github.com/jito-foundation/jito-solana/releases."
     # Version floor, checked BEFORE the 30-90 minute build (this is the whole
     # point): the generated validator.sh passes flags that do not exist on older
     # clients, so an old tag builds fine and then refuses to start.
@@ -104,7 +109,10 @@ toolchain_rust() {
 }
 
 toolchain_anza_cli() {
-    local ver="${JITO_TAG%-jito}"     # anza release matching the jito base version
+    # The Anza release named by the jito tag's base: v4.3.0-jito.0 -> v4.3.0.
+    local ver
+    ver="$(deeploy_tag_agave_base "${JITO_TAG:-}")" \
+        || fail "refusing '${JITO_TAG:-}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0), so no Anza release name can be derived from it."
     step "anza CLI ${ver} (PATH + install scaffold)"
     if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would install anza CLI ${ver}"; return 0; fi
     local inst; inst=$(_mktemp)
