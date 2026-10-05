@@ -491,6 +491,50 @@ check "empty -> nothing"                            "$(b58_len "")" ""
 NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; b58_len "0bad"; b58_len "" ) 2>&1 )
 check "invalid input under the ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
 
+echo "== R10-4: catchup status — two bounded getSlot reads =="
+# getSlot mock: the node (127.0.0.1) answers $US, the cluster $THEM. DOWN = no
+# answer (curl's exit and message for a refused connection), ERR = a JSON-RPC
+# error, GARBAGE = an HTML page, SP<n> = <n> with spaces in the JSON. Each
+# call's arguments go to $SLOTS, one line per call.
+SLOTS="$WORK/slots"
+curl() {
+    local url=${!#} a
+    printf '%s\n' "$*" >>"$SLOTS"
+    case "$url" in http://127.0.0.1:*) a=$US ;; *) a=$THEM ;; esac
+    case "$a" in
+        DOWN)    echo "curl: (7) Failed to connect to ${url#*//} after 0 ms: Couldn't connect to server" >&2; return 7 ;;
+        ERR)     echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"},"id":1}' ;;
+        GARBAGE) echo '<html>502 Bad Gateway</html>' ;;
+        SP*)     printf '{"jsonrpc": "2.0", "result" : %s, "id": 1}\n' "${a#SP}" ;;
+        *)       printf '{"jsonrpc":"2.0","result":%s,"id":1}\n' "$a" ;;
+    esac
+}
+status() { US=$1 THEM=$2; : >"$SLOTS"; deeploy_catchup_status 2>&1; }
+NODE="no slot from the node's RPC at http://127.0.0.1:8899"
+check "behind -> 'N slots behind (us:N them:M)'"      "$(status 10 95)"       "85 slots behind (us:10 them:95)"
+check "level -> caught up"                            "$(status 100 100)"     "caught up (us:100 them:100)"
+check "ahead -> caught up"                            "$(status 101 100)"     "caught up (us:101 them:100)"
+check "4 behind -> caught up (the CLI's window)"      "$(status 96 100)"      "caught up (us:96 them:100)"
+check "5 behind -> '5 slots behind'"                  "$(status 95 100)"      "5 slots behind (us:95 them:100)"
+check "spaces in the JSON are read"                   "$(status SP10 SP95)"   "85 slots behind (us:10 them:95)"
+check "the node silent -> says so, no curl message"   "$(status DOWN 95)"     "$NODE"
+check "the node's JSON-RPC error -> no slot"          "$(status ERR 95)"      "$NODE"
+check "the node's HTML page -> no slot"               "$(status GARBAGE 95)"  "$NODE"
+check "the cluster silent -> says so, the node's slot" "$(status 10 DOWN)"    "no slot from the cluster RPC at https://api.mainnet-beta.solana.com (us:10)"
+check "both silent -> the node's RPC is named"        "$(status DOWN DOWN)"   "$NODE"
+status 10 95 >/dev/null
+check "the cluster's slot is read first"              "$(sed 's/.* //' "$SLOTS" | tr '\n' ' ')" "https://api.mainnet-beta.solana.com http://127.0.0.1:8899 "
+check "each read is capped at 5 s"                    "$(grep -c -- ' -m 5 ' "$SLOTS")" "2"
+check "each read is getSlot at confirmed"             "$(grep -cF '"method":"getSlot","params":[{"commitment":"confirmed"}]' "$SLOTS")" "2"
+check "each read sends Content-Type: application/json" "$(grep -cF 'Content-Type: application/json' "$SLOTS")" "2"
+state_set rpc_port 8901
+check "the node's port from state (rpc_port)"         "$(status DOWN 95)"     "no slot from the node's RPC at http://127.0.0.1:8901"
+state_clear rpc_port
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; US=10 THEM=DOWN; deeploy_catchup_status; US=DOWN THEM=95; deeploy_catchup_status ) 2>&1 )
+check "failed reads under the ERR trap -> the status lines only" "$NOISE" "no slot from the cluster RPC at https://api.mainnet-beta.solana.com (us:10)
+$NODE"
+unset -f curl
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

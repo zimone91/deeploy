@@ -50,7 +50,7 @@ printf 'MemTotal:       395264000 kB\nSwapTotal:       2097152 kB\n' >"$PROC_MEM
 : >"$WORK/mdstat"   # no software RAID on the simulated box (empty mdstat)
 # mock solana toolchain binaries
 printf '#!/bin/bash\ncase "$1" in new) for a in "$@";do [ "$p" = -o ]&&o="$a";p="$a";done; echo x>"$o";; pubkey) case "$2" in *unstaked*)echo Unstaked111111111111111111111111111111111;;*)echo Other1111111111111111111111111111111111111;;esac;; esac\n' >"$WORK/bin/solana-keygen"
-printf '#!/bin/bash\ncase "$1" in catchup) echo "0 slot(s) behind (us:100 them:100)";; *) :;; esac\n' >"$WORK/bin/solana"
+printf '#!/bin/bash\nexit 0\n' >"$WORK/bin/solana"
 chmod +x "$WORK/bin/solana-keygen" "$WORK/bin/solana"
 
 # shellcheck source-path=SCRIPTDIR source=../deeploy.sh
@@ -142,7 +142,7 @@ for s in toolchain_deps toolchain_rust toolchain_anza_cli toolchain_fetch_source
 _vf_pid(){ echo 12345; }; _vf_proc_limits(){ printf 'Max open files 2000000 2000000 files\nMax locked memory unlimited unlimited bytes\n'; }
 _vf_proc_nice(){ echo -10; }; _vf_oom_score(){ echo -1000; }; _vf_poh_thread(){ echo 999; }; _vf_taskset(){ sget poh_core; }
 _vf_isolated(){ sget isolated_set; }; _vf_governors(){ echo "cpu0 performance"; }; _vf_thp(){ echo "[never]"; }; _vf_ksm(){ echo 0; }; _vf_numa(){ echo 0; }
-_vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "0 slot(s) behind"; }; _vf_timer_active(){ echo active; }
+_vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "caught up (us:100 them:100)"; }; _vf_timer_active(){ echo active; }
 _vf_nic(){ echo enp1s0; }; _vf_nic_bus(){ echo 0000:85:00.0; }; _vf_mlx5_irqs(){ echo "254 mlx5_comp0@pci:0000:85:00.0 0"; }
 _vf_hugepages(){ echo 32; }; _vf_hugepage_fails(){ echo 0; }
 # post-reboot isolation read (mock /sys agreeing with the recorded set)

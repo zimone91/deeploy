@@ -7,9 +7,9 @@
 # first; keys_print_swap_steps: path form in file mode, stdin form in offbox
 # mode) and a pointer to the separate failover tool.
 #
-# Requires: common.sh sourced (verify.sh for the verification block, keys.sh
-# for the swap steps in the summary). All mutations go through run(); probes
-# are mockable for tests.
+# Requires: common.sh and constants.sh sourced (verify.sh for the verification
+# block, keys.sh for the swap steps in the summary). All mutations go through
+# run(); probes are mockable for tests.
 # ============================================================================
 
 [[ -n "${_DEEPLOY_START_SOURCED:-}" ]] && return 0
@@ -101,17 +101,20 @@ start_enable_service() {
 }
 
 # Wait for catchup 0 (the operator's wait loop). Blocks up to CATCHUP_TIMEOUT.
+# Each poll is one bounded status read (deeploy_catchup_status: two getSlot
+# calls of at most 5 s each) and prints one line, so the lines are at most
+# CATCHUP_INTERVAL + 10 s apart.
 start_wait_catchup() {
     step "Waiting for catchup (this can take 5-30+ minutes)"
-    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would poll 'solana catchup --our-localhost' until 0 behind"; return 0; fi
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would poll the node's slot against the cluster's until caught up"; return 0; fi
     local start_ts now elapsed out
     start_ts=$(date +%s)
     while true; do
         now=$(date +%s); elapsed=$((now - start_ts))
         if (( elapsed > CATCHUP_TIMEOUT )); then warn "catchup timed out after ${CATCHUP_TIMEOUT}s"; return 1; fi
         if ! systemctl is-active --quiet solana; then warn "solana.service not active — aborting wait"; return 1; fi
-        out=$("$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1 || true)   # catchup is non-zero until synced; must not errexit the poll loop
-        if grep -qE 'has caught up|^0 slot\(s\) behind' <<<"$out"; then ok "Caught up: $out"; return 0; fi
+        out=$(deeploy_catchup_status)
+        if [[ "$out" == "caught up "* ]]; then ok "catchup: $out"; return 0; fi
         info "catchup: ${out} (elapsed ${elapsed}s)"
         sleep "$CATCHUP_INTERVAL"
     done

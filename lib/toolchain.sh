@@ -256,7 +256,7 @@ toolchain_install_release() {
         fi
     fi
     run ln -sfn "$dest" "$ACTIVE_RELEASE"
-    # Record the absolute bin dir so later phases (Phase 8 catchup wait, verify)
+    # Record the absolute bin dir so later phases (Phase 8's summary, verify)
     # resolve it WITHOUT $HOME — which is empty under the systemd resume service.
     state_set solana_bin "$ACTIVE_RELEASE/bin"
     ok "active_release -> releases/${tag}"

@@ -4,7 +4,7 @@
 # (set-identity PATH form, no stdin form, failover pointer).
 #
 # Mocks shadow real commands and are invoked indirectly.
-# The catchup mock is printf'd as a script with literal $(...) / $n on purpose.
+# The solana stubs are printf'd as scripts with a literal $$ / $* on purpose.
 # shellcheck disable=SC2329,SC2016
 set -uo pipefail
 
@@ -15,11 +15,14 @@ trap 'rm -rf "$WORK"' EXIT
 export DEEPLOY_STATE_DIR="$WORK/state" DEEPLOY_BACKUP_DIR="$WORK/backups" DEEPLOY_LOG_DIR="$WORK/logs"
 export NONINTERACTIVE=1 DEEPLOY_COLOR=never
 mkdir -p "$WORK/bin"
-printf '#!/bin/bash\necho "0 slot(s) behind (us:100 them:100)"\n' >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"
+# The catchup wait must never run 'solana' (R10-4); this stub records a call.
+printf '#!/bin/bash\necho "solana $*" >>"%s"\n' "$WORK/solana.calls" >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"
 export SOLANA_BIN="$WORK/bin"
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/constants.sh
+source "$ROOT/lib/constants.sh"       # DEFAULT_PUBLIC_RPC: the cluster's slot in the catchup wait
 # shellcheck source-path=SCRIPTDIR source=../lib/start.sh
 source "$ROOT/lib/start.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/keys.sh
@@ -100,13 +103,56 @@ systemctl() { case "$*" in "is-active --quiet solana") return 1;; *) echo "syste
 check_false "_start_solana_running: inactive -> false" "_start_solana_running"
 systemctl() { echo "systemctl $*" >>"$CALLS"; return 0; }; unset -f pgrep
 
-echo "== catchup wait (mock 'caught up' immediately) =="
-start_wait_catchup >/dev/null 2>&1; check "catchup returns 0 when caught up" "$?" "0"
-printf '#!/bin/bash\necho "120 slot(s) behind"\n' >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"
-CATCHUP_TIMEOUT=1 CATCHUP_INTERVAL=1 start_wait_catchup >/dev/null 2>&1; check "catchup times out -> 1" "$?" "1"
-printf '#!/bin/bash\necho "0 slot(s) behind"\n' >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"
-DRY_RUN=1; : >"$CALLS"; start_wait_catchup >/dev/null 2>&1; DRY_RUN=0
-check "dry-run catchup polls nothing" "$(grep -c solana "$CALLS")" "0"
+echo "== R10-4: catchup wait — two bounded getSlot reads, never 'solana catchup' =="
+# getSlot mock: the node (127.0.0.1) answers $US, the cluster $THEM; DOWN = no
+# answer (curl's exit for a refused connection). Each URL is appended to $SLOTS.
+SLOTS="$WORK/slots"
+curl() { local url=${!#} a; echo "$url" >>"$SLOTS"
+    case "$url" in http://127.0.0.1:*) a=$US ;; *) a=$THEM ;; esac
+    [[ "$a" != DOWN ]] || return 7
+    printf '{"jsonrpc":"2.0","result":%s,"id":1}\n' "$a"; }
+US=100 THEM=100; : >"$SLOTS"
+OUT=$(CATCHUP_TIMEOUT=2 CATCHUP_INTERVAL=1 start_wait_catchup 2>&1); RC=$?
+check "caught up -> 0, after one poll"        "$RC|$(wc -l <"$SLOTS" | tr -d ' ')" "0|2"
+check "caught up -> says so, with both slots" "$(grep -c 'catchup: caught up (us:100 them:100)$' <<<"$OUT")" "1"
+check "the wait never runs 'solana'"          "$(cat "$WORK/solana.calls" 2>/dev/null | wc -l | tr -d ' ')" "0"
+US=96 THEM=100; : >"$SLOTS"
+OUT=$(CATCHUP_TIMEOUT=2 CATCHUP_INTERVAL=1 start_wait_catchup 2>&1); RC=$?
+check "4 behind -> caught up, 0 after one poll" "$RC|$(wc -l <"$SLOTS" | tr -d ' ')|$(grep -c 'catchup: caught up (us:96 them:100)$' <<<"$OUT")" "0|2|1"
+US=10 THEM=95; : >"$SLOTS"
+OUT=$(CATCHUP_TIMEOUT=1 CATCHUP_INTERVAL=1 start_wait_catchup 2>&1); RC=$?
+POLLS=$(( $(wc -l <"$SLOTS") / 2 ))
+check "behind past CATCHUP_TIMEOUT -> 1"      "$RC" "1"
+check "a status line on every poll"           "$(( POLLS >= 1 ))|$(grep -c 'catchup: 85 slots behind (us:10 them:95) (elapsed [0-9]*s)$' <<<"$OUT")" "1|$POLLS"
+DRY_RUN=1; : >"$CALLS"; : >"$SLOTS"; start_wait_catchup >/dev/null 2>&1; DRY_RUN=0
+check "dry-run catchup polls nothing" "$(grep -c solana "$CALLS")|$(wc -l <"$SLOTS" | tr -d ' ')" "0|0"
+
+echo "== R10-4: a 'solana' that prints nothing until killed — the wait still reports =="
+# Through a pipe, 'solana catchup' prints nothing while the node is behind: its
+# spinner is not drawn off a terminal. On the rc9 box the old wait logged
+# nothing for 105 s, until the node had caught up. This stub behaves the same
+# and appends its PID to $STUBS, so the test can kill it.
+STUBS="$WORK/stubs"; : >"$STUBS"
+printf '#!/bin/bash\necho $$ >>"%s"\nexec sleep 120\n' "$STUBS" >"$WORK/bin/solana"
+# within <secs> <ERE> <cmd...>: runs <cmd> in the background and prints the
+# first line of its output matching <ERE> as soon as there is one, or nothing
+# after <secs>; then kills <cmd> and every stub still waiting.
+within() {
+    local secs=$1 re=$2 out="$WORK/within.out" pid i; shift 2
+    "$@" >"$out" 2>&1 &
+    pid=$!
+    for (( i = 0; i < secs * 10; i++ )); do
+        grep -qE "$re" "$out" && break
+        command sleep 0.1
+    done
+    { kill -KILL "$pid"; wait "$pid"; xargs kill -KILL <"$STUBS"; } 2>/dev/null
+    : >"$STUBS"
+    grep -m1 -E "$re" "$out"
+}
+US=10 THEM=95
+LINE=$(CATCHUP_INTERVAL=0 within 5 'slots behind' start_wait_catchup)
+check "a status line within 5 s" "$(grep -c 'catchup: 85 slots behind (us:10 them:95)' <<<"$LINE")" "1"
+printf '#!/bin/bash\necho "solana $*" >>"%s"\n' "$WORK/solana.calls" >"$WORK/bin/solana"   # the recording stub again
 
 echo "== env-class: SOLANA_BIN resolves to an absolute path with HOME UNSET (systemd) =="
 # The real-box bug: under the resume service $HOME was empty, so SOLANA_BIN
@@ -123,20 +169,23 @@ check "never the empty-HOME '/.local' path"  "$(grep -c '^/\.local' "$WORK/binou
   echo "$SOLANA_BIN" ) >"$WORK/binout2" 2>&1
 check "fallback base is /root, not empty HOME" "$(grep -c '^/root/.local/share/solana' "$WORK/binout2")" "1"
 # restore the suite's pinned bin for later sections
-export SOLANA_BIN="$WORK/bin"; printf '#!/bin/bash\necho "0 slot(s) behind"\n' >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"; start_resolve_config
+export SOLANA_BIN="$WORK/bin"; start_resolve_config
 
-echo "== set -e: catchup loop POLLS through non-zero catchup (the real-box scenario) =="
-# 'solana catchup' returns NON-ZERO the whole time the node is behind (normal
-# mid-sync). Under main()'s exact flags (set -Eeuo pipefail) the poll loop must
-# keep polling, not abort. Mock: behind (exit 1) twice, then caught up (exit 0).
-CC="$WORK/cc"; : >"$CC"
-printf '#!/bin/bash\necho c >> "%s"\nn=$(wc -l < "%s")\nif [ "$n" -lt 3 ]; then echo "$((90 - n*10)) slot(s) behind (us:1 them:99)"; exit 1; fi\necho "0 slot(s) behind (us:100 them:100)"; exit 0\n' "$CC" "$CC" >"$WORK/bin/solana"
-chmod +x "$WORK/bin/solana"
+echo "== set -e: the wait POLLS through failed reads (the node's RPC is not up yet) =="
+# curl exits 7 (connection refused) until the node's RPC is up, as during the
+# snapshot download at the start. Under main()'s exact flags (set -Eeuo
+# pipefail) the poll loop must keep polling, not abort: refused twice, then
+# caught up.
+curl() { local url=${!#}; echo "$url" >>"$SLOTS"
+    case "$url" in http://127.0.0.1:*) (( $(grep -c '^http://127\.0\.0\.1:' "$SLOTS") > 2 )) || return 7 ;; esac
+    echo '{"jsonrpc":"2.0","result":100,"id":1}'; }
+: >"$SLOTS"
 sleep() { :; }   # don't actually wait CATCHUP_INTERVAL between polls
-e_out=$( set -Eeuo pipefail; CATCHUP_INTERVAL=0 start_wait_catchup 2>&1 ); e_rc=$?
-check "catchup loop survives non-zero catchup under set -Eeuo (rc 0)" "$e_rc" "0"
-check "loop POLLED 3x (did NOT abort on the 1st non-zero)"            "$(wc -l <"$CC" | tr -d ' ')" "3"
-check "loop reported caught up at the end"                            "$(grep -c 'Caught up' <<<"$e_out")" "1"
+e_out=$( set -Eeuo pipefail; CATCHUP_TIMEOUT=2 CATCHUP_INTERVAL=0 start_wait_catchup 2>&1 ); e_rc=$?
+check "the wait survives failed reads under set -Eeuo (rc 0)" "$e_rc" "0"
+check "it POLLED 3x (did NOT abort on the 1st failure)"       "$(grep -c '^http://127\.0\.0\.1:' "$SLOTS")" "3"
+check "each failed read is a status line"                     "$(grep -c "catchup: no slot from the node's RPC at http://127.0.0.1:8899 (elapsed" <<<"$e_out")" "2"
+check "it reported caught up at the end"                      "$(grep -c 'catchup: caught up (us:100 them:100)$' <<<"$e_out")" "1"
 
 echo "== H4: phase-8 PoH pin failure WARNS, does not abort the run (timer retries) =="
 printf '#!/bin/bash\nexit 3\n' >"$WORK/failpin.sh"; chmod +x "$WORK/failpin.sh"

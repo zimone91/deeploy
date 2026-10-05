@@ -289,9 +289,12 @@ check "set_poh: taskset core 10"   "$(grep -c 'taskset -cp 10 ' <<<"$P")" "1"
 check "set_poh: exit 0 if already" "$(grep -c 'already_set"; exit 0' <<<"$P")" "1"
 check "set_poh: no placeholder left" "$(grep -c '__POH_CORE__' <<<"$P")" "0"
 W=$(_vcfg_render_wait_and_pin)
-check "wait: SOLANA_BIN substituted"  "$(grep -c 'active_release/bin' <<<"$W")" "1"
-check "wait: catchup check"           "$(grep -c 'catchup --our-localhost' <<<"$W")" "1"
-check "wait: no placeholder left"     "$(grep -cE '__(SOLANA_BIN|PIN_SCRIPT)__' <<<"$W")" "0"
+check "wait: no 'solana catchup' (R10-4)"     "$(grep -cE 'catchup|SOLANA_BIN' <<<"$W")" "0"
+check "wait: the node's RPC on RPC_PORT"      "$(grep -c '^NODE_RPC="http://127.0.0.1:8899"$' <<<"$W")" "1"
+check "wait: the cluster RPC substituted"     "$(grep -c "^CLUSTER_RPC=\"$DEFAULT_PUBLIC_RPC\"\$" <<<"$W")" "1"
+check "wait: the caught-up window substituted" "$(grep -c "^CAUGHT_UP_MAX_BEHIND=${CAUGHT_UP_MAX_BEHIND}\$" <<<"$W")" "1"
+check "wait: timeout 3600 s, a poll per 15 s" "$(grep -c '^MAX_WAIT_SECONDS=3600$' <<<"$W")|$(grep -c '^CHECK_INTERVAL=15$' <<<"$W")" "1|1"
+check "wait: no placeholder left"             "$(grep -cE '__[A-Z_]+__' <<<"$W")" "0"
 # H4: a failed pin must NOT report success.
 check "H4: set_poh captures taskset exit"        "$(grep -c 'rc=\$?' <<<"$P")" "1"
 check "H4: set_poh has a taskset-failure branch"  "$(grep -c 'taskset_failed' <<<"$P")" "1"
@@ -302,6 +305,104 @@ check "timer OnBootSec=1min"    "$(grep -c 'OnBootSec=1min' <<<"$T")" "1"
 check "timer OnUnitActiveSec=1h" "$(grep -c 'OnUnitActiveSec=1h' <<<"$T")" "1"
 L=$(_vcfg_render_logrotate)
 check "logrotate USR1 solana"   "$(grep -c 'systemctl kill -s USR1 solana.service' <<<"$L")" "1"
+
+echo "== R10-4: wait_and_pin_poh.sh, run — a status line every poll, 'solana' silent =="
+# The rendered script with stubs first on PATH. curl answers getSlot from $US
+# (the node, 127.0.0.1) and $THEM (the cluster): DOWN = no answer (curl's exit
+# and message for a refused connection), ERR = a JSON-RPC error, SP<n> = <n>
+# with spaces in the JSON; each call's arguments go to $SLOTS. date gives a
+# fixed clock, 1000 for +%s; with $JUMP set, every +%s after the first gives
+# 1000 + $JUMP. sleep returns at once, and the pin script logs to $WORK/pinned.
+# Through a pipe, 'solana catchup' prints nothing while the node is behind (its
+# spinner is not drawn off a terminal); the solana stub does the same until it
+# is killed, and appends its PID to $STUBS.
+SB="$WORK/stubbin"; STUBS="$WORK/stubs"; mkdir -p "$SB" "$WORK/inst/active_release/bin"; : >"$STUBS"
+cat >"$SB/curl" <<'EOF'
+#!/bin/bash
+url=${!#}; echo "$*" >>"$SLOTS"
+case "$url" in http://127.0.0.1:*) a=$US ;; *) a=$THEM ;; esac
+case "$a" in
+    DOWN) echo "curl: (7) Failed to connect to ${url#*//} after 0 ms: Couldn't connect to server" >&2; exit 7 ;;
+    ERR)  echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"},"id":1}' ;;
+    SP*)  printf '{"jsonrpc": "2.0", "result" : %s, "id": 1}\n' "${a#SP}" ;;
+    *)    printf '{"jsonrpc":"2.0","result":%s,"id":1}\n' "$a" ;;
+esac
+EOF
+cat >"$SB/date" <<'EOF'
+#!/bin/bash
+if [ "$1" != +%s ]; then echo T
+elif [ -n "${JUMP:-}" ] && [ -e "$JUMPF" ]; then echo $((1000 + JUMP))
+else [ -z "${JUMP:-}" ] || : >"$JUMPF"; echo 1000; fi
+EOF
+printf '#!/bin/bash\nexit 0\n' >"$SB/systemctl"; printf '#!/bin/bash\nexit 0\n' >"$SB/logger"; printf '#!/bin/bash\nexit 0\n' >"$SB/sleep"
+printf '#!/bin/bash\necho $$ >>"%s"\nexec /bin/sleep 120\n' "$STUBS" >"$WORK/inst/active_release/bin/solana"
+printf '#!/bin/bash\necho pinned >>"%s"\nexit 3\n' "$WORK/pinned" >"$WORK/pin.sh"
+chmod +x "$SB"/* "$WORK/inst/active_release/bin/solana" "$WORK/pin.sh"
+RPC_PORT=8901 SOLANA_INSTALL_DIR="$WORK/inst" SET_POH_SCRIPT="$WORK/pin.sh" _vcfg_render_wait_and_pin >"$WORK/wait.sh"
+# exec: the background job is the script itself, so killing it stops the loop.
+JUMP=""
+run_wait() { PATH="$SB:$PATH" SLOTS="$WORK/slots" US=$US THEM=$THEM JUMP=$JUMP JUMPF="$WORK/jumped" exec bash "$WORK/wait.sh"; }
+# within <secs> <ERE> <cmd...>: runs <cmd> in the background and prints the
+# first line of its output matching <ERE> as soon as there is one, or nothing
+# after <secs>; then kills <cmd> and every stub still waiting. The whole output
+# stays in $WORK/within.out.
+within() {
+    local secs=$1 re=$2 out="$WORK/within.out" pid i; shift 2
+    "$@" >"$out" 2>&1 &
+    pid=$!
+    for (( i = 0; i < secs * 10; i++ )); do
+        grep -qE "$re" "$out" && break
+        command sleep 0.1
+    done
+    { kill -KILL "$pid"; wait "$pid"; xargs kill -KILL <"$STUBS"; } 2>/dev/null
+    : >"$STUBS"
+    grep -m1 -E "$re" "$out"
+}
+# ends_within <secs> <cmd...>: runs <cmd> in the background; prints "rc <n>" if
+# it ends within <secs>, else "running" (and kills it and every stub). The
+# output stays in $WORK/within.out.
+ends_within() {
+    local secs=$1 pid i; shift
+    "$@" >"$WORK/within.out" 2>&1 &
+    pid=$!
+    for (( i = 0; i < secs * 10; i++ )); do
+        kill -0 "$pid" 2>/dev/null || break
+        command sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        { kill -KILL "$pid"; wait "$pid"; xargs kill -KILL <"$STUBS"; } 2>/dev/null; : >"$STUBS"
+        echo running
+    else wait "$pid"; echo "rc $?"; fi
+}
+US=10 THEM=95
+check "behind -> a status line within 5 s"      "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): 85 slots behind (us:10 them:95)"
+US=96 THEM=100
+check "4 behind -> caught up (the CLI's window)" "$(within 5 'Caught up' run_wait)" "[T] Caught up (us:96 them:100)"
+US=95 THEM=100
+check "5 behind -> '5 slots behind'"            "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): 5 slots behind (us:95 them:100)"
+US=SP10 THEM=SP95
+check "spaces in the JSON are read"             "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): 85 slots behind (us:10 them:95)"
+US=DOWN THEM=95
+check "the node's RPC silent -> says so (RPC_PORT)" "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the node's RPC at http://127.0.0.1:8901"
+check "the node's RPC silent -> no curl message" "$(grep -c '^curl:' "$WORK/within.out")" "0"
+US=ERR THEM=95
+check "a JSON-RPC error is no slot"             "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the node's RPC at http://127.0.0.1:8901"
+US=10 THEM=DOWN
+check "the cluster RPC silent -> says so"       "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the cluster RPC at $DEFAULT_PUBLIC_RPC (us:10)"
+US=DOWN THEM=DOWN
+check "both silent -> the node's RPC is named"  "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the node's RPC at http://127.0.0.1:8901"
+US=100 THEM=100; : >"$WORK/slots"
+check "caught up -> pins, logs the pin's exit"  "$(within 5 'PoH pin completed' run_wait)" "[T] PoH pin completed (exit 3)"
+check "caught up -> logged with both slots"     "$(grep -c '^\[T\] Caught up (us:100 them:100)$' "$WORK/within.out")" "1"
+check "the cluster's slot is read first"        "$(sed 's/.* //' "$WORK/slots" | tr '\n' ' ')" "$DEFAULT_PUBLIC_RPC http://127.0.0.1:8901 "
+check "each read is capped at 5 s"              "$(grep -c -- ' -m 5 ' "$WORK/slots")" "2"
+check "each read is getSlot at confirmed"       "$(grep -cF '"method":"getSlot","params":[{"commitment":"confirmed"}]' "$WORK/slots")" "2"
+check "each read sends Content-Type: application/json" "$(grep -cF 'Content-Type: application/json' "$WORK/slots")" "2"
+US=101 THEM=100
+check "ahead -> caught up"                      "$(within 5 'Caught up' run_wait)" "[T] Caught up (us:101 them:100)"
+US=10 THEM=95 JUMP=3601; : >"$WORK/pinned"; rm -f "$WORK/jumped"
+check "past 3600 s -> FATAL, exit 1, no pin"    "$(ends_within 5 run_wait)|$(grep -c '^\[T\] FATAL: timeout after 3600s$' "$WORK/within.out")|$(wc -l <"$WORK/pinned" | tr -d ' ')" "rc 1|1|0"
+JUMP=""
 
 echo "== full generate writes files + bash -n =="
 # SC2031: the earlier N16 subshell-local VALIDATOR_SH override is intentional.

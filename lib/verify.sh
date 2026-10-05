@@ -9,7 +9,7 @@
 # whether the node runs on the staked identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
-# Requires: common.sh sourced (constants.sh optional).
+# Requires: common.sh and constants.sh sourced.
 # ============================================================================
 
 [[ -n "${_DEEPLOY_VERIFY_SOURCED:-}" ]] && return 0
@@ -68,7 +68,7 @@ _vf_hugepage_fails() {
     awk '/Starting validator with:/ {s = 1; n = 0} /huge page alloc failed/ {n++} END {if (s) print n + 0}' \
         "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null || true
 }
-_vf_catchup()      { "$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1 || true; }
+_vf_catchup()      { deeploy_catchup_status; }    # two bounded getSlot reads (common.sh)
 _vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
 _vf_identity()     { deeploy_live_identity; }     # getIdentity, local RPC (common.sh)
 _vf_sync_pubkey()  { deeploy_sync_pubkey; }
@@ -194,8 +194,8 @@ verify_hugepages() {
 
 verify_catchup() {
     local out; out=$(_vf_catchup)
-    if grep -qE 'has caught up|^0 slot\(s\) behind' <<<"$out"; then vf_ok "catchup: $out"
-    else vf_warn "not caught up: ${out:-<no response>}"; fi
+    if [[ "$out" == "caught up "* ]]; then vf_ok "catchup: $out"
+    else vf_warn "not caught up: $out"; fi
 }
 
 verify_pohpin_timer() {
@@ -227,6 +227,7 @@ verify_run() {
     step "Post-install verification"
     # Re-resolve WITHOUT $HOME: verify runs inside Phase 8 via the systemd resume
     # service, where $HOME is empty (the source-time default would be "/.local/..").
+    # shellcheck disable=SC2034  # read by deeploy_sync_pubkey (common.sh) in verify_identity
     SOLANA_BIN="$(deeploy_solana_bin)"
     _VF_WARN=0; _VF_FAIL=0
     verify_process

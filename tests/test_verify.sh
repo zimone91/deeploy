@@ -15,6 +15,8 @@ export NONINTERACTIVE=1 DEEPLOY_COLOR=never
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib/constants.sh
+source "$ROOT/lib/constants.sh"
 # shellcheck source-path=SCRIPTDIR source=../lib/verify.sh
 source "$ROOT/lib/verify.sh"
 
@@ -45,7 +47,7 @@ _vf_thp()          { echo "always madvise [never]"; }
 _vf_ksm()          { echo 0; }
 _vf_numa()         { echo 0; }
 _vf_sysctl()       { case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }
-_vf_catchup()      { echo "0 slot(s) behind (us:100 them:100)"; }
+_vf_catchup()      { echo "caught up (us:100 them:100)"; }
 _vf_timer_active() { echo active; }
 
 echo "== good system: every check clean =="
@@ -83,9 +85,9 @@ _vf_taskset() { echo "10"; }
 mkcpus powersave powersave 4
 reset; verify_perf_tweaks >/dev/null 2>&1; check "bad governor -> >=1 warn" "$([[ $_VF_WARN -ge 1 ]] && echo y || echo n)" "y"
 mkcpus performance performance 4
-_vf_catchup() { echo "85 slot(s) behind (us:10 them:95)"; }
+_vf_catchup() { echo "85 slots behind (us:10 them:95)"; }
 reset; verify_catchup >/dev/null 2>&1; check "behind -> warn" "$_VF_WARN" "1"
-_vf_catchup() { echo "0 slot(s) behind"; }
+_vf_catchup() { echo "caught up (us:100 them:100)"; }
 
 echo "== R10-2: the governor of every cpufreq CPU, not cpu0 alone =="
 mkcpus performance ondemand 12
@@ -232,6 +234,49 @@ NOISE=$( ( unset _DEEPLOY_VERIFY_SOURCED
            source "$ROOT/lib/verify.sh"
            set -E; deeploy_init_traps; trap - EXIT; VF_PID=999999999; verify_limits ) 2>&1 )
 check "R10-10: real probes, no such pid -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+
+echo "== R10-4: catchup — two bounded getSlot reads, never 'solana catchup' =="
+# getSlot mock: the node (127.0.0.1) answers $US, the cluster $THEM; DOWN = no
+# answer (curl's exit for a refused connection).
+curl() { local url=${!#} a
+    case "$url" in http://127.0.0.1:*) a=$US ;; *) a=$THEM ;; esac
+    [[ "$a" != DOWN ]] || return 7
+    printf '{"jsonrpc":"2.0","result":%s,"id":1}\n' "$a"; }
+# Through a pipe, 'solana catchup' prints nothing while the node is behind: its
+# spinner is not drawn off a terminal. This stub does the same until it is
+# killed, and appends its PID to $STUBS.
+STUBS="$WORK/stubs"; : >"$STUBS"; mkdir -p "$WORK/bin"
+printf '#!/bin/bash\necho $$ >>"%s"\nexec sleep 120\n' "$STUBS" >"$WORK/bin/solana"; chmod +x "$WORK/bin/solana"
+# within <secs> <ERE> <cmd...>: runs <cmd> in the background and prints the
+# first line of its output matching <ERE> as soon as there is one, or nothing
+# after <secs>; then kills <cmd> and every stub still waiting.
+within() {
+    local secs=$1 re=$2 out="$WORK/within.out" pid i; shift 2
+    "$@" >"$out" 2>&1 &
+    pid=$!
+    for (( i = 0; i < secs * 10; i++ )); do
+        grep -qE "$re" "$out" && break
+        command sleep 0.1
+    done
+    { kill -KILL "$pid"; wait "$pid"; xargs kill -KILL <"$STUBS"; } 2>/dev/null
+    : >"$STUBS"
+    grep -m1 -E "$re" "$out"
+}
+# verify_catchup with the real probe: verify.sh sourced again, in the
+# background subshell only.
+real_catchup() { unset _DEEPLOY_VERIFY_SOURCED
+    # shellcheck source-path=SCRIPTDIR source=../lib/verify.sh
+    source "$ROOT/lib/verify.sh"
+    SOLANA_BIN="$WORK/bin" verify_catchup; }
+US=10 THEM=95
+check "behind, 'solana' silent -> a WARN within 5 s" "$(grep -c 'not caught up: 85 slots behind (us:10 them:95)$' <<<"$(within 5 'caught up' real_catchup)")" "1"
+US=100 THEM=100
+check "caught up -> ok, with both slots"             "$(grep -c '\[OK\] catchup: caught up (us:100 them:100)$' <<<"$(within 5 'caught up' real_catchup)")" "1"
+US=99 THEM=100
+check "1 behind -> ok (the CLI's window is 4)"       "$(grep -c '\[OK\] catchup: caught up (us:99 them:100)$' <<<"$(within 5 'caught up' real_catchup)")" "1"
+US=DOWN THEM=95
+check "the node's RPC silent -> a WARN that says so" "$(grep -c "not caught up: no slot from the node's RPC at http://127.0.0.1:8899$" <<<"$(within 5 'caught up' real_catchup)")" "1"
+unset -f curl
 
 echo "== verify_run summary =="
 verify_run >/dev/null 2>&1; check "all-good verify_run passes" "$?" "0"

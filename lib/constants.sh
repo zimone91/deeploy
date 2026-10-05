@@ -15,9 +15,18 @@ _DEEPLOY_CONSTANTS_SOURCED=1
 # mainnet-beta genesis hash — the cluster identity guard.
 MAINNET_GENESIS_HASH="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-# Public RPC used only for preflight reachability/genesis probing (never for
-# the validator, which is --private-rpc on 127.0.0.1).
+# Public RPC used for preflight reachability/genesis probing and for the
+# cluster's slot in the catchup status (never for the validator, which is
+# --private-rpc on 127.0.0.1).
 DEFAULT_PUBLIC_RPC="https://api.mainnet-beta.solana.com"
+
+# A node at most this many slots behind the cluster counts as caught up: the
+# window of 'solana catchup' itself (jito c21f9074). From its second poll it
+# needs node_slot > min(previous_rpc_slot, rpc_slot) (cli/src/cluster_query.rs
+# 830), the previous cluster slot read one 2 s sleep earlier (:658, :901), and
+# 2 s is 5 slots of 400 ms (solana-clock 3.2.0 src/lib.rs 77-79). Used by the
+# catchup status (common.sh) and the rendered wait_and_pin_poh.sh.
+CAUGHT_UP_MAX_BEHIND=4
 
 # The five mainnet entrypoints from the install guide (host:port). Used as
 # --entrypoint args in validator.sh and pinged for latency in preflight.

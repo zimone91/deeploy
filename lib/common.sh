@@ -293,6 +293,32 @@ deeploy_sync_pubkey() {         # stdout: the sync identity's pubkey, or nothing
     if [[ -n "$f" && -f "$f" ]]; then "$SOLANA_BIN/solana-keygen" pubkey "$f" 2>/dev/null || true; fi
 }
 
+# --- catchup status (read-only; shared by start.sh and verify.sh) -------------
+# How far the node is behind, read without waiting for it to catch up: two
+# getSlot calls at "confirmed" (the CLI's default commitment), each capped at
+# 5 s. The cluster's slot comes first, from the public RPC (DEFAULT_PUBLIC_RPC,
+# constants.sh), then the node's own, so the node's is the fresher of the two.
+# Up to CAUGHT_UP_MAX_BEHIND slots behind (constants.sh) counts as caught up,
+# as in 'solana catchup' itself. Through a pipe that command says nothing until
+# the end: while behind it reports only on a spinner, which is not drawn when
+# stderr is not a terminal, so its first line is the final "has caught up".
+_deeploy_rpc_slot() {           # <url>; stdout: the slot, or nothing (no answer / unparsable)
+    local out
+    out=$(curl -sS -m 5 -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}' "$1" 2>/dev/null || true)
+    printf '%s\n' "$out" | sed -nE 's/.*"result"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p'
+}
+deeploy_catchup_status() {      # stdout: one line, "caught up (us:N them:M)" or why not
+    local node us them
+    node="http://127.0.0.1:$(state_get rpc_port 8899)"
+    them=$(_deeploy_rpc_slot "$DEFAULT_PUBLIC_RPC")
+    us=$(_deeploy_rpc_slot "$node")
+    if [[ -z "$us" ]]; then echo "no slot from the node's RPC at $node"
+    elif [[ -z "$them" ]]; then echo "no slot from the cluster RPC at $DEFAULT_PUBLIC_RPC (us:$us)"
+    elif (( them - us <= CAUGHT_UP_MAX_BEHIND )); then echo "caught up (us:$us them:$them)"
+    else echo "$((them - us)) slots behind (us:$us them:$them)"; fi
+}
+
 # b58_len <string> — how many bytes <string> decodes to as base58 (the alphabet
 # Solana uses), or nothing when a character is outside the alphabet. A pubkey
 # is 32 bytes and a signature 64; a 32-44 character regex alone lets 23-33 byte
