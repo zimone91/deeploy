@@ -5,6 +5,70 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc9] - 2026-10-05
+
+rc8 could not install `v4.3.0-jito.0`, the jito-solana release marked Mainnet:
+phase 4 stopped at the Anza CLI download. This release names the Anza CLI
+release by the tag's Agave base, refuses a tag that does not have the
+jito-solana form, and pins `v4.3.0-jito.0`.
+
+Nothing in this release has been executed on hardware.
+
+### Fixed
+- **A jito tag ending in `.N` stopped phase 4.** Phase 4 installs the Anza CLI
+  release named by the jito tag's Agave base. It used to strip a trailing
+  `-jito`, which leaves `v4.3.0-jito.0` whole, and
+  `https://release.anza.xyz/v4.3.0-jito.0/install` is a 404. Phase 4 stopped
+  there, after phase 3, which on a two-NVMe layout has already formatted the
+  data disks. The base of `v4.3.0-jito.0` is now `v4.3.0`. `--dry-run` returns
+  before the download, so it did not show this, and it still does not check
+  that the release exists. This is the install path; `upgrade` does not install
+  the Anza CLI.
+
+### Changed
+- **A tag that does not have the jito-solana form is refused, in `install` and
+  in `upgrade`,** before it is recorded or anything is built. The form is
+  `vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N]`. A tag without the
+  `-jito` suffix used to be only warned about, and the same warning fired on
+  `v4.3.0-jito.0`. The jito-solana repository carries bare Agave tags such as
+  `v4.3.0`. Such a tag clears DeePloy's version floor on its numbers, and
+  Agave's `validator/src` at `v4.3.0` defines none of the Jito-only flags
+  DeePloy writes into `validator.sh`: `--block-engine-url`, `--relayer-url` or
+  `--bam-url`, the tip and merkle-root flags, `--commission-bps` and
+  `--shred-receiver-address`. On a box whose recorded tag has another form,
+  `upgrade` now refuses a bare Enter at the tag prompt, where it used to warn
+  and rebuild.
+- **Pinned client: `v4.2.1-jito` → `v4.3.0-jito.0`,** the latest jito-solana
+  release marked Mainnet, in `deeploy.conf.example` and `docs/INSTALL.md`, and
+  as the example in the tag prompt of phase 4.
+- **`--limit-ledger-size` is deprecated in 4.3.** Per the `v4.3.0-jito.0`
+  source, the flag is hidden from `--help` and reported once as a warning at
+  startup; its default (200,000,000 shreds) and minimum (50,000,000) are
+  unchanged. DeePloy keeps passing it because `--limit-blockstore-size` does
+  not exist in `v4.2.0-jito`, the oldest client DeePloy supports. Not yet
+  observed on hardware.
+
+### Known issues
+- **The tag is still checked in phase 4,** after phase 3 has formatted the data
+  disks on a two-NVMe layout. A tag of the wrong form now stops there with a
+  refusal. A tag of the right form that does not exist still stops at the
+  Anza CLI download or at the jito-solana checkout.
+
+### Correction to 0.1.0-rc8
+The 0.1.0-rc8 entry says "A box laid out on data disks never falls back to the
+system disk." and "If the recorded layout is `two-nvme` or `raid-volume` and no
+eligible data disk is visible, the run refuses and changes nothing." Phase 3
+reaches that refusal only when `/proc/mdstat` lists neither a RAID0 array nor
+an array that the system is not on and whose members are all NVMe. It asks
+about the second kind first (`lib/disk.sh:377-378`). When there is none and no
+data disk is eligible, it uses the first RAID0 array listed as a single volume
+(`:382-384`), in the branch before the refusal (`:385-396`), and that array can
+be the one the system itself is on (`:170`). In that case the ledger and
+accounts are placed under `/root/solana` on the system volume (`:360-363`,
+`:540-550`), with a warning and no prompt. Only a box whose system volume is a
+RAID0 array can be affected. Line numbers are as of 0.1.0-rc8; `lib/disk.sh` is
+unchanged in this release. Not fixed in this release.
+
 ## [0.1.0-rc8] - 2026-09-23
 
 One check rc7 added refused too much, and one check that was never there let
