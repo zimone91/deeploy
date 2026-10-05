@@ -63,7 +63,7 @@ check "garbage named as not-a-version-tag"     "$(grep -c 'is not a jito-solana 
 JITO_TAG=v4.2.0-jito toolchain_resolve_config >/dev/null 2>&1
 check "floor tag itself -> ok"                 "$?" "0"
 JITO_TAG=v4.2.1-jito toolchain_resolve_config >/dev/null 2>&1
-check "current pin -> ok"                      "$?" "0"
+check "supported v4.2.1-jito -> ok"            "$?" "0"
 check "accepted tag recorded to state"         "$(state_get jito_tag)" "v4.2.1-jito"
 JITO_TAG="v3.1.14-jito"    # restore the suite-wide fixture for the sections below
 
@@ -219,8 +219,8 @@ echo "== build guards degenerate to no-ops against the UPSTREAM 4.2 structure ==
 # existed upstream. On 4.2.x upstream ships BOTH — the root Cargo.toml carries
 # [profile.release-with-lto] with the same three keys we inject, and
 # cargo-install-all.sh already has the --release-with-lto branch. The guards are
-# kept for older tags, so what needs proving is that on the current pin they
-# change NOTHING: a byte-identical file, not merely "no duplicate section".
+# kept for older tags, so what needs proving is that where upstream ships both
+# they change NOTHING: a byte-identical file, not merely "no duplicate section".
 # Fixtures mirror the 4.2.1 shape (profile order and the arg-parse chain).
 U="$WORK/upstream42_Cargo.toml"
 cat >"$U" <<'EOT'

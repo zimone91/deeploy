@@ -44,14 +44,14 @@ TOOLCHAIN_BUILD_DEPS=(
 # The 5 capabilities the validator needs (matches solana.service AmbientCapabilities).
 TOOLCHAIN_CAPS="cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon,cap_sys_nice"
 
-# scripts/cargo-install-all.sh flags — both re-confirmed present in the 4.2.x
-# script (v4.2.1-jito, the current pin):
+# scripts/cargo-install-all.sh flags — both measured present in the script at
+# v4.3.0-jito.0, the current pin (2026-10-05):
 #   --release-with-lto         build with the release-with-lto profile. Upstream
-#                              now ships both the profile and this flag, so the
-#                              two guards below are no-ops on 4.2.x; they stay
-#                              for older tags.
+#                              ships both the profile and this flag at the pin,
+#                              and the two guards below leave both files there
+#                              byte-identical; they stay for older tags.
 #   --no-build-platform-tools  skip the SBF platform-tools build (not needed for
-#                              a validator; still accepted in 4.2.x)
+#                              a validator; accepted at the pin)
 TOOLCHAIN_BUILD_FLAGS=(--release-with-lto --no-build-platform-tools)
 
 _OVERLAY_APPLIED=0
@@ -59,7 +59,7 @@ _OVERLAY_APPLIED=0
 # --- config ------------------------------------------------------------------
 toolchain_resolve_config() {
     if [[ -z "${JITO_TAG:-}" ]]; then
-        ask "jito-solana build tag (e.g. v4.2.1-jito)" "${JITO_TAG:-}"
+        ask "jito-solana build tag (e.g. v4.3.0-jito.0)" "${JITO_TAG:-}"
         JITO_TAG="$REPLY"
     fi
     [[ -n "$JITO_TAG" ]] || fail "JITO_TAG is required"

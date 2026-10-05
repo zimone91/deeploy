@@ -3,7 +3,7 @@
 Target: a fresh Ubuntu 24.04 x86-64 box (built and proven on AMD EPYC,
 377 GiB RAM, 2× ~1.92 TB data NVMe + a separate system disk).
 
-**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.2.1-jito"`;
+**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.0-jito.0"`;
 the code enforces a floor of **v4.2.0-jito**. Older clients are refused before
 the build: the generated `validator.sh` passes `--no-xdp` and
 `--poh-pinned-cpu-core`, neither of which exists before 4.2.0, so an older
