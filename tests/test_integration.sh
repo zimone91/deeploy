@@ -75,7 +75,8 @@ uname()       { echo x86_64; }
 nproc()       { echo 48; }
 _cpu_total()  { echo 48; }
 _cpu_siblings(){ local c=$1; if (( c<24 )); then echo "$c,$((c+24))"; else echo "$((c-24)),$c"; fi; }
-ethtool()     { echo "driver: mlx5_core"; }
+ethtool()     { if [[ "$1" == -g ]]; then printf 'Ring parameters for %s:\nCurrent hardware settings:\nRX:\t\t\t1024\nTX:\t\t\t1024\n' "$2"
+                else echo "driver: mlx5_core"; fi; }
 ip()          { case "$*" in *"route show default"*) echo "default via 10.0.0.1 dev enp1s0";;
                               *"route get"*) echo "1.1.1.1 dev enp1s0 src 203.0.113.7";; *) echo "enp1s0 UP";; esac; }
 lsblk()       { local last=${!#}; case "$*" in *"NAME,SIZE,TYPE,ROTA,MODEL"*) printf '%s\n' "nvme0n1 1920383410176 disk 0 SAMSUNG" "nvme1n1 1920383410176 disk 0 SAMSUNG" "sda 256060514304 disk 0 BOOT";;
@@ -143,6 +144,7 @@ _vf_proc_nice(){ echo -10; }; _vf_oom_score(){ echo -1000; }; _vf_poh_thread(){ 
 _vf_isolated(){ sget isolated_set; }; _vf_governors(){ echo "cpu0 performance"; }; _vf_thp(){ echo "[never]"; }; _vf_ksm(){ echo 0; }; _vf_numa(){ echo 0; }
 _vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "0 slot(s) behind"; }; _vf_timer_active(){ echo active; }
 _vf_nic(){ echo enp1s0; }; _vf_nic_bus(){ echo 0000:85:00.0; }; _vf_mlx5_irqs(){ echo "254 mlx5_comp0@pci:0000:85:00.0 0"; }
+_vf_hugepages(){ echo 32; }; _vf_hugepage_fails(){ echo 0; }
 # post-reboot isolation read (mock /sys agreeing with the recorded set)
 _install_read_isolated(){ sget isolated_set; }; _install_read_cmdline(){ echo "isolcpus=domain,managed_irq,$(sget isolated_set)"; }
 
@@ -184,6 +186,7 @@ check "disk->validatorcfg: snapshots on LEDGER side"      "$(sget snapshots_path
 check "region->validatorcfg: bam_url chosen"              "$(sget bam_url)" "http://frankfurt.mainnet.bam.jito.wtf"
 # XFS tuning belongs to Phase 3 (after the FS exists), NOT Phase 2's sysctl.
 check "Phase 2 sysctl has NO fs.xfs key"                  "$(grep -c 'fs.xfs' "$SYSCTL_FILE")" "0"
+check "R10-5: Phase 2 sysctl reserves the XDP UMEM's huge pages (2 cores, rings 1024/1024)" "$(grep -cx 'vm.nr_hugepages=32' "$SYSCTL_FILE")" "1"
 check "Phase 3 wrote the XFS drop-in"                     "$(grep -c 'fs.xfs.xfssyncd_centisecs' "$XFS_SYSCTL_FILE")" "1"
 
 echo ""

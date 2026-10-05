@@ -200,6 +200,36 @@ printf '%s\n' 'ENABLE="true"' >"$WORK/cpufreq.op"
 CPUFREQ_DEFAULT_FILE="$WORK/cpufreq.op" PERF_SCRIPT_FILE="$WORK/perf.sh" PERF_SERVICE_FILE="$WORK/perf.service" tuning_perf >/dev/null 2>&1
 check "R10-2: an operator's file without GOVERNOR= gets it appended" "$(tr '\n' '|' <"$WORK/cpufreq.op")" 'ENABLE="true"|GOVERNOR="performance"|'
 
+echo "== R10-5: huge pages for the XDP UMEM =="
+check "R10-5: 2 queues, rings 1024/1024 -> 32"   "$(_tuning_xdp_hugepages 2 1024 1024)" "32"
+check "R10-5: 2 queues, rings 512/512 -> 16"     "$(_tuning_xdp_hugepages 2 512 512)" "16"
+check "R10-5: 2 queues, rings 4096/4096 -> 128" "$(_tuning_xdp_hugepages 2 4096 4096)" "128"
+check "R10-5: 1 queue, rings 511/511 -> 8 (a part of a page counts whole)" "$(_tuning_xdp_hugepages 1 511 511)" "8"
+# ethtool -g of the rc9 box (§18, chk-18.txt): current 1024/1024, maximum 8192.
+printf 'Ring parameters for enp133s0f0np0:\nPre-set maximums:\nRX:\t\t\t8192\nRX Mini:\t\tn/a\nRX Jumbo:\t\tn/a\nTX:\t\t\t8192\nTX push buff len:\tn/a\nCurrent hardware settings:\nRX:\t\t\t1024\nRX Mini:\t\tn/a\nRX Jumbo:\t\tn/a\nTX:\t\t\t1024\nRX Buf Len:\t\tn/a\nCQE Size:\t\tn/a\nTX Push:\t\toff\nRX Push:\t\toff\nTX push buff len:\tn/a\nTCP data split:\t\toff\n' >"$WORK/rings"
+ip()      { echo "default via 10.0.0.1 dev enp133s0f0np0 proto static"; }
+ethtool() { [[ "$1 $2" == "-g enp133s0f0np0" ]] && cat "$WORK/rings"; }
+state_set retransmit_supported 1; state_set xdp_cores 1-2
+SYSCTL_FILE="$WORK/21x.conf" SYSCTL_SERVICE_FILE="$WORK/sysctlx.service" tuning_sysctl >/dev/null 2>&1
+check "R10-5: XDP on, the rc9 box's rings -> vm.nr_hugepages=32 in the file and in state" "$(grep -cx 'vm.nr_hugepages=32' "$WORK/21x.conf")|$(state_get xdp_hugepages "")" "1|32"
+state_set xdp_cores ""
+SYSCTL_FILE="$WORK/21x.conf" SYSCTL_SERVICE_FILE="$WORK/sysctlx.service" tuning_sysctl >/dev/null 2>&1
+check "R10-5: no XDP cores reserved -> no vm.nr_hugepages, nothing in state" "$(grep -c 'nr_hugepages' "$WORK/21x.conf")|$(state_get xdp_hugepages "")" "0|"
+state_set xdp_cores 1-2; state_set retransmit_supported 0
+SYSCTL_FILE="$WORK/21x.conf" SYSCTL_SERVICE_FILE="$WORK/sysctlx.service" tuning_sysctl >/dev/null 2>&1
+check "R10-5: XDP off (retransmit unsupported) -> no vm.nr_hugepages, nothing in state" "$(grep -c 'nr_hugepages' "$WORK/21x.conf")|$(state_get xdp_hugepages "")" "0|"
+state_set retransmit_supported 1; ethtool() { return 1; }
+( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT
+  SYSCTL_FILE="$WORK/21y.conf" SYSCTL_SERVICE_FILE="$WORK/sysctly.service" tuning_sysctl ) >"$WORK/out" 2>&1
+check "R10-5: rings unreadable, set -Eeuo pipefail + ERR trap -> survives, no stray [FAIL], 1024/1024 counted (32), a warning" \
+    "$?|$(grep -cE '\[FAIL\] line [0-9]+' "$WORK/out")|$(grep -cx 'vm.nr_hugepages=32' "$WORK/21y.conf")|$(grep -c 'ring sizes unreadable' "$WORK/out")" "0|0|1|1"
+ip() { return 1; }; rm -f "$WORK/21y.conf"
+( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT
+  SYSCTL_FILE="$WORK/21y.conf" SYSCTL_SERVICE_FILE="$WORK/sysctly.service" tuning_sysctl ) >"$WORK/out" 2>&1
+check "R10-5: no default route, set -Eeuo pipefail + ERR trap -> survives, no stray [FAIL], 1024/1024 counted (32)" \
+    "$?|$(grep -cE '\[FAIL\] line [0-9]+' "$WORK/out")|$(grep -cx 'vm.nr_hugepages=32' "$WORK/21y.conf")" "0|0|1"
+unset -f ip ethtool; state_set retransmit_supported 0; state_clear xdp_hugepages
+
 echo "== Phase 2 sysctl: tolerant apply does NOT abort under set -Eeuo on a box w/o XFS =="
 # Reproduce the real-box crash conditions: production flags + a sysctl that
 # rejects fs.xfs.* (subtree absent). Even if a stale key were present, the run

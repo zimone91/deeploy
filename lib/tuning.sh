@@ -334,10 +334,40 @@ WantedBy=multi-user.target
     ok "performance-tweaks enabled (governor=performance, THP=never, KSM=0, numa_balancing=0)"
 }
 
+# --- huge pages for the XDP UMEM (R10-5) -------------------------------------
+# Each XDP queue maps (rx + tx) x 2 frames of one 4 KiB page and asks for 2 MiB
+# huge pages first (jito xdp/src/tx_loop.rs, umem.rs). With none reserved it
+# falls back to regular pages and WARNs, once per queue per start: 2 WARN per
+# start on the rc9 box. One XDP queue per XDP core; reserve twice what they
+# take, from the default-route NIC's ring sizes now. Rings changed later need
+# a recount. The pool is global: one NUMA node is the only layout measured.
+_tuning_nic_rings() {                             # stdout: "<rx> <tx>" now, or nothing
+    local nic
+    nic=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)
+    [[ -n "$nic" ]] || return 0
+    # ethtool prints the maximums, then the current settings: the last RX:/TX: win.
+    ethtool -g "$nic" 2>/dev/null | awk '$1 == "RX:" {rx = $2} $1 == "TX:" {tx = $2}
+        END {if (rx ~ /^[0-9]+$/ && tx ~ /^[0-9]+$/) print rx, tx}' || true
+}
+_tuning_xdp_hugepages() {                         # <queues> <rx> <tx> -> 2 x the 2 MiB pages they map
+    echo $(( 2 * $1 * ((($2 + $3) * 2 * 4096 + 2097151) / 2097152) ))
+}
+
 # --- sysctl ------------------------------------------------------------------
 tuning_sysctl() {
-    local f="${SYSCTL_FILE:-/etc/sysctl.d/21-agave-validator.conf}"
+    local f="${SYSCTL_FILE:-/etc/sysctl.d/21-agave-validator.conf}" xdp rx tx hp=""
     step "sysctl 21-agave-validator"
+    xdp=$(state_get xdp_cores "")
+    if [[ "$(state_get retransmit_supported 0)" == "1" && -n "$xdp" ]]; then  # XDP on: validatorcfg's test
+        read -r rx tx <<<"$(_tuning_nic_rings)"
+        # jito's own default when it cannot read the rings (xdp/src/device.rs)
+        [[ -n "${rx:-}" ]] || { rx=1024 tx=1024; warn "NIC ring sizes unreadable (ethtool -g) — counting XDP huge pages for 1024/1024, jito's default"; }
+        hp=$(_tuning_xdp_hugepages "$(_expand_list "$xdp" | wc -l | tr -d ' ')" "$rx" "$tx")
+        info "XDP UMEM: cores ${xdp}, rings ${rx}/${tx} -> vm.nr_hugepages=${hp}"
+        state_set xdp_hugepages "$hp"
+    else
+        state_clear xdp_hugepages
+    fi
     write_file "$f" \
 '# TCP Buffer Sizes (10k min, 87.38k default, 12M max)
 net.ipv4.tcp_rmem=10240 87380 12582912
@@ -378,7 +408,10 @@ vm.dirtytime_expire_seconds=43200
 
 # File descriptors
 fs.nr_open=2000000
-'
+'"${hp:+
+# Huge pages for the XDP UMEM: twice what the XDP queues map (R10-5)
+vm.nr_hugepages=${hp}
+}"
     # NOTE: fs.xfs.* tuning is intentionally NOT here. /proc/sys/fs/xfs/ only
     # exists once the xfs module is loaded (i.e. after Phase 3 makes the XFS
     # filesystems), so a sysctl applying it now would fail on a fresh box. The

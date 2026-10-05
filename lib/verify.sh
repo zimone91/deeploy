@@ -5,8 +5,8 @@
 # that the tuning actually took: process limits, priority/OOM, CPU isolation
 # (vs the recorded isolated set), PoH thread affinity (vs POH_CORE), the mlx5
 # NIC's IRQs (off the isolated CPUs), governor/THP/KSM/NUMA, sysctl buffers,
-# disk layout, catchup, the poh-pin timer, and whether the node runs on the
-# staked identity.
+# the XDP UMEM's huge pages, disk layout, catchup, the poh-pin timer, and
+# whether the node runs on the staked identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
 # Requires: common.sh sourced (constants.sh optional).
@@ -58,6 +58,16 @@ _vf_thp()          { cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
 _vf_ksm()          { cat /sys/kernel/mm/ksm/run 2>/dev/null || true; }
 _vf_numa()         { cat /proc/sys/kernel/numa_balancing 2>/dev/null || true; }
 _vf_sysctl()       { sysctl -n "$1" 2>/dev/null || true; }
+_vf_hugepages()    { awk '$1 == "HugePages_Total:" {print $2; exit}' "${VF_MEMINFO:-/proc/meminfo}" 2>/dev/null || true; }
+# "huge page alloc failed" lines since the last "Starting validator with:"
+# (jito validator/src/commands/run/execute.rs) in the validator's log. jito
+# logs them right after the start line, and solana.log rotates daily: with no
+# start line in it (rotated since the start, or no log at all, where awk fails
+# before END) this prints nothing, and the fallback is not checked.
+_vf_hugepage_fails() {
+    awk '/Starting validator with:/ {s = 1; n = 0} /huge page alloc failed/ {n++} END {if (s) print n + 0}' \
+        "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null || true
+}
 _vf_catchup()      { "$SOLANA_BIN/solana" catchup --our-localhost 2>&1 | head -1 || true; }
 _vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
 _vf_identity()     { deeploy_live_identity; }     # getIdentity, local RPC (common.sh)
@@ -167,6 +177,21 @@ verify_sysctl() {
     _vf_expect "fs.nr_open"        "$(_vf_sysctl fs.nr_open)"        "2000000"
 }
 
+# The XDP UMEM's huge pages (R10-5): the pool phase 2 reserved, and no fall
+# back to regular pages since the validator last started. XDP off: no check.
+verify_hugepages() {
+    local want have fails
+    want=$(state_get xdp_hugepages "")
+    [[ -n "$want" ]] || return 0
+    have=$(_vf_hugepages)
+    if [[ "$have" =~ ^[0-9]+$ ]] && (( have >= want )); then vf_ok "HugePages_Total = ${have} (>= ${want} for the XDP UMEM)"
+    else vf_warn "HugePages_Total = ${have:-?} (expected >= ${want} for the XDP UMEM; vm.nr_hugepages)"; fi
+    fails=$(_vf_hugepage_fails)
+    if [[ -z "$fails" ]]; then info "no 'Starting validator with:' in solana.log (rotated since the start, or no log) — the XDP huge page fallback is not checked"
+    elif (( fails == 0 )); then vf_ok "XDP UMEM on huge pages: no 'huge page alloc failed' since the last start"
+    else vf_warn "XDP UMEM fell back to regular pages: ${fails} 'huge page alloc failed' since the last start (solana.log)"; fi
+}
+
 verify_catchup() {
     local out; out=$(_vf_catchup)
     if grep -qE 'has caught up|^0 slot\(s\) behind' <<<"$out"; then vf_ok "catchup: $out"
@@ -212,6 +237,7 @@ verify_run() {
     verify_nic_irqs
     verify_perf_tweaks
     verify_sysctl
+    verify_hugepages
     verify_catchup
     verify_identity
     verify_pohpin_timer

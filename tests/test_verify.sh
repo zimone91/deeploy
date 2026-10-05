@@ -152,6 +152,47 @@ NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; verify_nic_irqs ) 2>&1 )
 check "R10-3: real probe, no /proc/interrupts, ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
 export VF_PROC="$P"; state_clear nic_driver
 
+echo "== R10-5: the XDP UMEM's huge pages =="
+# meminfo and solana.log lines as on the rc9 box (§18: chk-18.txt, chk-18b.txt);
+# the start line is the one jito logs first (execute.rs:161).
+export VF_MEMINFO="$WORK/meminfo"; mkdir -p "$WORK/solhome"; state_set solana_home "$WORK/solhome"
+meminfo() { printf 'HugePages_Total:    %s\nHugePages_Free:     %s\nHugePages_Rsvd:        0\nHugepagesize:       2048 kB\n' "$1" "$1" >"$VF_MEMINFO"; }
+START='[2026-10-05T14:37:40.101Z INFO  agave_validator::commands::run::execute] Starting validator with: ['
+FELL='[2026-10-05T14:37:41.896259110Z WARN  agave_xdp::tx_loop] huge page alloc failed, falling back to regular page size'
+state_set xdp_hugepages 32; meminfo 0
+printf '%s\n' "$START" "$FELL" "$FELL" "$START" "$FELL" "$FELL" >"$WORK/solhome/solana.log"
+reset; verify_hugepages >"$WORK/hp" 2>&1
+check "R10-5: the rc9 box: 0 huge pages, 2 fallbacks since the last start -> 2 WARN" \
+    "$_VF_WARN|$(grep -c 'HugePages_Total = 0 (expected >= 32' "$WORK/hp")|$(grep -c 'regular pages: 2 .huge page alloc failed. since the last start' "$WORK/hp")" "2|1|1"
+meminfo 32; printf '%s\n' "$START" >>"$WORK/solhome/solana.log"
+reset; verify_hugepages >"$WORK/hp" 2>&1
+check "R10-5: 32 reserved, a clean start after the fallbacks -> ok, ok" \
+    "$_VF_WARN|$(grep -c 'HugePages_Total = 32 (>= 32' "$WORK/hp")|$(grep -c 'no .huge page alloc failed. since the last start' "$WORK/hp")" "0|1|1"
+meminfo 31
+reset; verify_hugepages >"$WORK/hp" 2>&1
+check "R10-5: 31 < 32 -> WARN" "$_VF_WARN|$(grep -c 'HugePages_Total = 31 (expected >= 32' "$WORK/hp")" "1|1"
+meminfo x
+OUT=$( ( reset; verify_hugepages; echo "warn=$_VF_WARN" ) 2>&1 )
+check "R10-5: HugePages_Total not a number -> WARN with it, no crash under set -u" "$(grep -c 'HugePages_Total = x (expected >= 32' <<<"$OUT")|$(grep -c '^warn=' <<<"$OUT")" "1|1"
+# A day after the start: solana.log rotated (daily), no start line and no fallback in it.
+meminfo 32; printf '%s\n' '[2026-10-06T00:00:05.120Z INFO  solana_metrics::metrics] datapoint: a line after the rotation' >"$WORK/solhome/solana.log"
+reset; verify_hugepages >"$WORK/hp" 2>&1
+check "R10-5: rotated log, no start line in it -> fallback not checked (said), neither ok nor WARN" \
+    "$_VF_WARN|$(grep -c 'the XDP huge page fallback is not checked' "$WORK/hp")|$(grep -c 'no .huge page alloc failed. since the last start' "$WORK/hp")" "0|1|0"
+rm -f "$WORK/solhome/solana.log"
+reset; verify_hugepages >"$WORK/hp" 2>&1
+check "R10-5: no log -> fallback not checked (said), not a WARN" "$_VF_WARN|$(grep -c 'the XDP huge page fallback is not checked' "$WORK/hp")" "0|1"
+printf '%s\n' "$START" "$FELL" >"$WORK/solhome/solana.log"
+verify_run >"$WORK/run" 2>&1
+check "R10-5: verify_run (the post-reboot check) runs it" "$(grep -c 'regular pages: 1 ' "$WORK/run")" "1"
+state_clear xdp_hugepages
+reset; verify_hugepages >"$WORK/hp" 2>&1
+check "R10-5: XDP off (nothing reserved) -> no check, no output" "$_VF_WARN|$(wc -c <"$WORK/hp" | tr -d ' ')" "0|0"
+state_set xdp_hugepages 32; export VF_MEMINFO="$WORK/nomeminfo"; state_set solana_home "$WORK/nosolhome"
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; verify_hugepages ) 2>&1 )
+check "R10-5: real probes, no meminfo, no log, ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+state_clear xdp_hugepages; state_clear solana_home; export VF_MEMINFO="$WORK/meminfo"
+
 echo "== R10-6: identity — on the sync key is a WARN that names both cases =="
 STK=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu; SYN=SyncPk1111111111111111111111111111111111111
 LIVE=""; _vf_identity() { printf '%s' "$LIVE"; }; _vf_sync_pubkey() { printf '%s' "$SYN"; }
