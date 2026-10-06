@@ -298,10 +298,11 @@ deeploy_sync_pubkey() {         # stdout: the sync identity's pubkey, or nothing
 # getSlot calls at "confirmed" (the CLI's default commitment), each capped at
 # 5 s. The cluster's slot comes first, from the public RPC (DEFAULT_PUBLIC_RPC,
 # constants.sh), then the node's own, so the node's is the fresher of the two.
-# Up to CAUGHT_UP_MAX_BEHIND slots behind (constants.sh) counts as caught up,
-# as in 'solana catchup' itself. Through a pipe that command says nothing until
-# the end: while behind it reports only on a spinner, which is not drawn when
-# stderr is not a terminal, so its first line is the final "has caught up".
+# Up to CAUGHT_UP_MAX_BEHIND slots behind counts as caught up; constants.sh
+# says how that compares with 'solana catchup'. Through a pipe that command
+# says nothing until the end: while behind it reports only on a spinner,
+# which is not drawn when stderr is not a terminal, so its first line is the
+# final "has caught up".
 _deeploy_rpc_slot() {           # <url>; stdout: the slot, or nothing (no answer / unparsable)
     local out
     out=$(curl -sS -m 5 -H 'Content-Type: application/json' \

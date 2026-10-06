@@ -20,12 +20,17 @@ MAINNET_GENESIS_HASH="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 # --private-rpc on 127.0.0.1).
 DEFAULT_PUBLIC_RPC="https://api.mainnet-beta.solana.com"
 
-# A node at most this many slots behind the cluster counts as caught up: the
-# window of 'solana catchup' itself (jito c21f9074). From its second poll it
-# needs node_slot > min(previous_rpc_slot, rpc_slot) (cli/src/cluster_query.rs
-# 830), the previous cluster slot read one 2 s sleep earlier (:658, :901), and
-# 2 s is 5 slots of 400 ms (solana-clock 3.2.0 src/lib.rs 77-79). Used by the
-# catchup status (common.sh) and the rendered wait_and_pin_poh.sh.
+# A node at most this many slots behind the cluster counts as caught up.
+# 'solana catchup' (jito c21f9074), from its second poll, needs node_slot >
+# min(previous_rpc_slot, rpc_slot) (cli/src/cluster_query.rs 830), the
+# previous cluster slot read one 2 s sleep earlier (:658, :901), so its window
+# is the slots the cluster makes in 2 s. At the 400 ms target (solana-clock
+# 3.2.0 src/lib.rs 77-79) that is 5, a lag of up to 4: this value. At the
+# 268.8 ms per slot measured on mainnet on 2026-10-05 it is about 7, a lag of
+# up to about 6, so 4 is the stricter. In 26 "has caught up" lines catchup
+# printed for a mainnet node on 2026-10-05 and -06, that node was at most 3
+# slots behind. Used by the catchup status (common.sh) and the rendered
+# wait_and_pin_poh.sh.
 CAUGHT_UP_MAX_BEHIND=4
 
 # The five mainnet entrypoints from the install guide (host:port). Used as
