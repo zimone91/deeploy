@@ -182,6 +182,13 @@ echo "== N10: the boot sysctl unit tolerates kernel-absent keys (-e) =="
 check "sysctl unit ExecStart uses -e -p"    "$(grep -c 'ExecStart=/usr/sbin/sysctl -e -p' "$WORK/sysctl.service")" "1"
 check "sysctl unit: no plain '-p' ExecStart" "$(grep -c 'ExecStart=/usr/sbin/sysctl -p' "$WORK/sysctl.service")" "0"
 
+echo "== SYSCTL-ORDER: the boot sysctl unit runs Before=solana.service =="
+# It re-applies 21-agave-validator.conf after network.target and local-fs.target;
+# with no order against solana.service the validator could start before that.
+check "sysctl unit Before=solana.service" "$(grep -cx 'Before=solana.service' "$WORK/sysctl.service")" "1"
+check "sysctl unit: After= unchanged, no multi-user.target (would cycle)" \
+      "$(grep -cx 'After=network.target local-fs.target' "$WORK/sysctl.service")|$(grep -c '^After=multi-user.target' "$WORK/sysctl.service")" "1|0"
+
 echo "== H3: performance-tweaks runs Before=solana.service =="
 check "perf unit Before=solana.service"              "$(grep -c '^Before=solana.service' "$WORK/perf.service")" "1"
 check "perf unit dropped After=multi-user.target (would cycle)" "$(grep -c '^After=multi-user.target' "$WORK/perf.service")" "0"

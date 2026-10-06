@@ -420,6 +420,9 @@ vm.nr_hugepages=${hp}
 '[Unit]
 Description=Apply Solana sysctl tuning
 After=network.target local-fs.target
+# Before=solana.service, as in performance-tweaks: solana starts after this
+# re-apply, not beside it. Ordering only, so solana starts even if it fails.
+Before=solana.service
 
 [Service]
 Type=oneshot
