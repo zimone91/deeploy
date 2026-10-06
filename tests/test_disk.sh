@@ -537,6 +537,26 @@ AOUT=$( _disk_adopt_existing_layout 2>&1 ); ARC=$?
 check "both on the same device -> refused"        "$ARC" "1"
 check "  and it says they must differ"            "$(grep -c 'must be different physical disks' <<<"$AOUT")" "1"
 
+# PROBE-RC-ZERO: the type is read in a bare assignment. When findmnt answers rc 1
+# there, the refusal must still come out, alone, under the production traps: for
+# the type, and for the device and the type together.
+eval "$(declare -f findmnt | sed '1s/^findmnt /fm_adopt /')"
+fm_failing() {                                    # <columns that fail> <findmnt args...>
+    local cols=$1; shift
+    case "$*" in
+        *"-no FSTYPE"*) if [[ "$cols" == *FSTYPE* ]]; then return 1; fi ;;
+        *"-no SOURCE"*) if [[ "$cols" == *SOURCE* ]]; then return 1; fi ;;
+    esac
+    fm_adopt "$@"
+}
+adopt_reset; ADOPT_A_SRC=/dev/nvme0n1; ADOPT_L_SRC=/dev/nvme1n1
+AOUT=$( ( findmnt() { fm_failing FSTYPE "$@"; }; set -Eeuo pipefail; deeploy_init_traps; trap - EXIT; _disk_adopt_existing_layout ) 2>&1 ); ARC=$?
+check "PROBE-RC-ZERO: findmnt fails on the type -> refused, alone" \
+      "$ARC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$AOUT")|$(grep -c '/mnt/accounts is of unknown type, not xfs' <<<"$AOUT")" "1|0|1"
+AOUT=$( ( findmnt() { fm_failing "SOURCE FSTYPE" "$@"; }; set -Eeuo pipefail; deeploy_init_traps; trap - EXIT; _disk_adopt_existing_layout ) 2>&1 ); ARC=$?
+check "  findmnt fails on the device and the type -> refused, alone" \
+      "$ARC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$AOUT")|$(grep -c 'findmnt could not name the device behind one of them' <<<"$AOUT")" "1|0|1"
+
 # Control the other way: a clean first install must be untouched by any of this.
 # A first install has no record of a data layout, and the cases above leave
 # data_layout=two-nvme. In a subshell: since R10-7c this path can refuse, and a

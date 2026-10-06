@@ -214,8 +214,8 @@ _pf_check_platform() {
     osr="${OS_RELEASE_FILE:-/etc/os-release}"
     # Parse (not source) os-release: avoids executing its contents and keeps
     # the linter happy about the dynamic path.
-    id=$(awk -F= '$1=="ID"{gsub(/"/,"",$2); print $2; exit}' "$osr" 2>/dev/null)
-    ver=$(awk -F= '$1=="VERSION_ID"{gsub(/"/,"",$2); print $2; exit}' "$osr" 2>/dev/null)
+    id=$(awk -F= '$1=="ID"{gsub(/"/,"",$2); print $2; exit}' "$osr" 2>/dev/null || true)
+    ver=$(awk -F= '$1=="VERSION_ID"{gsub(/"/,"",$2); print $2; exit}' "$osr" 2>/dev/null || true)
     if [[ "$id" != "ubuntu" ]]; then pf_bad "OS is '${id:-unknown}' — DeePloy targets Ubuntu 24.04"
     elif [[ "$ver" != "24.04" ]]; then pf_warn "Ubuntu $ver detected (tested on 24.04)"
     else pf_ok "Ubuntu 24.04"; fi
@@ -335,11 +335,11 @@ _pf_check_nic() {
     [[ -z "$nic" ]] && nic=$(ip -br link 2>/dev/null | awk '$1!="lo" && $2=="UP"{print $1; exit}')
     if [[ -z "$nic" ]]; then pf_warn "No active uplink NIC detected"; return 0; fi
     driver=""
-    if have ethtool; then driver=$(ethtool -i "$nic" 2>/dev/null | awk -F': ' '/^driver:/{print $2; exit}'); fi
+    if have ethtool; then driver=$(ethtool -i "$nic" 2>/dev/null | awk -F': ' '/^driver:/{print $2; exit}' || true); fi
     state_set nic_driver "$driver"
     if [[ -z "$driver" ]]; then
         state_set retransmit_supported 0; state_set retransmit_zero_copy 0
-        pf_warn "NIC $nic: driver unknown (ethtool absent) — XDP retransmit gated OFF"
+        pf_warn "NIC $nic: driver unknown (ethtool absent or no answer) — XDP retransmit gated OFF"
         return 0
     fi
     local supported=0 zc=0
@@ -422,7 +422,8 @@ _pf_check_ports() {
     if ! have ss; then info "Port check skipped (ss absent)"; return 0; fi
     local p hits conflict=0
     for p in "${SSH_PORT:-22}" 8001 8899 8900; do
-        hits=$(ss -tulnH 2>/dev/null | awk -v port=":$p\$" '$5 ~ port {print $5; exit}')
+        # awk leaves at its first match; ss writing after that dies of SIGPIPE (141).
+        hits=$(ss -tulnH 2>/dev/null | awk -v port=":$p\$" '$5 ~ port {print $5; exit}' || true)
         if [[ -n "$hits" ]]; then conflict=1; pf_warn "Port $p already in use ($hits)"; fi
     done
     [[ "$conflict" == "0" ]] && pf_ok "Required ports free (SSH/${SSH_PORT:-22}, 8001, 8899, 8900)"

@@ -836,7 +836,7 @@ deeploy_grub_clobbering_dropins() {                # -> prints basenames, one pe
                 *'$GRUB_CMDLINE_LINUX_DEFAULT'*|*'${GRUB_CMDLINE_LINUX_DEFAULT'*) continue ;;
             esac
             printf '%s\n' "${f##*/}"; break
-        done < <(grep -E '^[[:space:]]*GRUB_CMDLINE_LINUX_DEFAULT=' "$f" 2>/dev/null)
+        done < <(grep -E '^[[:space:]]*GRUB_CMDLINE_LINUX_DEFAULT=' "$f" 2>/dev/null || true)
     done
     return 0
 }

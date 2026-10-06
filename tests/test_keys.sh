@@ -34,6 +34,7 @@ VOTE=$(mkpub Vote)
 
 # Mocked wrappers. One throwaway now: the unstaked sync identity.
 SYNC_PUB=$(mkpub Sync); STAKED_PUB=$(mkpub Staked)
+REAL_KEYS_PUBKEY=$(declare -f _keys_pubkey)       # the real one, for the PROBE-RC-ZERO checks at the end
 _keys_keygen_new() { echo "keygen $1" >>"$KEYGEN"; printf '[1,2,3]' >"$1"; }
 _keys_pubkey() { case "$1" in
     *unstaked*)                  printf '%s' "$SYNC_PUB" ;;
@@ -208,6 +209,51 @@ check "offbox manual: ssh stays without -t"         "$(grep -c 'Keep ssh without
 check "offbox manual: a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$MAN")" "1"
 check "offbox manual: tower step kept"              "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
 check "offbox manual: no staked keypair path at all" "$(grep -c 'mainnet-validator-keypair' <<<"$MAN")" "0"
+
+echo "== PROBE-RC-ZERO: the real _keys_pubkey answers 0 inside \$( ) =="
+# The checks above mock _keys_pubkey; these put the real one back, over a fake
+# solana-keygen that fails on a file it cannot read as a keypair. The sync and
+# staked reads are bare assignments, where that failure ended the run with a raw
+# ERR line before DeePloy's own refusal could say anything.
+KB="$WORK/rc0bin"; KD="$WORK/rc0"; mkdir -p "$KB" "$KD"
+cat >"$KB/solana-keygen" <<'EOF'
+#!/bin/sh
+# fake: 'pubkey <file>' prints what follows "pub:" in the file; anything else fails
+[ "$1" = pubkey ] && grep -q '^pub:' "$2" 2>/dev/null || { echo "Error: not a keypair: $2" >&2; exit 1; }
+sed -n 's/^pub://p' "$2"
+EOF
+chmod +x "$KB/solana-keygen"
+printf 'pub:%s\n' "$(mkpub Sync)"   >"$KD/unstaked-identity.json"
+printf 'pub:%s\n' "$(mkpub Staked)" >"$KD/mainnet-validator-keypair.json"
+printf 'not a keypair\n'            >"$KD/bad.json"
+ONCHAIN=""
+rc0_validate() {                                  # <sync identity> <staked mode> <staked keypair> -> output, then rc=N
+    ( eval "$REAL_KEYS_PUBKEY"; set -Eeuo pipefail; deeploy_init_traps; trap - EXIT
+      SOLANA_BIN="$KB" SYNC_IDENTITY=$1 STAKED_KEY_MODE=$2 STAKED_KEYPAIR=$3 STAKED_PUBKEY=$(mkpub Remote) \
+        VOTE_ACCOUNT_PUBKEY="$VOTE" keys_validate ) 2>&1
+    echo "rc=$?"
+}
+stray() { grep -cE '\[FAIL\] line [0-9]+:' <<<"$1"; }
+OUT=$(rc0_validate "$KD/bad.json" file "$KD/absent.json")
+check "PROBE-RC-ZERO: unreadable sync identity -> its own refusal, alone" \
+      "$(grep -cx 'rc=1' <<<"$OUT")|$(stray "$OUT")|$(grep -cF "Could not read sync-identity pubkey from $KD/bad.json" <<<"$OUT")" "1|0|1"
+OUT=$(rc0_validate "$KD/unstaked-identity.json" file "$KD/bad.json")
+check "PROBE-RC-ZERO: unreadable key at the real-key path (file) -> refused, alone, no 'checks passed'" \
+      "$(grep -cx 'rc=1' <<<"$OUT")|$(stray "$OUT")|$(grep -cF "Could not read a pubkey from the key at the real-key path ($KD/bad.json)" <<<"$OUT")|$(grep -c 'Identity checks passed' <<<"$OUT")" "1|0|1|0"
+OUT=$(rc0_validate "$KD/unstaked-identity.json" file "$KD/mainnet-validator-keypair.json")
+check "  control: a readable key at the real-key path -> passes, its pubkey recorded" \
+      "$(grep -cx 'rc=0' <<<"$OUT")|$(stray "$OUT")|$(grep -c 'Identity checks passed' <<<"$OUT")|$(state_get staked_pubkey)" "1|0|1|$(mkpub Staked)"
+OUT=$(rc0_validate "$KD/unstaked-identity.json" file "$KD/absent.json")
+check "  control: file mode, nothing at the real-key path -> passes" \
+      "$(grep -cx 'rc=0' <<<"$OUT")|$(stray "$OUT")|$(grep -c 'Identity checks passed' <<<"$OUT")" "1|0|1"
+OUT=$(rc0_validate "$KD/unstaked-identity.json" offbox "$KD/bad.json")
+check "  control: offbox, an unreadable file at that path is not read -> passes" \
+      "$(grep -cx 'rc=0' <<<"$OUT")|$(stray "$OUT")|$(grep -c 'Identity checks passed' <<<"$OUT")" "1|0|1"
+# An argument, not an assignment: the run went on, with a stray ERR line.
+OUT=$( ( eval "$REAL_KEYS_PUBKEY"; set -Eeuo pipefail; deeploy_init_traps; trap - EXIT
+         SOLANA_BIN="$KB" _keys_generate_one "$KD/bad.json" "Unstaked sync identity" ) 2>&1 ); RC=$?
+check "PROBE-RC-ZERO: a present key solana-keygen cannot read -> kept, no stray [FAIL] line" \
+      "$RC|$(stray "$OUT")|$(grep -c 'Unstaked sync identity already present' <<<"$OUT")" "0|0|1"
 
 echo ""
 echo "==================================="

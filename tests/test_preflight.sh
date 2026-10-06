@@ -72,6 +72,12 @@ reset; OS_RELEASE_FILE="$OSR_DEBIAN" _pf_check_platform >/dev/null 2>&1; counts 
 uname() { echo aarch64; }
 reset; OS_RELEASE_FILE="$OSR_UBUNTU" _pf_check_platform >/dev/null 2>&1; counts "aarch64 (hard)"      1 0
 uname() { echo x86_64; }
+# PROBE-RC-ZERO: no os-release at all. awk fails inside a bare assignment; under
+# the production traps that ended phase 0 before the hard finding was recorded.
+POUT=$( ( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT
+          reset; OS_RELEASE_FILE="$WORK/no-os-release" _pf_check_platform; echo "hard=$_PF_HARD" ) 2>&1 ); PRC=$?
+check "PROBE-RC-ZERO: no os-release, under the production traps -> 'OS is unknown' recorded, no abort" \
+      "$PRC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$POUT")|$(grep -c "OS is 'unknown'" <<<"$POUT")|$(grep -cx 'hard=1' <<<"$POUT")" "0|0|1|1"
 
 echo "== cpu =="
 # nproc IS present on real test hosts (coreutils) and would return the host's core
@@ -126,6 +132,15 @@ reset; _pf_check_nic >/dev/null 2>&1; counts "other driver: warn, disabled" 0 1
 check "other retransmit_supported=0" "$(state_get retransmit_supported)" "0"
 unset -f ethtool   # ethtool absent on host -> driver unknown
 reset; _pf_check_nic >/dev/null 2>&1; counts "no ethtool -> warn" 0 1
+# PROBE-RC-ZERO: ethtool is there but does not answer for this interface (rc 1)
+# inside a bare assignment. Under the production traps phase 0 used to end
+# there; now it takes the 'driver unknown' path, XDP off.
+ethtool() { return 1; }
+state_set retransmit_supported 9
+NOUT=$( ( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT; reset; _pf_check_nic; echo "warn=$_PF_WARN" ) 2>&1 ); NRC=$?
+check "PROBE-RC-ZERO: ethtool fails, under the production traps -> driver unknown, XDP off, no abort" \
+      "$NRC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$NOUT")|$(grep -c 'driver unknown (ethtool absent or no answer)' <<<"$NOUT")|$(grep -cx 'warn=1' <<<"$NOUT")|$(state_get retransmit_supported)" "0|0|1|1|0"
+unset -f ethtool
 
 echo "== time =="
 timedatectl() { echo yes; }
@@ -151,6 +166,16 @@ reset; NET_TEST=1 PF_MIN_MBPS=200 _pf_check_bandwidth >/dev/null 2>&1; counts "s
 echo "== ports =="
 ss() { printf '%s\n' "tcp LISTEN 0 0 0.0.0.0:8899 0.0.0.0:*"; }
 reset; _pf_check_ports >/dev/null 2>&1; counts "8899 in use warn" 0 1
+# PROBE-RC-ZERO: awk leaves at its first match. When ss writes after awk has
+# exited, ss dies of SIGPIPE (141), and pipefail makes that the status of a bare
+# assignment. A listing far larger than a pipe holds, matching on its first line,
+# makes that certain here; under the production traps the WARN must come out alone.
+{ printf '%s\n' "tcp LISTEN 0 0 0.0.0.0:8899 0.0.0.0:*"; yes 'udp UNCONN 0 0 0.0.0.0:1 0.0.0.0:*' | head -n 30000; } >"$WORK/ss-big"
+ss() { cat "$WORK/ss-big"; }
+POUT=$( ( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT; reset; _pf_check_ports; echo "warn=$_PF_WARN" ) 2>&1 ); PRC=$?
+check "PROBE-RC-ZERO: ss still writing when awk leaves -> the WARN alone, no abort" \
+      "$PRC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$POUT")|$(grep -c 'Port 8899 already in use (0.0.0.0:8899)' <<<"$POUT")|$(grep -cx 'warn=1' <<<"$POUT")" "0|0|1|1"
+ss() { printf '%s\n' "tcp LISTEN 0 0 0.0.0.0:8899 0.0.0.0:*"; }
 
 echo "== existing install =="
 state_set current-phase "3:Disk"
@@ -305,6 +330,15 @@ reset; _pf_check_grub_dropins >/dev/null 2>&1; counts "no drop-in directory at a
 GOUT2=$(_pf_check_grub_dropins 2>&1 || true)
 check "and says so rather than staying silent" "$(grep -c 'No .* drop-ins' <<<"$GOUT2")" "1"
 unset GRUB_D_DIR
+# PROBE-RC-ZERO: a drop-in that does not assign the variable leaves grep nothing
+# to print (rc 1) inside <( ), which the ERR trap saw. Under the production traps
+# the WARN naming the clobbering drop-in must come out alone.
+GRUBD3="$WORK/grub.d.rc0"; mkdir -p "$GRUBD3"
+printf 'GRUB_TIMEOUT=3\n' >"$GRUBD3/70-unrelated.cfg"
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="console=tty1"\n' >"$GRUBD3/90-vendor-override.cfg"
+GOUT3=$( ( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT; reset; GRUB_D_DIR="$GRUBD3" _pf_check_grub_dropins; echo "warn=$_PF_WARN" ) 2>&1 ); GRC3=$?
+check "PROBE-RC-ZERO: a drop-in without the assignment, under the production traps -> the WARN alone" \
+      "$GRC3|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$GOUT3")|$(grep -c '90-vendor-override.cfg' <<<"$GOUT3")|$(grep -c '70-unrelated.cfg' <<<"$GOUT3")|$(grep -cx 'warn=1' <<<"$GOUT3")" "0|0|1|0|1"
 
 echo "== 7d: preflight_run HARD-GATES (_PF_HARD>0 -> abort; warns alone pass) =="
 require_root() { :; }

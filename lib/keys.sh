@@ -36,7 +36,7 @@ KEYS_RPC_URL="${KEYS_RPC_URL:-https://api.mainnet-beta.solana.com}"
 
 # --- thin wrappers (overridden in tests) -------------------------------------
 _keys_keygen_new() { run "$SOLANA_BIN/solana-keygen" new --no-bip39-passphrase --silent -o "$1"; }
-_keys_pubkey()     { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null; }
+_keys_pubkey()     { "$SOLANA_BIN/solana-keygen" pubkey "$1" 2>/dev/null || true; }   # empty = unreadable; 0 always, for $( )
 _keys_solana()     { run "$SOLANA_BIN/solana" "$@"; }
 
 # Solana base58 pubkey: 32-44 chars, no 0 O I l.
@@ -140,8 +140,9 @@ keys_validate() {
         [[ "$staked" == "$sync" ]] && fail "Staked identity pubkey equals the sync identity — defeats the throwaway-sync design (wrong pubkey given)"
     elif [[ -f "$STAKED_KEYPAIR" ]]; then
         staked="$(_keys_pubkey "$STAKED_KEYPAIR")"
+        [[ -n "$staked" ]] || fail "Could not read a pubkey from the key at the real-key path ($STAKED_KEYPAIR). Fix that file, or move it off that path, then run again."
         [[ "$staked" == "$sync" ]] && fail "Real staked key equals the sync identity — defeats the throwaway-sync design (wrong key in place)"
-        [[ -n "$staked" ]] && state_set staked_pubkey "$staked"    # derived here anyway; verify reads it
+        state_set staked_pubkey "$staked"    # derived here anyway; verify reads it
         warn "A key already exists at the real-key path ($STAKED_KEYPAIR) — DeePloy left it untouched"
     fi
     [[ -n "${staked:-}" ]] && keys_check_vote_identity "$staked"

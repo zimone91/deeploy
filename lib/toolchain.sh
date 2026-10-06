@@ -299,7 +299,7 @@ toolchain_install_release() {
 }
 
 toolchain_setcap() {
-    local bin="${1:-$(readlink -f "$ACTIVE_RELEASE/bin/agave-validator" 2>/dev/null)}"
+    local bin="${1:-$(readlink -f "$ACTIVE_RELEASE/bin/agave-validator" 2>/dev/null || true)}"
     [[ -n "$bin" ]] || { warn "agave-validator not found for setcap"; return 0; }
     step "setcap (${TOOLCHAIN_CAPS})"
     run setcap "${TOOLCHAIN_CAPS}=p" "$bin"

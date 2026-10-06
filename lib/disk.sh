@@ -471,7 +471,7 @@ _disk_resolve() {
 # Taking each device FROM the mount point it is actually mounted at cannot
 # produce that, because the answer comes from the kernel rather than a prompt.
 _disk_mount_source() { findmnt -no SOURCE "$1" 2>/dev/null || true; }   # empty = not mounted; 0 always, for $( )
-_disk_mount_fstype() { findmnt -no FSTYPE "$1" 2>/dev/null; }
+_disk_mount_fstype() { findmnt -no FSTYPE "$1" 2>/dev/null || true; }   # empty = not mounted; 0 always, for $( )
 _disk_is_mounted()   { [[ -n "$(findmnt -no TARGET "$1" 2>/dev/null || true)" ]]; }   # its $( ) answers 0 too: rc 1 there woke the ERR trap (bash 3.2)
 
 # Whole NVMe disk, not a partition, not a mapper device, not a bind mount. A

@@ -322,6 +322,13 @@ echo "== setcap: exactly the 5 caps =="
 : >"$CALLS"
 toolchain_setcap "/x/agave-validator" >/dev/null 2>&1
 check "5-cap setcap" "$(grep -c 'setcap cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon,cap_sys_nice=p /x/agave-validator' "$CALLS")" "1"
+# PROBE-RC-ZERO: no active_release yet (a dry-run on a fresh box), so readlink -f
+# fails inside the default of $1. Under the production traps the WARN comes out
+# alone, with no stray "[FAIL] line N".
+: >"$CALLS"
+OUT=$( ( set -Eeuo pipefail; deeploy_init_traps; trap - EXIT; ACTIVE_RELEASE="$WORK/no-release" toolchain_setcap ) 2>&1 ); RC=$?
+check "PROBE-RC-ZERO: no active_release, under the production traps -> the WARN alone" \
+      "$RC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$OUT")|$(grep -c 'agave-validator not found for setcap' <<<"$OUT")|$(grep -c setcap "$CALLS")" "0|0|1|0"
 
 echo "== install_release keeps previous release (rollback) =="
 mkdir -p "$RELEASES_DIR/v3.1.13-jito/bin"; touch "$RELEASES_DIR/v3.1.13-jito/bin/agave-validator"
