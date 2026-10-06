@@ -344,6 +344,12 @@ check "good keys applied (rmem_max)"        "$(grep -c 'net.core.rmem_max=134217
 check "multi-value key kept whole (tcp_rmem)" "$(grep -c 'net.ipv4.tcp_rmem=10240 87380 12582912' "$SYSCTL_LOG")" "1"
 check "missing-subtree key NOT applied"     "$(grep -c 'fs.xfs' "$SYSCTL_LOG")" "0"
 check "missing key produces a WARN naming it" "$(grep -c "fs.xfs.xfssyncd_centisecs' not accepted" <<<"$APPLY_OUT")" "1"
+# A dry-run's write_file does not write the file: no file is the plan, not a
+# fault. A real run without the file still warns.
+SDRY=$(DRY_RUN=1 apply_sysctl_file "$WORK/never-written.conf" 2>&1)
+check "dry-run, file never written: would-apply, no WARN" "$(grep -c 'would apply sysctl keys from' <<<"$SDRY")|$(grep -c 'WARN' <<<"$SDRY")" "1|0"
+SREAL=$(apply_sysctl_file "$WORK/never-written.conf" 2>&1)
+check "real run, no file: still warns"      "$(grep -c 'sysctl file not found' <<<"$SREAL")" "1"
 unset -f sysctl
 
 echo "== phase_begin / phase_end =="

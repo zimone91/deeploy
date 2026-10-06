@@ -408,8 +408,10 @@ run_redacted() {
 # still takes effect; the function always returns 0. Honors --dry-run.
 apply_sysctl_file() {
     local file=$1 line="" key value skipped=0
-    [[ -f "$file" ]] || { warn "sysctl file not found: $file"; return 0; }
+    # Dry-run first: a dry-run's write_file does not write the file, so on a
+    # fresh box it is not there, and that is not a fault (DRYRUN-SYSCTL-WARN).
     if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would apply sysctl keys from $file (tolerant)"; return 0; fi
+    [[ -f "$file" ]] || { warn "sysctl file not found: $file"; return 0; }
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"                                  # drop comments
         [[ "$line" =~ [^[:space:]] ]] || continue            # skip blank lines

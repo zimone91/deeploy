@@ -184,6 +184,8 @@ check "dry-run: XDP planned from phase 0's NIC facts"  "$(grep -cF 'XDP cores=2,
 check "dry-run: DoubleZero rules planned (GRE, 44880)" "$(grep -cF '[dry-run] ufw allow proto gre from any to any' <<<"$DOUT")|$(grep -cF '[dry-run] ufw allow in on doublezero0 to any port 44880 proto udp' <<<"$DOUT")" "1|1"
 check "dry-run: ufw limits the confirmed SSH port"     "$(grep -cF '[dry-run] ufw limit 2222/tcp' <<<"$DOUT")|$(grep -cF 'ufw limit 22/tcp' <<<"$DOUT")" "1|0"
 check "dry-run: phase 6 renders (no MEV refusal)"      "$(grep -cF "[dry-run] would update $VALIDATOR_SH" <<<"$DOUT")|$(grep -cF 'MEV endpoints unset' <<<"$DOUT")" "1|0"
+check "dry-run: phase 2's sysctl file planned, not missing" "$(grep -cF "[dry-run] would apply sysctl keys from $SYSCTL_FILE (tolerant)" <<<"$DOUT")|$(grep -cF "sysctl file not found: $SYSCTL_FILE" <<<"$DOUT")" "1|0"
+check "dry-run: phase 3's XFS sysctl file planned, not missing" "$(grep -cF "[dry-run] would apply sysctl keys from $XFS_SYSCTL_FILE (tolerant)" <<<"$DOUT")|$(grep -cF "sysctl file not found: $XFS_SYSCTL_FILE" <<<"$DOUT")" "1|0"
 check "dry-run: reaches the reboot gate"               "$(grep -cF '[dry-run] systemctl reboot' <<<"$DOUT")" "1"
 check "dry-run: no phase 8"                            "$(grep -cF '━━━ Phase 8' <<<"$DOUT")" "0"
 check "dry-run: the real state dir was never made"     "$([[ -e "$WORK/fresh" ]] && echo made || echo absent)" "absent"
