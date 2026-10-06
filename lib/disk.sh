@@ -426,7 +426,7 @@ _disk_resolve() {
 # fixture: /mnt/accounts -> the ledger UUID and /mnt/ledger -> the accounts UUID.
 # Taking each device FROM the mount point it is actually mounted at cannot
 # produce that, because the answer comes from the kernel rather than a prompt.
-_disk_mount_source() { findmnt -no SOURCE "$1" 2>/dev/null; }
+_disk_mount_source() { findmnt -no SOURCE "$1" 2>/dev/null || true; }   # empty = not mounted; 0 always, for $( )
 _disk_mount_fstype() { findmnt -no FSTYPE "$1" 2>/dev/null; }
 _disk_is_mounted()   { [[ -n "$(findmnt -no TARGET "$1" 2>/dev/null)" ]]; }
 
@@ -520,15 +520,46 @@ _disk_assert_not_mounted() {
     return 0
 }
 
+# The data directories are created, and their paths recorded, only on the
+# filesystem they were laid out on. 'mount -a' is silent about a point it did not
+# mount: with an empty UUID no fstab line was written at all, and nofail skips a
+# device that is not there. The point is then a plain directory on the root
+# filesystem, the mkdir after it puts the data directories there, and the paths
+# are recorded. agave creates whatever is missing itself
+# (validator/src/commands/run/args.rs 79-85 at c21f9074), so the validator would
+# write its ledger to the system disk without a word. Hence: an empty UUID
+# refuses, and after 'mount -a' each point is asked on its own which device it is
+# mounted from — findmnt given two mount points prints nothing at all.
+_disk_require_uuid() {                            # <device> <uuid> <mountpoint>
+    [[ -n "$2" ]] && return 0
+    if is_dry_run; then
+        info "${C_DIM}[dry-run]${C_NC} ${1} has no filesystem UUID yet (mkfs.xfs did not run); a real run refuses here if blkid still finds none"
+        return 0
+    fi
+    fail "Refusing: blkid reports no filesystem UUID on ${1}, so no fstab line can be written for ${3}, and ${3} would stay a directory on the root filesystem. Nothing was created under it. Check ${1} with blkid, then run again."
+}
+_disk_require_mounted_from() {                    # <mountpoint> <device>, after 'mount -a'
+    local mp=$1 dev=$2 src
+    if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would check that ${mp} is mounted from ${dev}"; return 0; fi
+    src=$(_disk_mount_source "$mp")
+    [[ -n "$src" ]] || fail "Refusing: ${mp} is not mounted after 'mount -a', so the data directories would be created on the root filesystem. Nothing was created under it. Check the ${mp} line in ${FSTAB_FILE} and ${dev}, then run again."
+    [[ "$src" == "$dev" ]] || fail "Refusing: ${mp} is mounted from ${src}, not from ${dev}. Nothing was created under it. Unmount ${mp} if ${dev} is the intended device, then run again."
+    return 0
+}
+
 _disk_finalize_two_nvme() {
     run mkdir -p "$LEDGER_MOUNT" "$ACCOUNTS_MOUNT"
     local uuid_l uuid_a
     uuid_l=$(blkid -s UUID -o value "$LEDGER_DISK" 2>/dev/null || true)
     uuid_a=$(blkid -s UUID -o value "$ACCOUNTS_DISK" 2>/dev/null || true)
+    _disk_require_uuid "$LEDGER_DISK"   "$uuid_l" "$LEDGER_MOUNT"
+    _disk_require_uuid "$ACCOUNTS_DISK" "$uuid_a" "$ACCOUNTS_MOUNT"
     backup_file "$FSTAB_FILE"
     [[ -n "$uuid_l" ]] && _fstab_ensure "$uuid_l" "$LEDGER_MOUNT"
     [[ -n "$uuid_a" ]] && _fstab_ensure "$uuid_a" "$ACCOUNTS_MOUNT"
     run mount -a
+    _disk_require_mounted_from "$LEDGER_MOUNT"   "$LEDGER_DISK"
+    _disk_require_mounted_from "$ACCOUNTS_MOUNT" "$ACCOUNTS_DISK"
     run mkdir -p "$LEDGER_MOUNT/solana" "$ACCOUNTS_MOUNT/solana"
     _disk_symlink_home "$LEDGER_MOUNT/solana" "$SOLANA_LINK"
     _disk_record_paths "$SOLANA_LINK" "$ACCOUNTS_MOUNT/solana/accounts"
@@ -550,10 +581,18 @@ _disk_raid_volume() {
     ok "RAID single-volume layout prepared at ${home}"
 }
 _disk_mount_data_array() {                        # <md-device> <mount> — ensure a data array is mounted
-    local dev=$1 mount=$2 uuid
-    if mountpoint -q "$mount" 2>/dev/null; then ok "${dev} already mounted at ${mount}"; return 0; fi
+    local dev=$1 mount=$2 uuid src
+    # Already mounted counts only when it is this array: anything else under
+    # ${mount}, a bind of a directory on / included, would take the ledger.
+    src=$(_disk_mount_source "$mount")
+    if [[ -n "$src" ]]; then
+        [[ "$src" == "$dev" ]] || fail "Refusing: ${mount} is already mounted from ${src}, not from ${dev}, so the ledger and accounts would go there. Unmount ${mount} if ${dev} is the intended volume, then run again."
+        ok "${dev} already mounted at ${mount}"; return 0
+    fi
+    # Mounted elsewhere, the array leaves ${mount} a directory on the root
+    # filesystem. This used to warn and carry on into the mkdir under it.
     if _disk_mounted_anywhere "$dev"; then
-        warn "${dev} is mounted elsewhere — mount it at ${mount} manually, then re-run"; return 0
+        fail "Refusing: ${dev} is mounted at $(_disk_mountpoints "$dev" | tr '\n' ' ')— not at ${mount}, so the data directories would be created on the root filesystem. Mount it at ${mount} yourself, then run again."
     fi
     _disk_wipe_report "$dev"
     require_yes "Format ${dev} (the RAID volume) as XFS and mount at ${mount}? Data on it will be lost." \
@@ -561,9 +600,11 @@ _disk_mount_data_array() {                        # <md-device> <mount> — ensu
     run mkdir -p "$mount"
     run mkfs.xfs -f "$dev"
     uuid=$(blkid -s UUID -o value "$dev" 2>/dev/null || true)
+    _disk_require_uuid "$dev" "$uuid" "$mount"
     backup_file "$FSTAB_FILE"
     [[ -n "$uuid" ]] && _fstab_ensure "$uuid" "$mount"
     run mount -a
+    _disk_require_mounted_from "$mount" "$dev"
 }
 
 # --- emergency (single system disk; LOUD warning) ---------------------------

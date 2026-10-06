@@ -101,7 +101,16 @@ findmnt() {
                    esac ;;
             esac ;;
         *"-no FSTYPE"*) : ;;
-        *) echo "/dev/sda2" ;;                          # SOURCE of / — the root backstop
+        *"-no SOURCE"*)
+            case "$last" in
+                # After 'mount -a': the disk that fstab names for the point
+                # (UUID-<disk>, from blkid below). Before it, nothing.
+                "$ACCOUNTS_MOUNT"|"$LEDGER_MOUNT")
+                    grep -q '^mount -a' "$CALLS" || return 1
+                    awk -v m="$last" '$2 == m {d = $1; sub(/^UUID=UUID-/, "/dev/", d); print d; f = 1} END {exit !f}' "$FSTAB_FILE" ;;
+                *) echo "/dev/sda2" ;;                  # SOURCE of / — the root backstop
+            esac ;;
+        *) echo "/dev/sda2" ;;
     esac
 }
 blkid()       { local d=${!#}; echo "UUID-${d##*/}"; }

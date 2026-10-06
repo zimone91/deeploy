@@ -43,7 +43,22 @@ blkid()      { local d=${!#}; echo "U-${d##*/}"; }
 sysctl()     { echo "sysctl $*" >>"$CALLS"; return 0; }          # XFS tuning apply (Phase 3)
 blkdiscard() { echo "blkdiscard $*" >>"$CALLS"; }
 mkfs.xfs()   { echo "mkfs.xfs $*"   >>"$CALLS"; }
-mount()      { echo "mount $*"      >>"$CALLS"; }
+# 'mount -a' mounts what fstab names, by the UUID blkid gave (U-<disk> ->
+# /dev/<disk>), into a table findmnt reads back for the sandbox mount points. A
+# line it cannot map, or a point in MOUNT_SKIP (nofail and no such device), stays
+# a plain directory; MOUNT_ALT="<point>=<device>" mounts a point from elsewhere.
+MTAB="$WORK/mtab"; : >"$MTAB"
+MOUNT_SKIP=""; MOUNT_ALT=""
+mount() {
+    echo "mount $*" >>"$CALLS"
+    [[ "$*" == "-a" ]] || return 0
+    awk '$1 ~ /^UUID=U-/ {d = $1; sub(/^UUID=U-/, "/dev/", d); print $2, d}' "$FSTAB_FILE" |
+        while read -r mp d; do
+            [[ "$mp" == "$MOUNT_SKIP" ]] && continue
+            [[ "$MOUNT_ALT" == "$mp="* ]] && d=${MOUNT_ALT#*=}
+            printf '%s %s\n' "$mp" "$d"
+        done >"$MTAB"
+}
 swapoff()    { echo "swapoff $*"    >>"$CALLS"; }
 umount()     { echo "umount $*"     >>"$CALLS"; }
 systemctl()  { echo "systemctl $*"  >>"$CALLS"; }
@@ -78,8 +93,10 @@ CK_MOUNT="/"                # `findmnt -no TARGET --target $DEEPLOY_DIR`; "" = u
 # cannot answer the wrong question by accident, same as the two above.
 ADOPT_A_SRC=""; ADOPT_L_SRC=""       # "" = that mount point is not mounted
 ADOPT_A_FS="xfs"; ADOPT_L_FS="xfs"
+FM_CALLS="$WORK/findmnt.calls"; : >"$FM_CALLS"
 findmnt() {
     local last=${!#}
+    echo "findmnt $*" >>"$FM_CALLS"
     case "$*" in
         *--target*)     [[ -n "$CK_MOUNT" ]] && printf '%s\n' "$CK_MOUNT" ;;
         *"-no TARGET"*) case "$last" in
@@ -90,6 +107,7 @@ findmnt() {
                         case "$last" in
                             /mnt/accounts) printf '%s\n' "$ADOPT_A_SRC" ;;
                             /mnt/ledger)   printf '%s\n' "$ADOPT_L_SRC" ;;
+                            "$WORK"/*)     awk -v m="$last" '$1 == m {print $2; f = 1} END {exit !f}' "$MTAB" ;;
                             *)             printf '%s\n' "$FINDMNT_SRC" ;;
                         esac ;;
         *"-no FSTYPE"*) case "$last" in
@@ -326,11 +344,12 @@ check "7b: mkfs argv = the md device"         "$(grep -c 'mkfs.xfs -f /dev/md1' 
 check "7b: mount -a issued"                   "$(grep -c 'mount -a' "$CALLS")" "1"
 check "7b: fstab entry for the data mount"    "$(grep -c "UUID=U-md1 $WORK/data7b xfs " "$FSTAB_FILE")" "1"
 check_true "7b: home dirs prepared"           "[[ -d \"$WORK/data7b/solana/ledger\" && -d \"$WORK/data7b/solana/accounts\" ]]"
-# array mounted somewhere ELSE -> warn + no wipe (manual resolution)
+# array mounted somewhere ELSE -> refused, no wipe (manual resolution). It used to
+# warn and carry on into the mkdir under the unmounted data mount (R10-7a).
 _mp_for() { case "$1" in */md1) printf '/somewhere\n';; *) printf '';; esac; }
-: >"$CALLS"
-OUT7B=$( SOLANA_HOME="$WORK/data7b/solana" _disk_raid_volume 2>&1 )
-check "7b: mounted-elsewhere -> warns"        "$(grep -c 'mounted elsewhere' <<<"$OUT7B")" "1"
+: >"$CALLS"; : >"$MTAB"
+OUT7B=$( SOLANA_HOME="$WORK/data7b/solana" _disk_raid_volume 2>&1 ); RC7B=$?
+check "7b: mounted-elsewhere -> refused"      "$RC7B|$(grep -c 'is mounted at /somewhere — not at' <<<"$OUT7B")" "1|1"
 check "7b: mounted-elsewhere -> NO mkfs"      "$(grep -c 'mkfs.xfs' "$CALLS")" "0"
 
 echo "== 7c: the disk holding THIS checkout is never a wipe target =="
@@ -535,6 +554,105 @@ state_clear disk_layout 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/disk_la
 EOUT=$( _disk_resolve 2>&1 ); ERC=$?
 check "control: a first install still gets emergency" "$ERC" "0"
 check "  and says so"                                 "$(grep -c 'No eligible NVMe' <<<"$EOUT")" "1"
+
+echo "== R10-7a: data directories are created only on the mounted data filesystems =="
+# An empty UUID from blkid wrote no fstab line, 'mount -a' left the point a plain
+# directory on /, and the data directories and their recorded paths went to the
+# root filesystem, where agave would put its ledger. Now an empty UUID refuses,
+# and each point must be mounted from its own device before anything is created
+# under it. The same holds for a data RAID volume.
+blkid() { local d=${!#}; [[ "$d" == "$BLKID_EMPTY" ]] && return 2; echo "U-${d##*/}"; }
+require_yes() { return 0; }
+r7a_reset() {
+    LEDGER_MOUNT="$WORK/r7a/ledger"; ACCOUNTS_MOUNT="$WORK/r7a/accounts"
+    ACCOUNTS_DISK=/dev/nvme0n1; LEDGER_DISK=/dev/nvme1n1
+    _DISK_RAID_MD=md1; _DISK_RAID_MOUNT="$WORK/r7a/data"; SOLANA_HOME="$WORK/r7a/data/solana"
+    _mp_for() { printf ''; }
+    BLKID_EMPTY=""; MOUNT_SKIP=""; MOUNT_ALT=""; MP_A=""; MP_L=""
+    rm -rf "$WORK/r7a"; mkdir -p "$WORK/r7a"
+    : >"$FSTAB_FILE"; : >"$MTAB"; : >"$CALLS"; : >"$FM_CALLS"
+    state_set ledger_path untouched; state_set accounts_path untouched
+}
+# What a refusal leaves: nothing below the mount points, and no recorded paths.
+r7a_nothing() {
+    printf '%s|%s|%s' "$(find "$WORK/r7a" -mindepth 2 2>/dev/null | wc -l | tr -d ' ')" \
+        "$(state_get ledger_path)" "$(state_get accounts_path)"
+}
+
+r7a_reset; BLKID_EMPTY=/dev/nvme1n1
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: no UUID on the ledger disk -> refused"             "$RC|$(grep -c "no filesystem UUID on /dev/nvme1n1, so no fstab line can be written for $LEDGER_MOUNT," <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [ledger, no UUID]" "$(r7a_nothing)" "0|untouched|untouched"
+check "  and no fstab line written, no mount -a"                  "$(wc -l <"$FSTAB_FILE" | tr -d ' ')|$(grep -c 'mount -a' "$CALLS")" "0|0"
+r7a_reset; BLKID_EMPTY=/dev/nvme0n1
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: no UUID on the accounts disk -> refused"           "$RC|$(grep -c "no filesystem UUID on /dev/nvme0n1, so no fstab line can be written for $ACCOUNTS_MOUNT," <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [accounts, no UUID]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset; MOUNT_SKIP="$LEDGER_MOUNT"
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: mount -a left the ledger point unmounted -> refused"   "$RC|$(grep -c "$LEDGER_MOUNT is not mounted after 'mount -a'" <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [ledger unmounted]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset; MOUNT_SKIP="$ACCOUNTS_MOUNT"
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: mount -a left the accounts point unmounted -> refused" "$RC|$(grep -c "$ACCOUNTS_MOUNT is not mounted after 'mount -a'" <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [accounts unmounted]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset; MOUNT_ALT="$LEDGER_MOUNT=/dev/sdz"
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: ledger point mounted from another device -> refused"   "$RC|$(grep -c "$LEDGER_MOUNT is mounted from /dev/sdz, not from /dev/nvme1n1" <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [ledger elsewhere]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset; MOUNT_ALT="$LEDGER_MOUNT=/dev/nvme1n1p1"
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: ledger point mounted from a partition of its disk -> refused" "$RC|$(grep -c "$LEDGER_MOUNT is mounted from /dev/nvme1n1p1, not from /dev/nvme1n1\." <<<"$OUT")" "1|1"
+r7a_reset; MOUNT_ALT="$ACCOUNTS_MOUNT=/dev/sdz"
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: accounts point mounted from another device -> refused" "$RC|$(grep -c "$ACCOUNTS_MOUNT is mounted from /dev/sdz, not from /dev/nvme0n1" <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [accounts elsewhere]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset
+OUT=$( _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: control: both mounted from their own disks -> done"    "$RC" "0"
+check "  and the data directories are on them, the paths recorded"    "$([[ -d $LEDGER_MOUNT/solana && -d $ACCOUNTS_MOUNT/solana ]] && echo y)|$(state_get accounts_path)" "y|$ACCOUNTS_MOUNT/solana/accounts"
+check "  and findmnt was asked about one mount point per call"        "$(grep -c -- '-no SOURCE' "$FM_CALLS")|$(awk '/-no SOURCE/ && NF != 4' "$FM_CALLS" | wc -l | tr -d ' ')" "2|0"
+# A dry-run never ran mkfs, so blkid may have nothing yet: it says what the real
+# run checks instead of refusing, and plans no fstab line without a UUID.
+r7a_reset; BLKID_EMPTY=/dev/nvme1n1
+OUT=$( DRY_RUN=1 _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: dry-run with no UUID yet -> carries on"            "$RC" "0"
+check "  and says what the real run checks"                       "$(grep -c '/dev/nvme1n1 has no filesystem UUID yet' <<<"$OUT")|$(grep -c "would check that $LEDGER_MOUNT is mounted from /dev/nvme1n1" <<<"$OUT")|$(grep -c "would check that $ACCOUNTS_MOUNT is mounted from /dev/nvme0n1" <<<"$OUT")" "1|1|1"
+check "  and plans the fstab line for the accounts disk only"     "$(grep -c "would update $FSTAB_FILE" <<<"$OUT")" "1"
+# The probe sits inside an assignment, where a non-zero status wakes DeePloy's
+# ERR trap; the refusal must come out alone, with no stray "[FAIL] line N".
+r7a_reset; MOUNT_SKIP="$LEDGER_MOUNT"
+OUT=$( set -Eeuo pipefail; deeploy_init_traps; _disk_finalize_two_nvme 2>&1 ); RC=$?
+check "R10-7a: under the production traps the refusal comes out alone" "$RC|$(grep -cE 'line [0-9]+:' <<<"$OUT")|$(grep -c 'is not mounted after' <<<"$OUT")" "1|0|1"
+
+# A data RAID volume (_disk_mount_data_array, through _disk_raid_volume).
+r7a_reset; BLKID_EMPTY=/dev/md1
+OUT=$( _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: data RAID, no UUID after mkfs -> refused"          "$RC|$(grep -c "no filesystem UUID on /dev/md1, so no fstab line can be written for $_DISK_RAID_MOUNT," <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [data RAID, no UUID]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset; MOUNT_SKIP="$_DISK_RAID_MOUNT"
+OUT=$( _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: data RAID not mounted after mount -a -> refused"   "$RC|$(grep -c "$_DISK_RAID_MOUNT is not mounted after 'mount -a'" <<<"$OUT")" "1|1"
+check "  and nothing created, no paths recorded [data RAID unmounted]" "$(r7a_nothing)" "0|untouched|untouched"
+r7a_reset; _mp_for() { case "$1" in */md1) printf '/srv/data\n';; *) printf '';; esac; }
+OUT=$( _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: data RAID mounted elsewhere -> refused"            "$RC|$(grep -c "/dev/md1 is mounted at /srv/data — not at $_DISK_RAID_MOUNT," <<<"$OUT")" "1|1"
+check "  and no mkfs, nothing created, no paths recorded [data RAID mounted elsewhere]" "$(grep -c mkfs.xfs "$CALLS")|$(r7a_nothing)" "0|0|untouched|untouched"
+r7a_reset; printf '%s /dev/sdz\n' "$_DISK_RAID_MOUNT" >"$MTAB"; MP_A="$_DISK_RAID_MOUNT"
+OUT=$( _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: data mount already taken by another device -> refused" "$RC|$(grep -c "$_DISK_RAID_MOUNT is already mounted from /dev/sdz, not from /dev/md1" <<<"$OUT")" "1|1"
+check "  and no mkfs, nothing created, no paths recorded [data mount taken]" "$(grep -c mkfs.xfs "$CALLS")|$(r7a_nothing)" "0|0|untouched|untouched"
+r7a_reset; printf '%s /dev/md1\n' "$_DISK_RAID_MOUNT" >"$MTAB"; MP_A="$_DISK_RAID_MOUNT"
+OUT=$( _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: control: data RAID already at its point -> used, no mkfs" "$RC|$(grep -c mkfs.xfs "$CALLS")|$(state_get accounts_path)" "0|0|$SOLANA_HOME/accounts"
+r7a_reset
+OUT=$( _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: control: data RAID formatted and mounted -> paths recorded" "$RC|$(grep -c mkfs.xfs "$CALLS")|$(state_get accounts_path)" "0|1|$SOLANA_HOME/accounts"
+# The first probe asks about a point that is not mounted yet: under the
+# production traps that must stay quiet too.
+r7a_reset
+OUT=$( set -Eeuo pipefail; deeploy_init_traps; _disk_raid_volume 2>&1 ); RC=$?
+check "R10-7a: data RAID under the production traps -> done, no stray [FAIL] line" "$RC|$(grep -cE 'line [0-9]+:' <<<"$OUT")" "0|0"
 
 echo ""
 echo "==================================="
