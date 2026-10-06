@@ -17,7 +17,8 @@ binary would build for 30-90 minutes and then refuse to start.
   share one volume, and DeePloy warns and recommends separate NVMe. When that
   volume is the system volume (a single disk, or a RAID0 array that also
   carries `/`), DeePloy asks first and you type `yes`. A box that was laid out
-  on data disks is not moved onto the system volume: the run refuses, and says
+  on data disks is not moved onto the system volume, and is not taken for a
+  fresh install when its data disks are not mounted: the run refuses, and says
   how to clear the record if the box really is being laid out again.
 
 The disk phase **detects** your disks, shows a table, proposes a mapping, and

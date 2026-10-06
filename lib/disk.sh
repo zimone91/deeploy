@@ -472,17 +472,46 @@ _disk_resolve() {
 # produce that, because the answer comes from the kernel rather than a prompt.
 _disk_mount_source() { findmnt -no SOURCE "$1" 2>/dev/null || true; }   # empty = not mounted; 0 always, for $( )
 _disk_mount_fstype() { findmnt -no FSTYPE "$1" 2>/dev/null; }
-_disk_is_mounted()   { [[ -n "$(findmnt -no TARGET "$1" 2>/dev/null)" ]]; }
+_disk_is_mounted()   { [[ -n "$(findmnt -no TARGET "$1" 2>/dev/null || true)" ]]; }   # its $( ) answers 0 too: rc 1 there woke the ERR trap (bash 3.2)
 
 # Whole NVMe disk, not a partition, not a mapper device, not a bind mount. A
 # bind mount's SOURCE carries a [subpath] and fails this by construction.
 _disk_is_whole_nvme() { [[ "${1##*/}" =~ ^nvme[0-9]+n[0-9]+$ ]]; }
 
+# Nothing mounted at either point reads as a first install: the disk menu, or the
+# break/use question for a data RAID, then the question to erase. On a box laid
+# out on data disks that reading is wrong. Its data filesystems are not mounted
+# because a disk is gone (removed, dead or replaced: fstab names each by UUID,
+# and that UUID is not found), because a filesystem does not mount (nofail lets
+# the boot go on past both), or because someone unmounted them. A disk that is
+# still there still holds the ledger or the accounts, and it passes every filter
+# of the menu: it is an NVMe above the size floor, and nothing on it is mounted.
+# So the record answers first, before any question: laid out, and its mount
+# points not mounted, refuses. Called where neither ACCOUNTS_MOUNT nor
+# LEDGER_MOUNT is mounted. A layout this version does not know refuses too: there
+# is no telling what it needs mounted.
+_disk_first_install_gate() {
+    local prev what fix=""; prev=$(_disk_laid_out)
+    case "$prev" in
+        "")          return 0 ;;
+        two-nvme)    what="neither ${ACCOUNTS_MOUNT} nor ${LEDGER_MOUNT} is mounted"
+                     fix="Mount them (their lines are in ${FSTAB_FILE}), then run again." ;;
+        raid-volume) _disk_is_mounted "$DATA_MOUNT" && return 0
+                     what="${DATA_MOUNT} is not mounted"
+                     fix="Mount it (its line is in ${FSTAB_FILE}), then run again." ;;
+        *)           what="this version does not know that layout, so it cannot tell what should be mounted" ;;
+    esac
+    fail "Refusing: this box was laid out on data disks (${prev}), and ${what}. Run as a first install, this phase would offer disks for erasing, and they can be the ones that hold this box's ledger and accounts. ${fix:+$fix }If this box really is being laid out again, clear the record first: echo none > $(_state_file data_layout)"
+}
+
 _disk_adopt_existing_layout() {                   # 0 = adopted (caller returns), 1 = not a re-run
     have findmnt || fail "Refusing: findmnt is not installed, so whether ${ACCOUNTS_MOUNT} and ${LEDGER_MOUNT} are already mounted cannot be answered. This phase erases disks; it will not guess."
     local a_m l_m; a_m=$(_disk_is_mounted "$ACCOUNTS_MOUNT" && echo y || echo n)
     l_m=$(_disk_is_mounted "$LEDGER_MOUNT" && echo y || echo n)
-    [[ "$a_m" == "n" && "$l_m" == "n" ]] && return 1        # nothing mounted: a first install
+    if [[ "$a_m" == "n" && "$l_m" == "n" ]]; then
+        _disk_first_install_gate                    # unless this box was laid out on data disks
+        return 1                                    # nothing mounted: a first install
+    fi
 
     # Half a layout is not a layout. Refusing here rather than falling through:
     # the fall-through is what put a working box into the emergency layout.

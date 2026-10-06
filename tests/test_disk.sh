@@ -90,7 +90,9 @@ FINDMNT_SRC=""              # `findmnt -no SOURCE /`
 CK_MOUNT="/"                # `findmnt -no TARGET --target $DEEPLOY_DIR`; "" = unresolvable
 # Adoption asks three more questions, each about ONE mount point: is it mounted,
 # what device is under it, and what filesystem. Driven by knobs so a scenario
-# cannot answer the wrong question by accident, same as the two above.
+# cannot answer the wrong question by accident, same as the two above. Whether
+# DATA_MOUNT is mounted is read from the table 'mount -a' writes, as its device
+# is; like findmnt, the answer for a point that is not there is rc 1.
 ADOPT_A_SRC=""; ADOPT_L_SRC=""       # "" = that mount point is not mounted
 ADOPT_A_FS="xfs"; ADOPT_L_FS="xfs"
 FM_CALLS="$WORK/findmnt.calls"; : >"$FM_CALLS"
@@ -102,6 +104,7 @@ findmnt() {
         *"-no TARGET"*) case "$last" in
                             /mnt/accounts) [[ -n "$ADOPT_A_SRC" ]] && printf '%s\n' "$last" ;;
                             /mnt/ledger)   [[ -n "$ADOPT_L_SRC" ]] && printf '%s\n' "$last" ;;
+                            "$DATA_MOUNT") awk -v m="$last" '$1 == m {print m; f = 1} END {exit !f}' "$MTAB" ;;
                         esac ;;
         *"-no SOURCE "*|*"-no SOURCE"*)
                         case "$last" in
@@ -300,6 +303,9 @@ ask_choice() { REPLY="$2"; }                 # non-interactive: take the numbere
 require_yes() { return 0; }
 blkid() { return 1; }                        # dry-run reality: NVMe not yet formatted -> blkid finds no UUID
 printf 'Personalities : [raid1]\nmd0 : active raid1 sda2[0] sdb2[1]\n      467370048 blocks super 1.2 [2/2] [UU]\n      bitmap: 0/4 pages [0KB], 65536KB chunk\n\nunused devices: <none>\n' >"$PROC_MDSTAT"
+# The plan below is a first install: the Q2 case above leaves data_layout=two-nvme,
+# and a box with that record and nothing mounted is refused (R10-7c).
+state_clear data_layout
 _disk_scan_raid; check "_disk_scan_raid returns 0 (not while-read EOF 1)" "$?" "0"
 _disk_classify;  check "_disk_classify returns 0"                         "$?" "0"
 ( set -Eeuo pipefail; unset ACCOUNTS_DISK LEDGER_DISK; DRY_RUN=1 disk_run ) >/dev/null 2>&1
@@ -532,10 +538,13 @@ check "both on the same device -> refused"        "$ARC" "1"
 check "  and it says they must differ"            "$(grep -c 'must be different physical disks' <<<"$AOUT")" "1"
 
 # Control the other way: a clean first install must be untouched by any of this.
-adopt_reset
-_disk_adopt_existing_layout >/dev/null 2>&1
-check "nothing mounted -> not a re-run, carry on" "$?" "1"
-check "  and it set no layout"                    "${DISK_LAYOUT:-unset}" "unset"
+# A first install has no record of a data layout, and the cases above leave
+# data_layout=two-nvme. In a subshell: since R10-7c this path can refuse, and a
+# refusal must fail these checks, not end the file.
+adopt_reset; state_clear data_layout
+R9=$( _disk_adopt_existing_layout >/dev/null 2>&1; echo "$?|${DISK_LAYOUT:-unset}" )
+check "nothing mounted -> not a re-run, carry on" "${R9%%|*}" "1"
+check "  and it set no layout"                    "${R9#*|}" "unset"
 
 echo "== 10 (R10-7b): the system volume takes the ledger only after a typed yes, and never on a box laid out on data disks =="
 # Both paths onto the system volume — the emergency layout, and a RAID0 array
@@ -748,6 +757,79 @@ check "  the array that carries / records nothing"                  "$(state_get
 r7a_reset; state_clear data_layout
 ( SOLANA_HOME="$WORK/r7a/emerg" _disk_emergency_layout ) >/dev/null 2>&1
 check "  the emergency layout records nothing"                      "$(state_get data_layout '<none>')|$(state_get accounts_path)" "<none>|$WORK/r7a/emerg/accounts"
+
+echo "== R10-7c: laid out on data disks, nothing mounted: not a first install =="
+# Nothing mounted at the data points read as a first install: the disk menu, or
+# the break/use question for a data RAID, then the question to erase. On a box
+# laid out on data disks whose data did not mount, the disks offered can be the
+# ones that hold its ledger. Now the record answers first. Each question is
+# recorded here; the erase is declined, so a run that gets that far changes no
+# disk, but it has already recorded disk_layout and the disks.
+adopt_reset
+LSBLK_ENUM='sda 256060514304 disk 0 BootSSD
+nvme0n1 2000398934016 disk 0 SamsungA
+nvme1n1 2000398934016 disk 0 SamsungB'
+_mp_for() { case "$1" in */sda) printf '/\n';; *) printf '';; esac; }
+FINDMNT_SRC=/dev/sda2; CK_MOUNT="/"
+export PROC_MDSTAT="$WORK/md_r7c" SWAPFILE="$WORK/no-swapfile"
+ask_choice()  { echo "ASKED $1" >>"$CALLS"; REPLY=${R7C_PICK:-$2}; }
+require_yes() { echo "ASKED $1" >>"$CALLS"; return 1; }
+R7C_MD1='Personalities : [raid0]\nmd1 : active raid0 nvme0n1[0] nvme1n1[1]\n      blocks super 1.2\n'
+r7c_reset() {
+    adopt_reset; R7C_PICK=""; : >"$MTAB"; : >"$PROC_MDSTAT"; unset SOLANA_HOME
+    local k; for k in data_layout disk_layout accounts_disk ledger_disk phase-3 accounts_path; do state_clear "$k"; done
+}
+# questions asked | swapoff, erase or mdadm run | disk_layout recorded
+r7c_left() {
+    printf '%s|%s|%s' "$(grep -c '^ASKED' "$CALLS")" "$(grep -cE '^(swapoff|blkdiscard|mkfs\.xfs|mdadm)' "$CALLS")" \
+        "$(state_get disk_layout '<none>')"
+}
+
+r7c_reset; state_set data_layout two-nvme
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: laid out as two-nvme, neither point mounted -> refused" "$RC|$(grep -c 'laid out on data disks (two-nvme), and neither /mnt/accounts nor /mnt/ledger is mounted' <<<"$OUT")|$(grep -c "Mount them (their lines are in $FSTAB_FILE), then run again." <<<"$OUT")" "1|1|1"
+check "  before any question: nothing asked, run or recorded [two-nvme]" "$(r7c_left)" "0|0|<none>"
+check "  and it names the action that clears the record [two-nvme]"   "$(grep -c "echo none > $DEEPLOY_STATE_DIR/state.d/data_layout" <<<"$OUT")" "1"
+# A box laid out by rc9 or older: no data_layout, the record is phase 3 and the path.
+r7c_reset; state_set phase-3 x; state_set accounts_path /mnt/accounts/solana/accounts
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: rc9 box, accounts under /mnt/accounts, nothing mounted -> refused as two-nvme" "$RC|$(grep -c 'laid out on data disks (two-nvme)' <<<"$OUT")|$(r7c_left)" "1|1|0|0|<none>"
+# A data RAID volume whose mount is missing: the array is still assembled, so a
+# first install would ask break/use, and both answers erase it.
+r7c_reset; state_set data_layout raid-volume; printf '%b' "$R7C_MD1" >"$PROC_MDSTAT"
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: laid out as raid-volume, the data mount not mounted -> refused" "$RC|$(grep -c "laid out on data disks (raid-volume), and $DATA_MOUNT is not mounted" <<<"$OUT")|$(grep -c "Mount it (its line is in $FSTAB_FILE), then run again." <<<"$OUT")" "1|1|1"
+check "  before the break/use question: nothing asked, run or recorded [raid-volume]" "$(r7c_left)" "0|0|<none>"
+# Control: mounted from its array, the volume is used again and nothing is erased.
+r7c_reset; state_set data_layout raid-volume; printf '%b' "$R7C_MD1" >"$PROC_MDSTAT"
+printf '%s /dev/md1\n' "$DATA_MOUNT" >"$MTAB"; R7C_PICK=use
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: control: raid-volume with its data mounted -> goes on, used, nothing erased" "$RC|$(grep -c 'laid out on data disks' <<<"$OUT")|$(grep -cE '^(blkdiscard|mkfs\.xfs)' "$CALLS")|$(state_get accounts_path)" "0|0|0|$DATA_MOUNT/solana/accounts"
+# Control: "none" clears the record, the rc9 fallback included -> a first install.
+r7c_reset; state_set phase-3 x; state_set accounts_path /mnt/accounts/solana/accounts; state_set data_layout none
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: control: record cleared (none) -> the menu, then the erase question" "$(grep -c '^ASKED Select ACCOUNTS disk' "$CALLS")|$(grep -c '^ASKED PERMANENTLY ERASE' "$CALLS")|$(grep -c 'laid out on data disks' <<<"$OUT")" "1|1|0"
+# Control: a declined erase is no layout. disk_layout is recorded before the
+# question (the false refusal R10-7b removed), and the run after it is a first
+# install again: the menu and the erase question come back, and nothing refuses.
+r7c_reset
+( disk_run ) >/dev/null 2>&1
+R7C_PRE="$(state_get disk_layout '<none>')|$(state_get data_layout '<none>')"; : >"$CALLS"
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: control: erase declined, then run again -> a first install again" "$R7C_PRE|$(grep -c '^ASKED Select ACCOUNTS disk' "$CALLS")|$(grep -c '^ASKED PERMANENTLY ERASE' "$CALLS")|$(grep -c 'laid out on data disks' <<<"$OUT")" "two-nvme|<none>|1|1|0"
+r7c_reset; state_set data_layout three-nvme
+OUT=$( disk_run 2>&1 ); RC=$?
+check "R10-7c: a layout this version does not know -> refused, nothing asked" "$RC|$(grep -c 'laid out on data disks (three-nvme), and this version does not know that layout' <<<"$OUT")|$(r7c_left)" "1|1|0|0|<none>"
+r7c_reset; state_set data_layout two-nvme
+OUT=$( DRY_RUN=1 disk_run 2>&1 ); RC=$?
+check "R10-7c: a dry-run refuses the same way, before any question"  "$RC|$(grep -c 'laid out on data disks (two-nvme)' <<<"$OUT")|$(r7c_left)" "1|1|0|0|<none>"
+# Whether a point is mounted is asked inside $( ), and findmnt answers rc 1 for a
+# point that is not. Under the production traps on bash 3.2 that printed a stray
+# [FAIL] line for each probe, adopt's two included. The refusal comes out alone.
+r7c_reset; state_set data_layout raid-volume
+OUT=$( set -Eeuo pipefail; deeploy_init_traps; disk_run 2>&1 ); RC=$?
+check "R10-7c: under the production traps the refusal comes out alone" "$RC|$(grep -cE 'line [0-9]+:' <<<"$OUT")|$(grep -c 'laid out on data disks' <<<"$OUT")" "1|0|1"
+r7c_reset
 
 echo ""
 echo "==================================="
