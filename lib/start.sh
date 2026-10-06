@@ -130,11 +130,18 @@ start_pin_poh() {
 }
 
 start_print_summary() {
-    local catchup_rc="${1:-0}" verify_rc="${2:-0}"
-    # Degraded/failed finish: the node never reached catchup 0 (timed out or the
-    # service died). Say so plainly and tell the operator NOT to swap the staked
-    # key — a staked identity must only go live on a synced node (R1).
-    if [[ "$catchup_rc" -ne 0 ]]; then
+    local catchup_rc="${1:-0}" verify_rc="${2:-0}" when=""
+    if is_dry_run; then
+        # Dry-run started nothing and polled nothing (start_wait_catchup returns
+        # at once), so it claims neither a synced node nor a failed one. The swap
+        # steps stay, marked as the plan for after a real run (R10-7e).
+        step "DRY-RUN — the plan ends here"
+        info "Nothing was installed or started. A real run prints this summary only after the node reaches catchup 0."
+        when="After that real run and catchup 0 — "
+    elif [[ "$catchup_rc" -ne 0 ]]; then
+        # Degraded/failed finish: the node never reached catchup 0 (timed out or the
+        # service died). Say so plainly and tell the operator NOT to swap the staked
+        # key — a staked identity must only go live on a synced node (R1).
         step "DEPLOYMENT INCOMPLETE — node NOT synced"
         warn "The node did not reach catchup 0 (catchup timed out or solana.service is not active)."
         info "  DO NOT swap in the staked key — a staked identity must only go live on a synced node."
@@ -143,12 +150,13 @@ start_print_summary() {
         info ""
         info "Vote account: ${VOTE_ACCOUNT_PUBKEY:-<unset>}"
         return 0
+    else
+        step "DEPLOYMENT COMPLETE"
+        ok "Node is synced (catchup 0) on the unstaked sync identity."
+        if [[ "$verify_rc" -ne 0 ]]; then warn "Post-install verification reported issues — review them above and run '${DEEPLOY_CMD} verify' before the staked-key swap."; fi
     fi
-    step "DEPLOYMENT COMPLETE"
-    ok "Node is synced (catchup 0) on the unstaked sync identity."
-    [[ "$verify_rc" -ne 0 ]] && warn "Post-install verification reported issues — review them above and run '${DEEPLOY_CMD} verify' before the staked-key swap."
     info ""
-    info "MANUAL staked-key hot-swap (DeePloy never generates, copies, or transmits it):"
+    info "${when}MANUAL staked-key hot-swap (DeePloy never generates, copies, or transmits it):"
     if [[ "$STAKED_KEY_MODE" == offbox ]]; then
         info "  The staked key stays off this box — DeePloy knows only its pubkey (${STAKED_PUBKEY:-<unset>})."
         info "  Swap identity (stdin form, from the machine that holds the key):"

@@ -241,6 +241,20 @@ VSUM=$(start_print_summary 0 1 2>&1)   # synced, but verify reported issues
 check_ge "R1: synced+verify-issues -> still 'synced'"  "$(grep -c 'synced (catchup 0)' <<<"$VSUM")" "1"
 check_ge "R1: synced+verify-issues -> warns to review" "$(grep -ci 'verification' <<<"$VSUM")" "1"
 
+echo "== R10-7e: dry-run summary — the plan's end, no synced claim, the swap marked for later =="
+# A dry-run's catchup wait returns 0 without polling; the summary must not turn
+# that into "synced", nor a failed rc into "incomplete".
+RSUM=$(DRY_RUN=1 start_print_summary 0 1 2>&1)
+check "dry-run: no DEPLOYMENT COMPLETE"            "$(grep -c 'DEPLOYMENT COMPLETE' <<<"$RSUM")" "0"
+check "dry-run: no synced claim"                   "$(grep -c 'Node is synced' <<<"$RSUM")" "0"
+check "dry-run: says where the plan ends"          "$(grep -c 'DRY-RUN — the plan ends here' <<<"$RSUM")" "1"
+check "dry-run: nothing was installed or started"  "$(grep -c 'Nothing was installed or started. A real run prints this summary only after the node reaches catchup 0.' <<<"$RSUM")" "1"
+check "dry-run: the swap is marked for after a real run" "$(grep -c 'After that real run and catchup 0 — MANUAL staked-key hot-swap' <<<"$RSUM")" "1"
+check "dry-run: the swap steps are kept"           "$(grep -c 'set-identity --require-tower /root/solana/mainnet-validator-keypair.json' <<<"$RSUM")" "1"
+check "dry-run: no post-install verify warning"    "$(grep -c 'Post-install verification' <<<"$RSUM")" "0"
+RSUM1=$(DRY_RUN=1 start_print_summary 1 0 2>&1)
+check "dry-run: a non-zero catchup rc is not 'incomplete'" "$(grep -c 'DEPLOYMENT INCOMPLETE' <<<"$RSUM1")|$(grep -c 'DRY-RUN — the plan ends here' <<<"$RSUM1")" "0|1"
+
 echo "== R1: start_run returns non-zero on failed catchup (phase 8 not a clean success) =="
 _install_verify_isolation() { return 0; }   # pass the gate
 start_resolve_config() { :; }; start_precheck_disk() { :; }; start_enable_service() { :; }

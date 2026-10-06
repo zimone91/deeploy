@@ -123,6 +123,7 @@ RY5=$( ASSUME_YES=1 NONINTERACTIVE=0 confirm "ordinary?" </dev/null >/dev/null &
 check "7c: confirm still honors --yes (asymmetry intact)" "$RY5" "proceeded"
 
 echo "== dry-run changes nothing =="
+# DRY_RUN=1 without common_init: no shadow store, so state writes stay no-ops.
 D="$WORK/dry.conf"
 DRY_RUN=1
 ensure_line "$D" "should-not-write"
@@ -132,6 +133,72 @@ state_set "phase-7" "should-not-persist"
 DRY_RUN=0
 check_false "dry-run did not create file" "[[ -e \"$D\" ]]"
 check_false "dry-run did not write state" "state_has phase-7"
+check "no common_init under dry-run -> no shadow" "${_STATE_SHADOW:-<none>}" "<none>"
+
+echo "== R10-7e: dry-run state lives in a temp shadow, removed on exit =="
+# Real values the dry-run must read through, hide on clear, and leave alone.
+state_set shkeep real-k; state_set shgone real-g; mark_phase_done 6
+state_sig() { ( cd "$DEEPLOY_STATE_DIR" && find . | LC_ALL=C sort | while IFS= read -r p; do
+    if [[ -f "$p" ]]; then printf '%s %s\n' "$p" "$(cat "$p")"; else printf '%s\n' "$p"; fi; done ); }
+SIG0=$(state_sig)
+mkdir -p "$WORK/sh1"
+yn() { "$@" && echo y || echo n; }
+SH=$( ( TMPDIR="$WORK/sh1"; DRY_RUN=1; common_init
+        state_set shnew dry-v
+        echo "new=$(state_get shnew none)"; echo "has=$(yn state_has shnew)"
+        echo "keep=$(state_get shkeep none)"
+        state_clear shgone; echo "gone=$(state_get shgone none)"; echo "gonehas=$(yn state_has shgone)"
+        state_set shgone dry-back; echo "back=$(state_get shgone none)"; echo "backhas=$(yn state_has shgone)"
+        state_set shtmp v; state_clear shtmp; echo "tmp=$(state_get shtmp none)"; echo "tmphas=$(yn state_has shtmp)"
+        mark_phase_done 7; echo "p7=$(yn is_phase_done 7)"
+        echo "p6=$(yn is_phase_done 6)"; clear_phase 6; echo "p6after=$(yn is_phase_done 6)"
+        echo "dir=$_STATE_SHADOW" ) 2>/dev/null )
+shv() { sed -n "s/^$1=//p" <<<"$SH"; }
+check "shadow: a dry-run write reads back"           "$(shv new)|$(shv has)" "dry-v|y"
+check "shadow: an untouched real value reads through" "$(shv keep)" "real-k"
+check "shadow: state_clear hides the real value"     "$(shv gone)|$(shv gonehas)" "none|n"
+check "shadow: state_set after a clear reads back"   "$(shv back)|$(shv backhas)" "dry-back|y"
+check "shadow: set then cleared in the dry-run -> gone" "$(shv tmp)|$(shv tmphas)" "none|n"
+check "shadow: is_phase_done from the shadow"        "$(shv p7)" "y"
+check "shadow: clear_phase hides a real done phase"  "$(shv p6)|$(shv p6after)" "y|n"
+SHDIR="$(shv dir)"
+check_true "shadow: made under \$TMPDIR"              "[[ \"$SHDIR\" == \"$WORK/sh1/deeploy-dryrun.\"* && -d \"$SHDIR/set\" ]]"
+check "shadow: the real store is unchanged"         "$(state_sig)" "$SIG0"
+check_false "shadow: no dry-run key in the real store" "state_has shnew"
+# The exit trap removes it: clean exit, refusal (fail), and TERM. Each TMPDIR
+# holds a canary: the trap must remove the shadow, never TMPDIR itself.
+for d in sh2 sh3 sh4; do mkdir -p "$WORK/$d"; : >"$WORK/$d/canary"; done
+tmpleft() { if [[ -d "$1" ]]; then ( cd "$1" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ' ); else printf '<no TMPDIR>'; fi; }
+EX=$( ( set -Eeuo pipefail; TMPDIR="$WORK/sh2"; DRY_RUN=1; common_init; deeploy_init_traps
+        state_set k v; [[ -f "$_STATE_SHADOW/set/k" ]] && echo made ) 2>/dev/null ); RC=$?
+check "exit 0: the shadow was there during the run" "$EX|$RC" "made|0"
+check "exit 0: shadow removed, TMPDIR + canary kept" "$(tmpleft "$WORK/sh2")" "canary "
+EX=$( ( set -Eeuo pipefail; TMPDIR="$WORK/sh3"; DRY_RUN=1; common_init; deeploy_init_traps
+        state_set k v; [[ -f "$_STATE_SHADOW/set/k" ]] && echo made; fail "boom" ) 2>/dev/null ); RC=$?
+check "refusal: the shadow was there, rc 1"          "$EX|$RC" "made|1"
+check "refusal: shadow removed, TMPDIR + canary kept" "$(tmpleft "$WORK/sh3")" "canary "
+# TERM in a separate bash: $$ there is that process, never this suite.
+EX=$(bash -c 'set -Eeuo pipefail; source "$1"; TMPDIR=$2; DRY_RUN=1; common_init; deeploy_init_traps
+        state_set k v; [[ -f "$_STATE_SHADOW/set/k" ]] && echo made; kill -TERM $$; echo after' _ "$ROOT/lib/common.sh" "$WORK/sh4" 2>/dev/null); RC=$?
+check "TERM: the shadow was there, the run stopped"  "$EX|$RC" "made|1"
+check "TERM: shadow removed, TMPDIR + canary kept"   "$(tmpleft "$WORK/sh4")" "canary "
+# No temp dir -> refuse, with what to do; never plan from defaults.
+MK=$( ( TMPDIR="$WORK/no-such-dir"; DRY_RUN=1; common_init; echo "went on" ) 2>&1 ); RC=$?
+check "no temp dir: refused (rc 1)"                  "$RC" "1"
+check "no temp dir: says to set TMPDIR"              "$(grep -c 'Set TMPDIR to a writable directory and run again' <<<"$MK")" "1"
+check "no temp dir: did not go on"                   "$(grep -c 'went on' <<<"$MK")" "0"
+# The environment cannot name a dir for the exit trap to remove: sourcing
+# common.sh resets _STATE_SHADOW. A fresh bash gets a victim dir with a canary
+# in its environment, before the source.
+for d in victim1 victim2; do mkdir -p "$WORK/$d"; : >"$WORK/$d/canary"; done
+_STATE_SHADOW="$WORK/victim1" bash -c 'set -Eeuo pipefail; source "$1"; DRY_RUN=0; common_init; deeploy_init_traps; exit 0' \
+    _ "$ROOT/lib/common.sh" >/dev/null 2>&1; RC=$?
+check "env-named shadow, a real run exits 0: the dir stays" "$RC|$(tmpleft "$WORK/victim1")" "0|canary "
+# Traps first here, so the refusal runs the exit trap.
+_STATE_SHADOW="$WORK/victim2" bash -c 'set -Eeuo pipefail; source "$1"; deeploy_init_traps; TMPDIR=$2; DRY_RUN=1; common_init; echo went-on' \
+    _ "$ROOT/lib/common.sh" "$WORK/no-such-dir" >/dev/null 2>&1; RC=$?
+check "env-named shadow, a dry-run refused: the dir stays" "$RC|$(tmpleft "$WORK/victim2")" "1|canary "
+state_clear shkeep; state_clear shgone; clear_phase 6
 
 echo "== ensure_block replaces by marker when content changes (A->B) =="
 BK2="$WORK/grub.block"

@@ -34,7 +34,7 @@ DEEPLOY_VERSION="${DEEPLOY_VERSION:-0.1.0-rc9}"
 # all operator-facing "run: <cmd> dz-connect/export/…" text.
 DEEPLOY_CMD="${DEEPLOY_CMD:-${DEEPLOY_SELF:-./deeploy.sh}}"
 
-: "${DRY_RUN:=0}"          # 1 = print plan, change nothing
+: "${DRY_RUN:=0}"          # 1 = print plan; change nothing outside a temp dir, removed on exit
 : "${ASSUME_YES:=0}"       # 1 = auto-confirm normal prompts (never disk wipes)
 : "${POST_REBOOT:=0}"      # 1 = unattended resume after reboot (forces non-interactive)
 : "${NONINTERACTIVE:=}"    # decided in common_init from tty unless set explicitly
@@ -524,13 +524,48 @@ require_yes() {
 
 # ----------------------------------------------------------------------------
 # Run-state: per-phase markers + small key/value store under $STATE_DIR.
-# Read-only operations work even under --dry-run; writes are no-ops in dry-run.
+# A dry-run never writes $STATE_DIR. Its writes go to a SHADOW store in a temp
+# dir and its reads see the shadow first, so a later phase plans from what an
+# earlier one decided (XDP cores, DoubleZero, the MEV region, reboot_required)
+# instead of from defaults (R10-7e). Without a shadow — a unit test calling
+# these under DRY_RUN=1 without common_init — dry-run writes are no-ops.
 # ----------------------------------------------------------------------------
 _state_file() { printf '%s/state.d/%s' "$STATE_DIR" "$1"; }
 
+# The shadow: set/<key> holds a value written in this dry-run, cleared/<key> is
+# a tombstone hiding the real value after a dry-run state_clear. common_init
+# makes it and the exit trap removes it: on success, on refusal, and on INT,
+# TERM, HUP, PIPE, ALRM and USR1 (measured on bash 5.2 and 3.2). SIGKILL leaves
+# it behind in $TMPDIR, and so does SIGQUIT on bash 3.2; bash 5.2 ignores
+# SIGQUIT. So a dry-run changes nothing outside a temp dir, removed on exit.
+# It still READS: the live box, and the network (the region probe, the 7d tag
+# check). Set only by _state_shadow_init — reset here so the environment can
+# never name a dir for the exit trap to remove.
+_STATE_SHADOW=""
+_state_shadow_init() {
+    local d=""
+    if d=$(mktemp -d "${TMPDIR:-/tmp}/deeploy-dryrun.XXXXXX" 2>/dev/null) && mkdir "$d/set" "$d/cleared" 2>/dev/null; then
+        _STATE_SHADOW=$d
+        debug "dry-run state shadow: $d"
+        return 0
+    fi
+    if [[ -n "$d" && -d "$d" ]]; then rm -rf -- "$d"; fi
+    # A plan that silently read defaults (no XDP, no DoubleZero, no MEV
+    # endpoints) would be worse than none.
+    fail "dry-run cannot keep its own state: cannot create a temp dir in ${TMPDIR:-/tmp}. Refusing — its plan would read defaults. Set TMPDIR to a writable directory and run again."
+}
+_state_shadowed() { is_dry_run && [[ -n "${_STATE_SHADOW:-}" ]]; }
+
 state_set() {
     local key=$1 val=$2 f tmp; f=$(_state_file "$key")
-    is_dry_run && { debug "[dry-run] state_set $key=$val"; return 0; }
+    if is_dry_run; then
+        # set/ is read before cleared/, so a value written after a clear wins.
+        if [[ -n "${_STATE_SHADOW:-}" ]]; then
+            printf '%s' "$val" >"$_STATE_SHADOW/set/$key" \
+                || { warn "state_set: cannot write the dry-run shadow ${_STATE_SHADOW}"; return 1; }
+        fi
+        debug "[dry-run] state_set $key=$val"; return 0
+    fi
     mkdir -p "$(dirname "$f")" || return 1
     # Atomic (N15): write a temp file IN the state dir (same filesystem) then
     # rename — a mid-write kill (power loss, OOM during the resume service)
@@ -544,11 +579,31 @@ state_set() {
     mv -f "$tmp" "$f" || { rm -f "$tmp"; warn "state_set: rename to ${f} failed"; return 1; }
     debug "state_set $key=$val"
 }
-state_get() { local key=$1 def=${2:-} f; f=$(_state_file "$key"); [[ -f "$f" ]] && cat "$f" || printf '%s' "$def"; }
-state_has() { [[ -f "$(_state_file "$1")" ]]; }
+state_get() {
+    local key=$1 def=${2:-} f
+    if _state_shadowed; then
+        if [[ -f "$_STATE_SHADOW/set/$key" ]]; then cat "$_STATE_SHADOW/set/$key"; return 0; fi
+        if [[ -e "$_STATE_SHADOW/cleared/$key" ]]; then printf '%s' "$def"; return 0; fi
+    fi
+    f=$(_state_file "$key"); [[ -f "$f" ]] && cat "$f" || printf '%s' "$def"
+}
+state_has() {
+    if _state_shadowed; then
+        if [[ -f "$_STATE_SHADOW/set/$1" ]]; then return 0; fi
+        if [[ -e "$_STATE_SHADOW/cleared/$1" ]]; then return 1; fi
+    fi
+    [[ -f "$(_state_file "$1")" ]]
+}
 state_clear() {
     local f; f=$(_state_file "$1")
-    is_dry_run && { debug "[dry-run] state_clear $1"; return 0; }
+    if is_dry_run; then
+        if [[ -n "${_STATE_SHADOW:-}" ]]; then
+            rm -f "$_STATE_SHADOW/set/$1"
+            : >"$_STATE_SHADOW/cleared/$1" \
+                || { warn "state_clear: cannot write the dry-run shadow ${_STATE_SHADOW}"; return 1; }
+        fi
+        debug "[dry-run] state_clear $1"; return 0
+    fi
     rm -f "$f"
 }
 
@@ -802,6 +857,8 @@ _deeploy_on_err() {
 _deeploy_on_exit() {
     local code=$?
     set +e
+    # The dry-run state shadow goes on every exit, clean or not (R10-7e).
+    if [[ -n "${_STATE_SHADOW:-}" ]]; then rm -rf -- "$_STATE_SHADOW"; _STATE_SHADOW=""; fi
     [[ $code -eq 0 ]] && return 0
     _log EXIT "exit $code phase=${CURRENT_PHASE:-?}(${CURRENT_PHASE_NAME:-?})"
     {
@@ -839,7 +896,8 @@ _common_statedir_unavailable() {
 # ----------------------------------------------------------------------------
 # common_init — call once from deeploy.sh AFTER flags are parsed.
 # Resolves directories (env-overridable for tests), creates them (skipped in
-# dry-run so nothing is written), decides interactivity, and opens the log.
+# dry-run: its state goes to a temp shadow instead), decides interactivity,
+# and opens the log.
 # ----------------------------------------------------------------------------
 common_init() {
     RUN_TS="${RUN_TS:-$(_ts_run)}"
@@ -855,7 +913,7 @@ common_init() {
     fi
 
     if is_dry_run; then
-        LOG_FILE=""   # dry-run changes nothing on disk: console only
+        LOG_FILE=""   # dry-run writes no log: console only
     elif mkdir -p "$STATE_DIR/state.d" "$BACKUP_DIR" "$LOG_DIR" 2>/dev/null; then
         LOG_FILE="${DEEPLOY_LOG_FILE:-$LOG_DIR/deeploy-$RUN_TS.log}"
     else
@@ -866,6 +924,8 @@ common_init() {
         if [[ ${EUID:-$(id -u)} -eq 0 ]]; then _common_statedir_unavailable 1; else _common_statedir_unavailable 0; fi
     fi
     _init_colors
+    # After the colors, so a refusal prints like any other.
+    if is_dry_run; then _state_shadow_init; fi
     _log INIT "DeePloy v$DEEPLOY_VERSION run=$RUN_TS dry_run=$DRY_RUN noninteractive=$NONINTERACTIVE post_reboot=$POST_REBOOT"
     debug "STATE_DIR=$STATE_DIR BACKUP_DIR=$BACKUP_DIR LOG_FILE=${LOG_FILE:-<none>}"
 }

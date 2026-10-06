@@ -6,9 +6,11 @@
 # mocked and EVERY path sandboxed — zero real side effects — and asserts that
 # each phase's STATE output is the exact format the next phase reads.
 #
-# Why not a literal --dry-run: dry-run writes no state (by design), so the chain
-# can't thread through it. This runs DRY_RUN=0 with full mocks so state threads;
-# "zero side effects" is guaranteed by the mocks + the temp sandbox.
+# The walkthrough runs DRY_RUN=0 with full mocks, so every phase's state is
+# real and can be asserted; "zero side effects" is guaranteed by the mocks + the
+# temp sandbox. Before it, a literal `install --dry-run` runs on the untouched
+# sandbox: its state threads through a temp shadow (R10-7e), and the sandbox
+# must be byte-identical afterwards.
 #
 # Mocks shadow real commands and are invoked indirectly. SC2016: the printf'd
 # mock scripts intentionally contain literal $1/$@ (single-quoted on purpose).
@@ -163,6 +165,32 @@ _install_read_isolated(){ sget isolated_set; }; _install_read_cmdline(){ echo "i
 export SSH_PORT=2222 JITO_TAG=v4.2.1-jito DZ_ENABLED=false ASSUME_YES=1
 export VOTE_ACCOUNT_PUBKEY=Vote1111111111111111111111111111111111111111
 
+echo "############ R10-7e: a literal 'install --dry-run' on a fresh box ############"
+# main() as the operator runs it: -Eeuo, the traps, the dry-run state shadow.
+# The real state dir does not exist yet, TMPDIR is in the sandbox, DoubleZero
+# is on. The checkout gate is answered "safe" here; the control after the
+# walkthrough drives the real predicates.
+sandbox_sig() { ( cd "$WORK" && find . \( -path ./drytmp -o -path ./calls -o -path ./allcalls \) -prune -o -print | LC_ALL=C sort |
+    while IFS= read -r p; do if [[ -f "$p" && ! -L "$p" ]]; then printf '%s %s\n' "$p" "$(cksum <"$p")"; else printf '%s\n' "$p"; fi; done ); }
+# TMPDIR holds a canary: the exit trap must remove the shadow, never TMPDIR.
+tmpleft() { if [[ -d "$1" ]]; then ( cd "$1" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ' ); else printf '<no TMPDIR>'; fi; }
+mkdir -p "$WORK/drytmp"; : >"$WORK/drytmp/canary"; SIG0=$(sandbox_sig)
+DOUT=$( ( deeploy_root_surface_unsafe_reason() { return 0; }; deeploy_not_executable_reason() { return 0; }
+          TMPDIR="$WORK/drytmp" DZ_ENABLED=true DEEPLOY_DEFAULT_CONF="$WORK/absent.conf" \
+          DEEPLOY_STATE_DIR="$WORK/fresh/state" DEEPLOY_BACKUP_DIR="$WORK/fresh/backups" DEEPLOY_LOG_DIR="$WORK/fresh/logs" \
+          main install --dry-run ) 2>&1 ); DRC=$?
+check "dry-run: exits 0, stopped at the reboot gate"   "$DRC" "0"
+check "dry-run: XDP planned from phase 0's NIC facts"  "$(grep -cF 'XDP cores=2,' <<<"$DOUT")" "1"
+check "dry-run: DoubleZero rules planned (GRE, 44880)" "$(grep -cF '[dry-run] ufw allow proto gre from any to any' <<<"$DOUT")|$(grep -cF '[dry-run] ufw allow in on doublezero0 to any port 44880 proto udp' <<<"$DOUT")" "1|1"
+check "dry-run: ufw limits the confirmed SSH port"     "$(grep -cF '[dry-run] ufw limit 2222/tcp' <<<"$DOUT")|$(grep -cF 'ufw limit 22/tcp' <<<"$DOUT")" "1|0"
+check "dry-run: phase 6 renders (no MEV refusal)"      "$(grep -cF "[dry-run] would update $VALIDATOR_SH" <<<"$DOUT")|$(grep -cF 'MEV endpoints unset' <<<"$DOUT")" "1|0"
+check "dry-run: reaches the reboot gate"               "$(grep -cF '[dry-run] systemctl reboot' <<<"$DOUT")" "1"
+check "dry-run: no phase 8"                            "$(grep -cF '━━━ Phase 8' <<<"$DOUT")" "0"
+check "dry-run: the real state dir was never made"     "$([[ -e "$WORK/fresh" ]] && echo made || echo absent)" "absent"
+check "dry-run: shadow removed, TMPDIR + canary kept"  "$(tmpleft "$WORK/drytmp")" "canary "
+check "dry-run: the sandbox is byte-identical"         "$(sandbox_sig)" "$SIG0"
+: >"$CALLS"; : >"$ALLCALLS"
+
 echo "############ FULL-FLOW WALKTHROUGH (phases 0 -> 7, state threading) ############"
 for p in 0 1 2 3 4 5 6 7; do
     run_phase "$p" >/dev/null 2>&1
@@ -216,6 +244,24 @@ check "vote-account from keys state"                         "$(grep -c -- '--vo
 check "X1: every interpolated path is quoted (no bare --ledger /)" "$(grep -c -- '--ledger /' "$VALIDATOR_SH")" "0"
 check_true "generated validator.sh is valid bash"           "bash -n \"$VALIDATOR_SH\""
 check "mlx5-irq service generated (NIC layer)"               "$(grep -c 'Before=solana.service' "$MLX5_IRQ_SERVICE")" "1"
+
+echo ""
+echo "############ R10-7e control: an unsafe checkout refuses at the gate, in a dry-run too ############"
+# Phases 0-7 are done above, so install goes straight to the reboot gate and
+# phase 0's copy of the check never runs. The REAL predicates now see a group/
+# world-writable checkout. A dry-run must refuse there with the real run's own
+# text — proof the gate runs in a dry-run and is not bypassed by the mock above.
+SIG1=$(sandbox_sig)
+UDRY=$( ( deeploy_path_mode() { echo 777; }
+          TMPDIR="$WORK/drytmp" DEEPLOY_DEFAULT_CONF="$WORK/absent.conf" main install --dry-run ) 2>&1 ); UDRC=$?
+check "control: the dry-run refuses (rc 1)"            "$UDRC" "1"
+check "control: the dry-run wrote nothing"             "$(sandbox_sig)" "$SIG1"
+UREAL=$( ( deeploy_path_mode() { echo 777; }
+           DEEPLOY_DEFAULT_CONF="$WORK/absent.conf" main install ) 2>&1 ); URRC=$?
+check "control: the real run refuses (rc 1)"           "$URRC" "1"
+UD=$(grep -F 'refusing to install the resume service' <<<"$UDRY"); UR=$(grep -F 'refusing to install the resume service' <<<"$UREAL")
+check "control: the refusal names the writable checkout" "$(grep -cF 'is group/world-writable (mode 777)' <<<"$UD")" "1"
+check "control: the dry-run's refusal is the real run's" "$UD" "$UR"
 
 echo ""
 echo "############ REBOOT BOUNDARY (dispatcher) ############"

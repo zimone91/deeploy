@@ -16,7 +16,8 @@
 # guarded + dz_enabled gated, so base.sh stays sourceable/testable on its own.
 #
 # Requires: common.sh sourced. All mutations go through run()/ensure_*/backup_*,
-# so --dry-run prints the plan and changes nothing.
+# so --dry-run prints the plan and changes nothing outside a temp dir, removed
+# on exit.
 # ============================================================================
 
 [[ -n "${_DEEPLOY_BASE_SOURCED:-}" ]] && return 0
@@ -183,16 +184,12 @@ base_packages() {
 # --- SSH port (verify-or-rollback) -------------------------------------------
 base_ssh_port() {
     local port="$SSH_PORT" cfg="${SSHD_CONFIG:-/etc/ssh/sshd_config}" current
+    _BASE_PLANNED_PORT=""
     step "SSH port -> ${port}"
     current=$(_sshd_configured_port "$cfg")
 
     if [[ "$current" == "$port" ]] && _ssh_listening_on "$port"; then
         ok "sshd already configured and listening on port $port"
-        return 0
-    fi
-
-    if is_dry_run; then
-        info "${C_DIM}[dry-run]${C_NC} would set sshd Port=$port, switch socket->service, restart, verify"
         return 0
     fi
 
@@ -206,6 +203,15 @@ base_ssh_port() {
         # The change was NOT applied: fall back to the port sshd is actually on so
         # base_firewall opens the right port, never the declined one (S1).
         SSH_PORT="${current:-22}"
+        return 0
+    fi
+
+    # Dry-run asks the same questions as a real run, so it plans the same thing:
+    # base_firewall plans ufw, ssh_port and the fail2ban jail for the confirmed
+    # port, as a real run does once sshd is on it (R10-7e).
+    if is_dry_run; then
+        info "${C_DIM}[dry-run]${C_NC} would set sshd Port=$port, switch socket->service, restart, verify"
+        _BASE_PLANNED_PORT=$port
         return 0
     fi
 
@@ -273,6 +279,9 @@ base_firewall() {
     # ESTABLISHED rule, which a reboot drops). No readable effective port means
     # sshd is on the stock default 22. (S1)
     ports="$(_sshd_effective_ports "$cfg")"; ports="${ports:-22}"
+    # Dry-run: sshd was not moved, so plan with the port confirmed in
+    # base_ssh_port. Every rule below reads ports (R10-7e).
+    if is_dry_run && [[ -n "${_BASE_PLANNED_PORT:-}" ]]; then ports=$_BASE_PLANNED_PORT; fi
     # N5: multiple effective ports -> explicit gate (this fires when the port
     # edit was skipped/declined on a multi-port image; on confirm, EVERY
     # effective port is limited so none of them is firewalled shut).

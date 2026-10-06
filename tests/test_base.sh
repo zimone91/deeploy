@@ -321,6 +321,41 @@ FJ2=$(fresh_sshd '#Port 22'); state_clear ssh_port
 SSHD_CONFIG="$FJ2" base_firewall >/dev/null 2>&1
 check "default port -> still explicit 'port = 22'" "$(grep -c '^port = 22$' "$FAIL2BAN_JAIL_DROPIN")" "1"
 
+echo "== R10-7e: dry-run asks the port question and plans ufw + the jail for the answer =="
+# sshd is live on 22 and the operator is asked to move it to 2222. A dry-run
+# writes no jail, so write_file is replaced to keep the content it was given.
+FY=$(fresh_sshd '#Port 22'); state_clear ssh_port; state_clear dz_enabled
+rm -f "$WORK/jail-plan"; : >"$CALLS"
+YOUT=$( ( TMPDIR="$WORK"; DRY_RUN=1; common_init
+          write_file() { printf '%s' "$2" >"$WORK/jail-plan"; }
+          confirm() { return 0; }            # the operator answers "y"
+          SSH_PORT=2222; SSHD_CONFIG="$FY"; base_ssh_port; base_firewall
+          printf 'ssh_port=%s\n' "$(state_get ssh_port '<unset>')" ) 2>&1 )
+check "yes: ufw limits the confirmed port"         "$(grep -c '\[dry-run\] ufw limit 2222/tcp' <<<"$YOUT")" "1"
+check "yes: not the live 22"                       "$(grep -c 'ufw limit 22/tcp' <<<"$YOUT")" "0"
+check "yes: the jail is planned on the same port"  "$(grep -c '^port = 2222$' "$WORK/jail-plan" 2>/dev/null)" "1"
+check "yes: ssh_port planned (shadow) = 2222"      "$(grep -c '^ssh_port=2222$' <<<"$YOUT")" "1"
+check "yes: real state not written"                "$(state_get ssh_port '<unset>')" "<unset>"
+check "yes: sshd_config untouched"                 "$(_sshd_configured_port "$FY")" ""
+check "yes: no command ran"                        "$(wc -l <"$CALLS" | tr -d ' ')" "0"
+FN=$(fresh_sshd '#Port 22'); rm -f "$WORK/jail-plan"; : >"$CALLS"
+NOUT=$( ( TMPDIR="$WORK"; DRY_RUN=1; common_init
+          write_file() { printf '%s' "$2" >"$WORK/jail-plan"; }
+          confirm() { return 1; }            # the operator answers "n"
+          SSH_PORT=2222; SSHD_CONFIG="$FN"; base_ssh_port; base_firewall
+          printf 'ssh_port=%s\n' "$(state_get ssh_port '<unset>')" ) 2>&1 )
+check "no: no sshd change planned"                 "$(grep -c 'would set sshd Port' <<<"$NOUT")" "0"
+check "no: ufw limits the live 22"                 "$(grep -c '\[dry-run\] ufw limit 22/tcp' <<<"$NOUT")" "1"
+check "no: never the declined port"                "$(grep -c 'ufw limit 2222' <<<"$NOUT")" "0"
+check "no: the jail stays on 22"                   "$(grep -c '^port = 22$' "$WORK/jail-plan" 2>/dev/null)" "1"
+check "no: ssh_port planned (shadow) = 22"         "$(grep -c '^ssh_port=22$' <<<"$NOUT")" "1"
+# sshd already on the port: nothing to plan, and a stale planned port (left in
+# the shell, or inherited from the environment) must not steer the firewall.
+FS=$(fresh_sshd 'Port 2222')
+SOUT=$( ( TMPDIR="$WORK"; DRY_RUN=1; common_init; _BASE_PLANNED_PORT=7777
+          SS_PORT_LISTENING=2222; SSH_PORT=2222; SSHD_CONFIG="$FS"; base_ssh_port; base_firewall ) 2>&1 )
+check "already on the port: ufw limits it, no stale plan" "$(grep -c '\[dry-run\] ufw limit 2222/tcp' <<<"$SOUT")|$(grep -c '7777' <<<"$SOUT")" "1|0"
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -325,7 +325,7 @@ Commands:
   dz-connect     DoubleZero connect: passport + ibrl + multicast (run AFTER the manual staked-key swap)
 
 Flags:
-  --dry-run            Print the plan; change nothing
+  --dry-run            Print the plan; change nothing outside a temp dir, removed on exit
   --resume             Continue from the first un-done phase
   --only <phase>       Run a single phase (0-8)
   --force              Re-run even completed phases
