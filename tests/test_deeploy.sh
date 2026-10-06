@@ -38,7 +38,7 @@ systemctl()    { echo "systemctl $*" >>"$CALLS"; return 0; }
 deeploy_path_uid()  { echo 0; }
 deeploy_path_mode() { echo 755; }
 # Replace phase functions with a run-log.
-for f in preflight_run base_run tuning_run disk_run toolchain_build keys_run \
+for f in preflight_run base_run tuning_run toolchain_check_tag disk_run toolchain_build keys_run \
          validatorcfg_run nic_run doublezero_run start_run; do
     eval "${f}() { echo '${f}' >>'$RAN'; }"
 done
@@ -99,7 +99,7 @@ echo "== full run (no reboot needed): all phases, then re-run skips done =="
 reset_state; ONLY_PHASE=""; FORCE=0; POST_REBOOT=0; DZ_ENABLED=false
 : >"$RAN"; install_run >/dev/null 2>&1
 check "install records deeploy_version at start" "$(state_get deeploy_version)" "$DEEPLOY_VERSION"
-check "phase fns ran (0-6 incl nic, +start; DZ off)" "$(wc -l <"$RAN" | tr -d ' ')" "9"
+check "phase fns ran (0-6 incl nic, +start, +the tag check in 3; DZ off)" "$(wc -l <"$RAN" | tr -d ' ')" "10"
 check "start_run ran"  "$(grep -c '^start_run$' "$RAN")" "1"
 : >"$RAN"; install_run >/dev/null 2>&1
 check "re-run: all phases skipped (idempotent)" "$(wc -l <"$RAN" | tr -d ' ')" "0"
@@ -107,6 +107,20 @@ check "re-run: all phases skipped (idempotent)" "$(wc -l <"$RAN" | tr -d ' ')" "
 echo "== --only runs exactly one phase =="
 reset_state; : >"$RAN"; ONLY_PHASE=4 install_run >/dev/null 2>&1; ONLY_PHASE=""
 check "only phase 4 ran" "$(cat "$RAN")" "toolchain_build"
+
+echo "== R10-7d: phase 3 checks the build's tag first, while the build is still ahead =="
+reset_state; : >"$RAN"; ( FORCE=0 run_phase 3 ) >/dev/null 2>&1
+check "R10-7d: phase 4 not done -> the tag is checked, then the disk phase" "$(tr '\n' ' ' <"$RAN")" "toolchain_check_tag disk_run "
+reset_state; mark_phase_done 4; : >"$RAN"; ( FORCE=0 run_phase 3 ) >/dev/null 2>&1
+check "R10-7d: phase 4 done -> no tag check"                      "$(tr '\n' ' ' <"$RAN")" "disk_run "
+reset_state; mark_phase_done 4; : >"$RAN"; ( FORCE=1 run_phase 3 ) >/dev/null 2>&1
+check "R10-7d: phase 4 done, --force -> checked again"            "$(tr '\n' ' ' <"$RAN")" "toolchain_check_tag disk_run "
+reset_state; : >"$RAN"; ( ONLY_PHASE=3 install_run ) >/dev/null 2>&1
+check "R10-7d: --only 3, phase 4 not done -> checked"             "$(tr '\n' ' ' <"$RAN")" "toolchain_check_tag disk_run "
+reset_state; : >"$RAN"
+( toolchain_check_tag() { echo toolchain_check_tag >>"$RAN"; fail "no such tag"; }; run_phase 3 ) >/dev/null 2>&1
+check "R10-7d: a refused tag -> the disk phase never runs"        "$(tr '\n' ' ' <"$RAN")" "toolchain_check_tag "
+reset_state; : >"$RAN"
 
 echo "== N4: --only validated at parse (no silent no-op success); values required =="
 ( parse_args install --only validatorcfg ) >/dev/null 2>&1

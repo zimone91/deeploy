@@ -111,6 +111,51 @@ ANZV=$(anza_live v4.3.0)
 check "live: bare Agave v4.3.0 -> curl never called" "$(lines_with CURL "$ANZV")" ""
 check "live: the shape refusal is why"               "$(grep -cF "'v4.3.0': it is not a jito-solana version tag" <<<"$ANZV")" "1"
 
+echo "== R10-7d: before phase 3 erases anything, the tag the build will use must exist =="
+# toolchain_check_tag runs from run_phase 3 while the build is still ahead. Shape
+# and floor are the checks above. Existence is asked of the jito-solana repo
+# (git ls-remote --exit-code: 0 / 2 / anything else) and of the Anza CLI release
+# for the tag's base (HTTP 200 / 404 / anything else; curl prints 000 and exits
+# non-zero when nothing answers). Nothing is recorded: phase 4 records the tag.
+LSR_RC=0; ANZA_CODE=200; NETLOG="$WORK/net"
+tag_check() {                                     # <tag> [stdin] -> output; network calls in NETLOG
+    : >"$NETLOG"
+    ( git()  { echo "git $* [prompt=${GIT_TERMINAL_PROMPT:-unset}]" >>"$NETLOG"; [[ "$1" == ls-remote ]] && return "$LSR_RC"; return 0; }
+      curl() { echo "curl $*" >>"$NETLOG"; printf '%s' "$ANZA_CODE"; [[ "$ANZA_CODE" != 000 ]]; }
+      JITO_TAG="$1" toolchain_check_tag; echo "CHECKED rc=$?" ) 2>&1
+}
+state_set jito_tag untouched
+OUT=$(tag_check v4.3.0-jito.0)
+check "R10-7d: tag and Anza release both there -> checked, rc 0" "$(lines_with CHECKED "$OUT")|$(grep -c 'v4.3.0-jito.0 exists in https://github.com/jito-foundation/jito-solana.git, and so does the Anza CLI release v4.3.0' <<<"$OUT")" "CHECKED rc=0|1"
+check "  git asks for exactly that tag, with no terminal prompt" "$(lines_with ls-remote "$(cat "$NETLOG")")" "git ls-remote --exit-code --tags https://github.com/jito-foundation/jito-solana.git refs/tags/v4.3.0-jito.0 [prompt=0]"
+check "  curl asks the base's install URL for its HTTP code"     "$(grep -c '^curl .*-w %{http_code} https://release.anza.xyz/v4.3.0/install$' "$NETLOG")" "1"
+check "  and nothing is recorded (phase 4 records the tag)"      "$(state_get jito_tag)" "untouched"
+LSR_RC=2; OUT=$(tag_check v4.3.0-jito.0)
+check "R10-7d: no such tag in the repo -> refused as not existing" "$(lines_with CHECKED "$OUT")|$(grep -c 'Refusing: v4.3.0-jito.0 does not exist in https://github.com/jito-foundation/jito-solana.git (no refs/tags/v4.3.0-jito.0)' <<<"$OUT")|$(grep -c '^curl' "$NETLOG")" "|1|0"
+LSR_RC=128; OUT=$(tag_check v4.3.0-jito.0)
+check "R10-7d: the repo does not answer -> refused as unchecked" "$(lines_with CHECKED "$OUT")|$(grep -c 'could not check that v4.3.0-jito.0 exists in https://github.com/jito-foundation/jito-solana.git (git ls-remote exited 128)' <<<"$OUT")|$(grep -c 'does not exist' <<<"$OUT")" "|1|0"
+LSR_RC=0; ANZA_CODE=404; OUT=$(tag_check v4.3.0-jito.0)
+check "R10-7d: Anza has no such release -> refused as not existing" "$(lines_with CHECKED "$OUT")|$(grep -c 'the Anza CLI release v4.3.0, which phase 4 installs for v4.3.0-jito.0, does not exist (https://release.anza.xyz/v4.3.0/install answered 404)' <<<"$OUT")" "|1"
+ANZA_CODE=000; OUT=$(tag_check v4.3.0-jito.0)
+check "R10-7d: Anza does not answer (000) -> refused as unchecked" "$(lines_with CHECKED "$OUT")|$(grep -c 'could not check the Anza CLI release v4.3.0 for v4.3.0-jito.0 (https://release.anza.xyz/v4.3.0/install answered 000)' <<<"$OUT")|$(grep -c 'does not exist' <<<"$OUT")" "|1|0"
+ANZA_CODE=503; OUT=$(tag_check v4.3.0-jito.0)
+check "R10-7d: Anza answers 503 -> refused as unchecked" "$(lines_with CHECKED "$OUT")|$(grep -c 'answered 503)' <<<"$OUT")" "|1"
+ANZA_CODE=200
+OUT=$(tag_check v4.3.0)
+check "R10-7d: a bare Agave tag -> refused by shape, no network asked" "$(lines_with CHECKED "$OUT")|$(grep -cF "'v4.3.0': it is not a jito-solana version tag" <<<"$OUT")|$(wc -l <"$NETLOG" | tr -d ' ')" "|1|0"
+OUT=$(tag_check v4.1.2-jito)
+check "R10-7d: below the floor -> refused, no network asked" "$(lines_with CHECKED "$OUT")|$(grep -c "$DEEPLOY_MIN_JITO_TAG" <<<"$OUT")|$(wc -l <"$NETLOG" | tr -d ' ')" "|1|0"
+OUT=$(tag_check "")
+check "R10-7d: no tag and no terminal -> refused, no network asked" "$(lines_with CHECKED "$OUT")|$(grep -c 'no value and no default for: jito-solana build tag' <<<"$OUT")|$(wc -l <"$NETLOG" | tr -d ' ')" "|1|0"
+OUT=$(printf 'v4.3.0-jito.0\n' | { NONINTERACTIVE=0; tag_check ""; })
+check "R10-7d: no tag -> asked; the answer is the tag checked" "$(lines_with CHECKED "$OUT")|$(grep -c 'jito-solana build tag' <<<"$OUT")|$(grep -c 'refs/tags/v4.3.0-jito.0' "$NETLOG")|$(state_get jito_tag)" "CHECKED rc=0|1|1|untouched"
+# curl's status sits inside $( ): under the production traps the refusal comes out alone.
+ANZA_CODE=000
+OUT=$( ( git() { return 0; }; curl() { printf 000; return 7; }
+         set -Eeuo pipefail; deeploy_init_traps; JITO_TAG=v4.3.0-jito.0 toolchain_check_tag ) 2>&1 ); RC=$?
+check "R10-7d: under the production traps the refusal comes out alone" "$RC|$(grep -cE 'line [0-9]+:' <<<"$OUT")|$(grep -c 'could not check the Anza CLI release' <<<"$OUT")" "1|0|1"
+ANZA_CODE=200; state_clear jito_tag
+
 echo "== overlay seam: no patch -> vanilla =="
 OVERLAY_DIR="$WORK/empty"; mkdir -p "$OVERLAY_DIR"
 _OVERLAY_APPLIED=9; : >"$CALLS"

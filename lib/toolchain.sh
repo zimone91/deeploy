@@ -57,7 +57,11 @@ TOOLCHAIN_BUILD_FLAGS=(--release-with-lto --no-build-platform-tools)
 _OVERLAY_APPLIED=0
 
 # --- config ------------------------------------------------------------------
-toolchain_resolve_config() {
+# The tag: asked for when unset, refused when it is not a jito-solana tag or is
+# older than the floor. Phase 4 records it (toolchain_resolve_config); phase 3
+# asks the same before it erases anything (toolchain_check_tag) and records
+# nothing.
+_toolchain_tag_resolve() {
     if [[ -z "${JITO_TAG:-}" ]]; then
         ask "jito-solana build tag (e.g. v4.3.0-jito.0)" "${JITO_TAG:-}"
         JITO_TAG="$REPLY"
@@ -75,7 +79,39 @@ toolchain_resolve_config() {
     local why
     why="$(deeploy_tag_floor_problem "$JITO_TAG")" \
         || fail "refusing to build '${JITO_TAG}': ${why}. DeePloy generates a validator.sh that passes --no-xdp and --poh-pinned-cpu-core, and both first exist in ${DEEPLOY_MIN_JITO_TAG} — an older client rejects the argv and never starts, after the entire build. Set JITO_TAG to ${DEEPLOY_MIN_JITO_TAG} or newer."
+}
+toolchain_resolve_config() {
+    _toolchain_tag_resolve
     state_set jito_tag "$JITO_TAG"
+}
+
+# Phase 3, while the build is still ahead (run_phase in deeploy.sh): the tag is
+# checked before anything is erased. 0.1.0-rc9 checked it only in phase 4, after
+# a two-NVMe layout had formatted the data disks (its Known issues). Shape and
+# floor are the checks above. Existence is asked, read-only, of the two places
+# phase 4 fetches from: the jito-solana repository has refs/tags/<tag> (git
+# ls-remote --exit-code: 0 found, 2 no such ref, anything else no answer), and
+# the Anza CLI release named by the tag's base answers 200. That is the HTTP
+# code, not curl's status: under -f a 404 came back as rc 56. "Does not exist"
+# and "could not check" are told apart, and both refuse.
+toolchain_check_tag() {
+    _toolchain_tag_resolve
+    local base url code rc=0
+    base=$(deeploy_tag_agave_base "$JITO_TAG")
+    GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --tags "$JITO_REPO" "refs/tags/${JITO_TAG}" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) ;;
+        2) fail "Refusing: ${JITO_TAG} does not exist in ${JITO_REPO} (no refs/tags/${JITO_TAG}), so phase 4 could not build it. Nothing was changed. Use a tag from github.com/jito-foundation/jito-solana/releases." ;;
+        *) fail "Refusing: could not check that ${JITO_TAG} exists in ${JITO_REPO} (git ls-remote exited ${rc}). This phase erases disks before phase 4 builds that tag; it will not guess. Nothing was changed. Check the network, then run again." ;;
+    esac
+    url="https://release.anza.xyz/${base}/install"
+    code=$(curl -sSL -m 30 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)   # 000 when there is no answer
+    case "$code" in
+        200) ;;
+        404) fail "Refusing: the Anza CLI release ${base}, which phase 4 installs for ${JITO_TAG}, does not exist (${url} answered 404). Nothing was changed." ;;
+        *)   fail "Refusing: could not check the Anza CLI release ${base} for ${JITO_TAG} (${url} answered ${code:-nothing}). This phase erases disks before phase 4 installs it; it will not guess. Nothing was changed. Check the network, then run again." ;;
+    esac
+    ok "${JITO_TAG} exists in ${JITO_REPO}, and so does the Anza CLI release ${base}"
 }
 
 # --- dependencies / rust / anza CLI (network; --dry-run safe) -----------------

@@ -124,10 +124,11 @@ sshd()        { return 1; }
 df()          { printf 'FS 1G Used Avail Use Mounted\n/dev/x 1800G 10G 1790G 1%% /m\n'; }
 ping()        { local h=${!#}; case "$h" in *frankfurt*) printf '%s\n' "0% packet loss" "rtt min/avg/max/mdev = 7/8.0/9/0.3 ms";; *) printf '%s\n' "100% packet loss"; return 1;; esac; }
 curl()        { case "$*" in *getGenesisHash*) printf '{"result":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"}';;
+                             *http_code*) echo "curl $*" >>"$CALLS"; printf 200;;
                              *-o*) local i j o; for ((i=1;i<=$#;i++));do [ "${!i}" = -o ]&&{ j=$((i+1)); o="${!j}"; };done; [ -n "${o:-}" ]&&:>"$o";; *) :;; esac; }
 # --- mocks: mutations (recorded, never executed) -----------------------------
 ALLCALLS="$WORK/allcalls"; : >"$ALLCALLS"
-for c in apt-get ufw systemctl blkdiscard mount swapoff umount mdadm cargo rustup setcap getcap update-grub sysctl cp logger sh; do eval "${c}() { echo '${c}' \"\$*\" >>'$CALLS'; echo '${c}' >>'$ALLCALLS'; return 0; }"; done
+for c in apt-get ufw systemctl blkdiscard mount swapoff umount mdadm cargo rustup setcap getcap update-grub sysctl cp logger sh git; do eval "${c}() { echo '${c}' \"\$*\" >>'$CALLS'; echo '${c}' >>'$ALLCALLS'; return 0; }"; done
 mkfs.xfs() { echo "mkfs.xfs $*" >>"$CALLS"; echo mkfs.xfs >>"$ALLCALLS"; }
 # tuning_grub reads the GENERATED grub.cfg back before arming the reboot, so the
 # walkthrough needs an update-grub that behaves like one. The candidate list is
@@ -194,6 +195,8 @@ check "disk->validatorcfg: ledger_path"                   "$(sget ledger_path)" 
 check "disk->validatorcfg: accounts_path (separate disk)" "$(sget accounts_path)" "$ACCOUNTS_MOUNT/solana/accounts"
 check "disk->validatorcfg: snapshots on LEDGER side"      "$(sget snapshots_path)" "$WORK/root/solana/snapshots"
 check "region->validatorcfg: bam_url chosen"              "$(sget bam_url)" "http://frankfurt.mainnet.bam.jito.wtf"
+# R10-7d: the tag was asked of the jito repo and of Anza before phase 3 erased anything.
+check "R10-7d: the build's tag checked before the first erase" "$(awk '/^git ls-remote .*refs\/tags\/v4.2.1-jito$/ {g = NR} /^curl .*release.anza.xyz\/v4.2.1\/install$/ {c = NR} /^(blkdiscard|mkfs\.xfs) / && !e {e = NR} END {print (g && c && e && g < e && c < e) ? "before" : "git=" g " curl=" c " erase=" e}' "$CALLS")" "before"
 # XFS tuning belongs to Phase 3 (after the FS exists), NOT Phase 2's sysctl.
 check "Phase 2 sysctl has NO fs.xfs key"                  "$(grep -c 'fs.xfs' "$SYSCTL_FILE")" "0"
 check "R10-5: Phase 2 sysctl reserves the XDP UMEM's huge pages (2 cores, rings 1024/1024)" "$(grep -cx 'vm.nr_hugepages=32' "$SYSCTL_FILE")" "1"

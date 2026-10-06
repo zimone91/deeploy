@@ -40,6 +40,10 @@ _phase_is_interactive() { [[ "$1" -lt 8 ]]; }
 run_phase() {
     local n=$1
     phase_begin "$n" "$(phase_name "$n")"
+    # Phase 3 erases disks and phase 4 builds the tag: while that build is still
+    # ahead, the tag is checked first. Kept out of the case below, whose
+    # "N) function" lines tests/test_toolgate.sh reads as the phase map.
+    if [[ "$n" == 3 ]] && { ! is_phase_done 4 || [[ "${FORCE:-0}" == "1" ]]; }; then toolchain_check_tag; fi
     case "$n" in
         0) preflight_run ;;
         1) base_run ;;
