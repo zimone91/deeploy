@@ -278,6 +278,155 @@ US=DOWN THEM=95
 check "the node's RPC silent -> a WARN that says so" "$(grep -c "not caught up: no slot from the node's RPC at http://127.0.0.1:8899$" <<<"$(within 5 'caught up' real_catchup)")" "1"
 unset -f curl
 
+echo "== R10-8: BAM connection attempts in the window of solana.log =="
+# Lines in the rc9 box's format (jito c21f9074: core/src/bam_manager.rs 187,
+# 199-203, 210, 222; core/src/bam_connection.rs 199). Times and pubkey are
+# synthetic. bl <date-time> <kind> [elapsed] [max allowed] prints one line.
+mkdir -p "$WORK/bamhome"; state_set solana_home "$WORK/bamhome"; state_set mev_mode bam
+BLOG="$WORK/bamhome/solana.log"
+bl() {
+    local t="[$1.100000000Z"
+    case "$2" in
+        start) echo "$t INFO  agave_validator::commands::run::execute] Starting validator with: [" ;;
+        cf)    echo "$t ERROR solana_core::bam_manager] Failed to connect to BAM with url: http://bam.example.invalid: transport error" ;;
+        nh)    echo "$t WARN  solana_core::bam_manager] BAM connection not healthy after waiting for 6s, disconnecting and will retry" ;;
+        est)   echo "$t INFO  solana_core::bam_manager] BAM connection established" ;;
+        lost)  echo "$t WARN  solana_core::bam_manager] BAM connection unhealthy" ;;
+        ce)    echo "$t ERROR solana_core::bam_connection] Failed to receive message from inbound stream: Status { code: PermissionDenied, message: \"Challenge expired (elapsed since creation: $3, max allowed: ${4:-30ms}). Check latency from bam node to validator\", source: None }" ;;
+        ls)    echo "$t ERROR solana_core::bam_connection] Failed to receive message from inbound stream: Status { code: PermissionDenied, message: \"Validator is not on the leader schedule: Sync1111111111111111111111111111111111111111\", source: None }" ;;
+        tick)  echo "$t INFO  solana_metrics::metrics] datapoint: bam_connection-metrics unhealthy_connection_count=1i" ;;
+    esac
+}
+D=2026-10-05T
+bam() { reset; verify_bam >"$WORK/bam" 2>&1; }
+{ bl ${D}14:30:00 start; bl ${D}14:38:00 ce 31.9ms; bl ${D}14:38:00 nh
+  bl ${D}14:40:10 ce 31.2ms; bl ${D}14:40:10 nh; bl ${D}14:40:11 ce 32.8ms; bl ${D}14:40:11 nh
+  bl ${D}14:40:12 ce 30.4ms; bl ${D}14:40:12 nh; bl ${D}14:41:00 ls; bl ${D}14:41:00 nh
+  bl ${D}14:41:01 ls; bl ${D}14:41:01 nh; bl ${D}14:42:00 cf; bl ${D}14:48:28 tick; } >"$BLOG"
+bam
+check "R10-8: failed attempts, none established -> WARN with the last event, the window and the counts" \
+    "$_VF_WARN|$(grep -cF 'BAM: not connected, last event 2026-10-05T14:42:00Z (connect failed), 2026-10-05T14:38:28Z to 2026-10-05T14:48:28Z (last 10 min): 0 established, 5 not healthy, 1 connect failed, 0 lost after established; Challenge expired 3 (elapsed p50 31.2ms, max allowed 30ms), not on the leader schedule 2' "$WORK/bam")" "1|1"
+check "R10-8: the 6 s in the not-healthy line is not printed" "$(grep -c '6s' "$WORK/bam")" "0"
+{ bl ${D}14:40:00 ce 31ms 45ms; bl ${D}14:40:00 nh; bl ${D}14:40:01 ce 31ms; bl ${D}14:40:01 nh
+  bl ${D}14:40:02 ce 31ms 45ms; bl ${D}14:40:02 nh; bl ${D}14:41:00 tick; } >"$BLOG"
+bam
+check "R10-8: max allowed parsed, each value once, in order (45ms, 30ms)" "$(grep -c '(elapsed p50 31ms, max allowed 45ms, 30ms), not on the leader schedule 0$' "$WORK/bam")" "1"
+{ for v in 33ms 31ms 32ms; do bl ${D}14:40:00 ce $v; bl ${D}14:40:00 nh; done; bl ${D}14:41:00 tick; } >"$BLOG"
+bam
+check "R10-8: p50 nearest rank, odd n (31 32 33 -> 32ms)" "$(grep -c 'Challenge expired 3 (elapsed p50 32ms, ' "$WORK/bam")" "1"
+{ for v in 34ms 31ms 33ms 32ms; do bl ${D}14:40:00 ce $v; bl ${D}14:40:00 nh; done; bl ${D}14:41:00 tick; } >"$BLOG"
+bam
+check "R10-8: p50 nearest rank, even n (31 32 33 34 -> 32ms)" "$(grep -c 'Challenge expired 4 (elapsed p50 32ms, ' "$WORK/bam")" "1"
+{ for v in 1.5s 35ms 40ms; do bl ${D}14:40:00 ce $v; bl ${D}14:40:00 nh; done; bl ${D}14:41:00 tick; } >"$BLOG"
+bam
+check "R10-8: seconds sort as 1000 ms (35ms 40ms 1.5s -> 40ms)" "$(grep -c 'Challenge expired 3 (elapsed p50 40ms, max allowed 30ms)' "$WORK/bam")" "1"
+{ for v in 35ms 36ms 900µs; do bl ${D}14:40:00 ce $v; bl ${D}14:40:00 nh; done; bl ${D}14:41:00 tick; } >"$BLOG"
+bam
+check "R10-8: a value in another unit is not in p50, and says so" "$(grep -c 'Challenge expired 3 (elapsed p50 35ms, 1 not in p50, max allowed 30ms)' "$WORK/bam")" "1"
+{ bl ${D}14:40:00 ce 900µs; bl ${D}14:40:00 nh; bl ${D}14:41:00 tick; } >"$BLOG"
+bam
+check "R10-8: no value in ms or s -> no p50, the count said" "$(grep -c 'Challenge expired 1 (1 not in p50, max allowed 30ms), ' "$WORK/bam")" "1"
+{ bl ${D}14:00:00 tick; bl ${D}14:40:00 nh; bl ${D}14:40:01 nh; bl ${D}14:40:02 est; bl ${D}14:44:00 lost; bl ${D}14:44:01 nh; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: established, lost, not healthy -> WARN with the last event, the loss counted" \
+    "$_VF_WARN|$(grep -cF 'BAM: not connected, last event 2026-10-05T14:44:01Z (not healthy), 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 1 established, 3 not healthy, 0 connect failed, 1 lost after established; Challenge expired 0, not on the leader schedule 0' "$WORK/bam")" "1|1"
+{ bl ${D}14:00:00 tick; bl ${D}14:40:00 nh; bl ${D}14:40:02 est; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: not healthy, then established -> ok, connected since it" \
+    "$_VF_WARN|$(grep -cF '[OK] BAM: connected since 2026-10-05T14:40:02Z, 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 1 established, 1 not healthy, 0 connect failed, 0 lost after established' "$WORK/bam")" "0|1"
+{ bl ${D}14:00:00 tick; bl ${D}14:40:00 est; bl ${D}14:41:00 lost; bl ${D}14:42:00 est; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: established, lost, established -> ok, connected since the second" \
+    "$_VF_WARN|$(grep -cF '[OK] BAM: connected since 2026-10-05T14:42:00Z, 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 2 established, 0 not healthy, 0 connect failed, 1 lost after established' "$WORK/bam")" "0|1"
+{ bl ${D}14:00:00 tick; bl ${D}14:44:58 lost; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: only a loss, at the window's end -> WARN, the loss in the line" \
+    "$_VF_WARN|$(grep -cF 'BAM: not connected, last event 2026-10-05T14:44:58Z (lost), 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 0 established, 0 not healthy, 0 connect failed, 1 lost after established' "$WORK/bam")" "1|1"
+{ bl ${D}14:00:00 tick; bl ${D}14:41:00 tick; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: no connection event in the window -> info, not a WARN" \
+    "$_VF_WARN|$(grep -cF 'BAM: no connection event, 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min); a steady connection logs none' "$WORK/bam")" "0|1"
+{ bl ${D}14:20:00 start; bl ${D}14:40:00 ce 31ms; bl ${D}14:40:00 nh; bl ${D}14:40:01 cf; bl ${D}14:42:00 start
+  bl ${D}14:42:30 ce 32ms; bl ${D}14:42:30 nh; bl ${D}14:43:00 ls; bl ${D}14:43:00 nh; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: a start inside the window bounds it; lines before it not counted" \
+    "$(grep -cF 'BAM: not connected, last event 2026-10-05T14:43:00Z (not healthy), 2026-10-05T14:42:00Z to 2026-10-05T14:45:00Z (since the validator start): 0 established, 2 not healthy, 0 connect failed, 0 lost after established; Challenge expired 1 (elapsed p50 32ms, max allowed 30ms), not on the leader schedule 1' "$WORK/bam")" "1"
+# Longer than the 1000 lines the first-timestamp probe reads: the first line is
+# only at the head.
+{ bl ${D}14:41:30 tick; for i in $(seq 1 1200); do bl ${D}14:41:40 tick; done
+  bl ${D}14:42:00 ls; bl ${D}14:42:00 nh; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: a log that begins inside the window (rotated) bounds it" \
+    "$(grep -cF 'BAM: not connected, last event 2026-10-05T14:42:00Z (not healthy), 2026-10-05T14:41:30Z to 2026-10-05T14:45:00Z (since solana.log begins): 0 established, 1 not healthy' "$WORK/bam")" "1"
+{ bl ${D}14:35:00 tick; bl ${D}14:42:00 nh; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: a log that begins exactly 10 min before its end -> the last 10 min" "$(grep -cF '2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min)' "$WORK/bam")" "1"
+{ bl ${D}14:00:00 tick; bl ${D}14:35:00 start; bl ${D}14:42:00 nh; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: a start exactly 10 min before the end -> since the start" "$(grep -cF '2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (since the validator start)' "$WORK/bam")" "1"
+{ bl ${D}14:00:00 tick; bl ${D}14:42:00 cf; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: only a failed connect -> WARN" "$_VF_WARN|$(grep -cF 'BAM: not connected, last event 2026-10-05T14:42:00Z (connect failed), 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 0 established, 0 not healthy, 1 connect failed' "$WORK/bam")" "1|1"
+{ bl ${D}14:00:00 tick; bl ${D}14:42:00 est; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: only established -> ok" "$_VF_WARN|$(grep -cF '[OK] BAM: connected since 2026-10-05T14:42:00Z, 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 1 established, 0 not healthy, 0 connect failed' "$WORK/bam")" "0|1"
+{ bl ${D}14:40:00 nh; bl ${D}14:44:00 start; printf '%s\n' '    "--bam-url",' '    "http://bam.example.invalid",' ']'; } >"$BLOG"
+bam
+check "R10-8: the window ends at the last timestamped line, not at a continuation line" \
+    "$(grep -cF 'BAM: no connection event, 2026-10-05T14:44:00Z to 2026-10-05T14:44:00Z (since the validator start)' "$WORK/bam")" "1"
+{ bl ${D}14:50:00 tick; bl ${D}14:42:00 nh; bl ${D}14:45:00 tick; } >"$BLOG"
+bam
+check "R10-8: timestamps that run backwards -> not checked (said), not a WARN" \
+    "$_VF_WARN|$(grep -cF 'BAM: the timestamps of solana.log run backwards (2026-10-05T14:50:00Z after 2026-10-05T14:45:00Z)' "$WORK/bam")" "0|1"
+# The log grows while grep reads it: lines written after the last timestamp
+# the tail probe saw are not in the window (here the probe saw 14:45:00).
+saw() { _vf_log_last() { echo 2026-10-05T14:45:00.100000000Z; }; reset; verify_bam 2>&1; }
+{ bl ${D}14:00:00 tick; bl ${D}14:44:00 nh; bl ${D}14:45:00 nh; bl ${D}14:45:03 est; } >"$BLOG"
+check "R10-8: an event after the window's end is not counted, the verdict is the window's" \
+    "$(saw | grep -cF '[WARN] BAM: not connected, last event 2026-10-05T14:45:00Z (not healthy), 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 0 established, 2 not healthy')" "1"
+{ bl ${D}14:00:00 tick; bl ${D}14:44:00 nh; bl ${D}14:45:02 start; } >"$BLOG"
+check "R10-8: a start after the window's end -> not backwards, the counts untouched" \
+    "$(saw | grep -cF '[WARN] BAM: not connected, last event 2026-10-05T14:44:00Z (not healthy), 2026-10-05T14:35:00Z to 2026-10-05T14:45:00Z (last 10 min): 0 established, 1 not healthy')" "1"
+{ bl 2028-02-29T23:54:59 nh; bl 2028-02-29T23:55:00 nh; bl 2028-03-01T00:05:00 tick; } >"$BLOG"
+bam
+check "R10-8: the window across a leap day's midnight" "$(grep -cF '2028-02-29T23:55:00Z to 2028-03-01T00:05:00Z (last 10 min): 0 established, 1 not healthy' "$WORK/bam")" "1"
+{ bl 2026-02-28T23:54:59 nh; bl 2026-02-28T23:55:00 nh; bl 2026-03-01T00:05:00 tick; } >"$BLOG"
+bam
+check "R10-8: the window across a month's end" "$(grep -cF '2026-02-28T23:55:00Z to 2026-03-01T00:05:00Z (last 10 min): 0 established, 1 not healthy' "$WORK/bam")" "1"
+{ bl 2026-12-31T23:54:59 nh; bl 2026-12-31T23:55:00 nh; bl 2027-01-01T00:05:00 tick; } >"$BLOG"
+bam
+check "R10-8: the window across a year's end" "$(grep -cF '2026-12-31T23:55:00Z to 2027-01-01T00:05:00Z (last 10 min): 0 established, 1 not healthy' "$WORK/bam")" "1"
+{ bl 2100-02-28T23:54:59 nh; bl 2100-02-28T23:55:00 nh; bl 2100-03-01T00:05:00 tick; } >"$BLOG"
+bam
+check "R10-8: the window across February's end in 2100 (not a leap year)" "$(grep -cF '2100-02-28T23:55:00Z to 2100-03-01T00:05:00Z (last 10 min): 0 established, 1 not healthy' "$WORK/bam")" "1"
+# Probes that only record a read: with relayer nothing is read or printed.
+: >"$WORK/bamreads"; state_set mev_mode relayer
+OUT=$( _vf_log_last() { echo read >>"$WORK/bamreads"; }; _vf_log_first() { echo read >>"$WORK/bamreads"; }
+       _vf_bam_lines() { echo read >>"$WORK/bamreads"; }; verify_bam 2>&1 )
+check "R10-8: MEV mode relayer -> solana.log not read, nothing printed" "$(wc -l <"$WORK/bamreads" | tr -d ' ')|$OUT" "0|"
+state_set mev_mode bam
+OUT=$( _vf_log_last() { echo read >>"$WORK/bamreads"; }; verify_bam 2>&1 )
+check "R10-8: MEV mode bam -> read (the control)" "$(wc -l <"$WORK/bamreads" | tr -d ' ')" "1"
+state_clear mev_mode
+OUT=$( _vf_log_last() { echo read >>"$WORK/bamreads"; }; verify_bam 2>&1 )
+check "R10-8: no MEV mode recorded -> bam, read" "$(wc -l <"$WORK/bamreads" | tr -d ' ')" "2"
+state_set mev_mode bam
+rm -f "$BLOG"
+bam
+check "R10-8: no log -> not checked (said), not a WARN" "$_VF_WARN|$(grep -cF 'BAM: no timestamped line in solana.log' "$WORK/bam")" "0|1"
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; verify_bam ) 2>&1 )
+check "R10-8: real probes, no log, ERR trap -> no stray [FAIL] line" "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")" "0"
+# No BAM line at all (grep finds nothing), and enough lines that the head of the
+# first-timestamp probe closes its pipe early.
+for i in $(seq 1 1200); do bl ${D}14:40:00 tick; done >"$BLOG"
+NOISE=$( ( set -E; deeploy_init_traps; trap - EXIT; verify_bam ) 2>&1 )
+check "R10-8: real probes, no BAM line, a long log, ERR trap -> info only, no stray [FAIL]" \
+    "$(grep -cE '\[FAIL\] line [0-9]+' <<<"$NOISE")|$(grep -c 'BAM: no connection event' <<<"$NOISE")" "0|1"
+{ bl ${D}14:40:00 nh; bl ${D}14:41:00 tick; } >"$BLOG"
+verify_run >"$WORK/run" 2>&1
+check "R10-8: verify_run runs it" "$(grep -c 'BAM: not connected, last event' "$WORK/run")" "1"
+state_clear solana_home; state_clear mev_mode
+
 echo "== verify_run summary =="
 verify_run >/dev/null 2>&1; check "all-good verify_run passes" "$?" "0"
 _vf_isolated() { echo "wrong-set"; }

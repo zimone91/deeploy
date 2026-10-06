@@ -5,8 +5,8 @@
 # that the tuning actually took: process limits, priority/OOM, CPU isolation
 # (vs the recorded isolated set), PoH thread affinity (vs POH_CORE), the mlx5
 # NIC's IRQs (off the isolated CPUs), governor/THP/KSM/NUMA, sysctl buffers,
-# the XDP UMEM's huge pages, disk layout, catchup, the poh-pin timer, and
-# whether the node runs on the staked identity.
+# the XDP UMEM's huge pages, disk layout, catchup, the BAM connection, the
+# poh-pin timer, and whether the node runs on the staked identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
 # Requires: common.sh and constants.sh sourced.
@@ -69,6 +69,33 @@ _vf_hugepage_fails() {
         "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null || true
 }
 _vf_catchup()      { deeploy_catchup_status; }    # two bounded getSlot reads (common.sh)
+# BAM connection attempts in solana.log (R10-8). Each attempt of jito's BAM
+# manager ends in exactly one of three lines (core/src/bam_manager.rs @
+# c21f9074): "Failed to connect to BAM with url" (187), "BAM connection not
+# healthy after waiting for …" (199-203) or "BAM connection established"
+# (210); "BAM connection unhealthy" (222) is a loss after that. The duration in
+# the not-healthy line is a constant (MAX_DURATION_BETWEEN_NODE_HEARTBEATS),
+# not the time waited, and is not read. Why an attempt failed is the server's
+# status, logged by core/src/bam_connection.rs 199. solana.log grows ~3 MB/min
+# and rotates daily, so grep -aF picks the lines and awk reads only those. The
+# log's first and last timestamped lines, within 1000 lines of either end,
+# bound the window (a multi-line entry, such as the start line's argument
+# list, has no timestamp on the lines after its first).
+_vf_log_first() {
+    head -n 1000 "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null \
+        | sed -n 's/^\[\([0-9][-0-9T:.]*Z\) .*/\1/p' | head -n 1 || true
+}
+_vf_log_last() {
+    tail -n 1000 "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null \
+        | sed -n 's/^\[\([0-9][-0-9T:.]*Z\) .*/\1/p' | tail -n 1 || true
+}
+_vf_bam_lines() {
+    grep -aF -e 'Starting validator with:' -e 'Failed to connect to BAM with url' \
+        -e 'BAM connection not healthy after waiting for' -e 'BAM connection established' \
+        -e 'BAM connection unhealthy' -e 'Challenge expired (elapsed since creation: ' \
+        -e 'Validator is not on the leader schedule' \
+        "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null || true
+}
 _vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
 _vf_identity()     { deeploy_live_identity; }     # getIdentity, local RPC (common.sh)
 _vf_sync_pubkey()  { deeploy_sync_pubkey; }
@@ -198,6 +225,94 @@ verify_catchup() {
     else vf_warn "not caught up: $out"; fi
 }
 
+# The BAM lines of solana.log (on stdin) in the window that ends at the log's
+# last timestamp ($2) and starts at the latest of: 10 min before it, the last
+# "Starting validator with:", the log's first timestamp ($1). Lines after the
+# end, written while grep read the growing log, are not in the window. The
+# last connection event decides: established is ok, a loss, a failed connect
+# or a not-healthy attempt is a warn, none is info. Prints one line, its first
+# word ok / warn / info. Dates are counted in awk (days from civil and back):
+# BSD awk has no mktime, and mawk need not have one.
+_vf_bam_window() {
+    awk -v first="$1" -v last="$2" '
+    function secs(t,   y, m, d, e, yoe) {
+        y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0; d = substr(t, 9, 2) + 0
+        y -= (m <= 2); e = int(y / 400); yoe = y - e * 400
+        return (e * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) \
+            + int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1 - 719468) * 86400 \
+            + substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+    }
+    function stamp(s,   z, e, doe, yoe, doy, mp, m) {
+        z = int(s / 86400) + 719468; s %= 86400; e = int(z / 146097); doe = z - e * 146097
+        yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
+        doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100)); mp = int((5 * doy + 2) / 153)
+        m = mp < 10 ? mp + 3 : mp - 9
+        return sprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", yoe + e * 400 + (m <= 2), m,
+            doy - int((153 * mp + 2) / 5) + 1, int(s / 3600), int(s % 3600 / 60), s % 60)
+    }
+    function zero() { est = nh = cf = lost = ce = ls = n = out = 0; mx = ev = ""; split("", seen) }
+    BEGIN {
+        zero(); to = secs(last); from = to - 600; why = "last 10 min"
+        # no first timestamp ("") counts as long before any window
+        if (secs(first) > from) { from = secs(first); why = "since solana.log begins" }
+    }
+    { t = substr($1, 2) }
+    secs(t) > to { next }
+    /Starting validator with:/ {
+        if (secs(t) >= from) { from = secs(t); why = "since the validator start" }
+        zero()
+    }
+    secs(t) < from { next }
+    /Failed to connect to BAM with url/ { cf++; ev = "connect failed"; et = t }
+    /BAM connection not healthy after waiting for/ { nh++; ev = "not healthy"; et = t }
+    /BAM connection established/ { est++; ev = "established"; et = t }
+    /BAM connection unhealthy/ { lost++; ev = "lost"; et = t }
+    /Validator is not on the leader schedule/ { ls++ }
+    /Challenge expired \(elapsed since creation: / {
+        ce++
+        v = $0; sub(/.*elapsed since creation: /, "", v); sub(/,.*/, "", v)
+        a = $0; sub(/.*max allowed: /, "", a); sub(/\).*/, "", a)
+        if (!(a in seen)) { seen[a] = 1; mx = mx (mx == "" ? "" : ", ") a }
+        if (v ~ /^[0-9.]+ms$/) { n++; key[n] = v + 0; txt[n] = v }
+        else if (v ~ /^[0-9.]+s$/) { n++; key[n] = v * 1000; txt[n] = v }
+        else out++
+    }
+    END {
+        if (from > to) { print "info BAM: the timestamps of solana.log run backwards (" stamp(from) " after " stamp(to) ") — the connection is not checked"; exit }
+        span = stamp(from) " to " stamp(to) " (" why ")"
+        if (ev == "") { print "info BAM: no connection event, " span "; a steady connection logs none"; exit }
+        for (i = 2; i <= n; i++) {
+            k = key[i]; x = txt[i]
+            for (j = i - 1; j > 0 && key[j] > k; j--) { key[j + 1] = key[j]; txt[j + 1] = txt[j] }
+            key[j + 1] = k; txt[j + 1] = x
+        }
+        r = n ? "elapsed p50 " txt[int((n + 1) / 2)] : ""
+        if (out) r = r (r == "" ? "" : ", ") out " not in p50"
+        if (mx != "") r = r (r == "" ? "" : ", ") "max allowed " mx
+        print (ev == "established" ? "ok BAM: connected since " stamp(secs(et)) : \
+            "warn BAM: not connected, last event " stamp(secs(et)) " (" ev ")") ", " span ": " \
+            est " established, " nh " not healthy, " cf " connect failed, " lost " lost after established; " \
+            "Challenge expired " ce (r == "" ? "" : " (" r ")") ", not on the leader schedule " ls
+    }'
+}
+
+# BAM (R10-8): only where validator.sh gets --bam-url, that is unless the MEV
+# mode is relayer (validatorcfg.sh). The window's last connection event
+# decides: established is ok, a loss or a failed attempt is a WARN, and no
+# event is info: a steady connection logs none.
+verify_bam() {
+    local last out
+    [[ "$(state_get mev_mode bam)" != relayer ]] || return 0
+    last=$(_vf_log_last)
+    if [[ -z "$last" ]]; then info "BAM: no timestamped line in solana.log — the connection is not checked"; return 0; fi
+    out=$(_vf_bam_lines | _vf_bam_window "$(_vf_log_first)" "$last")
+    case "$out" in
+        "ok "*)   vf_ok   "${out#ok }" ;;
+        "warn "*) vf_warn "${out#warn }" ;;
+        *)        info    "${out#info }" ;;
+    esac
+}
+
 verify_pohpin_timer() {
     if [[ "$(_vf_timer_active)" == "active" ]]; then vf_ok "solana-poh-pin.timer active"
     else vf_warn "solana-poh-pin.timer NOT active"; fi
@@ -240,6 +355,7 @@ verify_run() {
     verify_sysctl
     verify_hugepages
     verify_catchup
+    verify_bam
     verify_identity
     verify_pohpin_timer
     echo ""

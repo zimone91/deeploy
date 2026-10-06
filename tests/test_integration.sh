@@ -145,6 +145,7 @@ _vf_isolated(){ sget isolated_set; }; _vf_governors(){ echo "cpu0 performance"; 
 _vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "caught up (us:100 them:100)"; }; _vf_timer_active(){ echo active; }
 _vf_nic(){ echo enp1s0; }; _vf_nic_bus(){ echo 0000:85:00.0; }; _vf_mlx5_irqs(){ echo "254 mlx5_comp0@pci:0000:85:00.0 0"; }
 _vf_hugepages(){ echo 32; }; _vf_hugepage_fails(){ echo 0; }
+_vf_log_first(){ echo 2026-10-05T14:00:00.000000000Z; }; _vf_log_last(){ echo 2026-10-05T14:45:00.000000000Z; }; _vf_bam_lines(){ :; }
 # post-reboot isolation read (mock /sys agreeing with the recorded set)
 _install_read_isolated(){ sget isolated_set; }; _install_read_cmdline(){ echo "isolcpus=domain,managed_irq,$(sget isolated_set)"; }
 

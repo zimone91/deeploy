@@ -44,6 +44,16 @@ BAM is the default (`--bam-url`, commission-bps 0). The closest region is scored
 by latency in preflight (BAM URL, block-engine URL, and shred receiver are chosen
 independently).
 
+`deeploy.sh verify` reads BAM's connection events from the last 10 minutes of
+`solana.log` (from the validator's start or the log's first line, if later).
+The last event decides: an established connection is ok; a loss, a failed
+connect or an attempt that never became healthy is a WARN. The line also counts
+the attempts and gives the server's reasons: `Challenge expired` (by the time
+the server checked the signed proof, more than its `max allowed` had passed
+since it created the challenge; the elapsed p50 is shown) and `not on the
+leader schedule`. The proof is signed by the running identity, so on the sync
+identity, before the swap, the second one is expected.
+
 > **The BAM / block-engine / shred-receiver tables are point-in-time.** Jito
 > rotates the shred-receiver IPs periodically (unlike the genesis hash, which is
 > stable for years). Re-verify against
