@@ -48,11 +48,14 @@ check "it names the anchor's subject"      "$(grep -cF "$SUBJ" <<<"$OUT")" "1"
 check "it names the anchor's date"         "$(grep -cF "$DATE" <<<"$OUT")" "1"
 
 echo "== a ref can be asked for explicitly =="
-TAGOUT=$(cd "$ROOT" && "$DRIFT" v0.1.0-rc7 2>&1); TRC=$?
+# The anchor's own tag, so the answer is known: no drift. A tag older than the
+# anchor is no fixture: git answers it with the two sides of the diff swapped.
+TAGOUT=$(cd "$ROOT" && "$DRIFT" v0.1.0-rc9 2>&1); TRC=$?
 check "a tag is accepted"                  "$TRC" "0"
-TAGWANT=$(cd "$ROOT" && git diff --shortstat "$ANCHOR" v0.1.0-rc7 -- deeploy.sh lib/ | sed 's/^ *//')
-check "  and answers about THAT ref"       "$(grep -c -- "$TAGWANT" <<<"$TAGOUT")" "1"
-check "  which differs from HEAD's answer" "$([[ "$TAGWANT" != "$WANT" ]] && echo differs || echo same)" "differs"
+check "  control: that tag is the anchor"  "$(cd "$ROOT" && git rev-parse 'v0.1.0-rc9^{commit}')" \
+                                           "$(cd "$ROOT" && git rev-parse "${ANCHOR}^{commit}")"
+check "  and answers about THAT ref"       "$(grep -c 'no changes' <<<"$TAGOUT")" "1"
+check "  which differs from HEAD's answer" "$(grep -c 'no changes' <<<"$OUT")" "0"
 BADREF=$(cd "$ROOT" && "$DRIFT" no-such-ref 2>&1); check "an unresolvable ref -> cannot measure" "$?" "2"
 check "  and says which ref"               "$(grep -c 'no-such-ref' <<<"$BADREF")" "1"
 

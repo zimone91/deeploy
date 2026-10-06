@@ -15,21 +15,26 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 # THE ANCHOR. One place, one line of provenance, and it is not a guess.
 #
-# 676be33 — "validatorcfg: close the unattended MEV crash trap (R3, R4)",
-# 2026-06-15, the last commit before the F series.
+# 1729f1e — "version: 0.1.0-rc9", 2026-10-05, the commit tagged v0.1.0-rc9.
 #
-# The June checkpoints record the hardware round (the F series) as closed at a
-# HEAD this repository no longer carries: the public history was rewritten, so
-# those SHAs do not resolve here and the anchor is mapped by commit subject
-# instead. The F series was written FROM that round rather than run during it,
-# but the findings tracker records F1/R16 as confirmed on the box — so part of
-# it did run, and the truth lies somewhere between this commit and the end of
-# the series. This is the earlier of the two. It can only overstate the drift,
-# never hide it, and the 60 lines between them do not change what the line says.
+# Its release tarball, fetched and checked by get-deeploy.sh, ran on one
+# mainnet box with an mlx5 NIC on 2026-10-05: install --dry-run; install,
+# phases 0-8 with the reboot between 7 and 8, to catchup 0 on the throwaway
+# identity, with XDP retransmit on two cores in zero-copy mode; verify;
+# upgrade --dry-run; upgrade with a private overlay, which rebuilt and
+# restarted solana; verify again. The node ran on into 2026-10-06.
 #
-# If a checkout is ever measured on the mlx5 box, this is the one line to edit.
+# Those runs did not include dz-connect, export, import, upgrade --rollback,
+# or anything that reads the staked key: it was not on the box then. The swap
+# was rehearsed with decoy keys only.
+#
+# The anchor before it, 676be33 (2026-06-15, the last commit before the F
+# series), was a lower bound: the June hardware round closed at a HEAD the
+# rewritten public history no longer carries.
+#
+# When a later tree runs on the box, this is the one line to edit.
 # ---------------------------------------------------------------------------
-HW_ANCHOR="${HW_ANCHOR:-676be33}"
+HW_ANCHOR="${HW_ANCHOR:-1729f1e}"
 
 die() { printf 'hardware-drift: %s\n' "$*" >&2; exit "${2:-1}"; }
 
@@ -56,9 +61,10 @@ short=$(git rev-parse --short "$HW_ANCHOR")
 stat=$(git diff --shortstat "$HW_ANCHOR" "$ref" -- deeploy.sh lib/)
 [[ -n "$stat" ]] || stat="no changes"
 
-# The anchor is a LOWER BOUND, not the last tree that ran on metal: part of the F
-# series was confirmed on the box and part was written afterwards. Saying "since
-# the last hardware run" would assert the bound is the thing it bounds, and that
-# wording would have gone into every future release.
+# The line says "no earlier than", not "the last commit run on hardware": a
+# later tree can run on the box before anyone edits the anchor, and this line
+# goes onto every release page. Worded so, it stays true, and the figure can
+# only overstate. It counts changes since the anchor; what did not run on
+# metal even at the anchor is listed above, not counted here.
 printf 'Changes in the deployment path since %s ("%s", %s): %s. The last commit run on hardware is no earlier than %s, so these figures can only overstate what has not run on hardware.\n' \
     "$short" "$subject" "$date" "$(printf '%s' "$stat" | sed 's/^ *//')" "$short"
