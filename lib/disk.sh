@@ -32,6 +32,9 @@
 #                                     if it carries /, else /mnt/data/solana.
 #   3. otherwise                   -> emergency  (everything on the system disk;
 #                                     LOUD "not recommended for mainnet" warning)
+#   The system volume (3, and 2 when the array carries /) takes the ledger only
+#   after a typed 'yes', and never on a box laid out on data disks
+#   (_disk_system_volume_gate).
 #   Q2: if the 2 data NVMe are themselves joined in a RAID and the OS is on a
 #       separate disk -> prompt break-into-2 / use-as-one / cancel.
 #
@@ -368,6 +371,54 @@ _disk_set_raid_volume() {                         # "<md> <sysflag>"
     fi
 }
 
+# --- was this box laid out on data disks? ------------------------------------
+# The answer has to be true, so it is written only where it is: by the data
+# layouts, after the mount check has shown the data filesystems mounted from
+# their own devices. disk_layout cannot answer it. It is recorded before the wipe
+# question, so after a declined wipe it claims a layout that never happened, and
+# a later --only 3 or --force rewrites it before its own question. data_layout
+# is not in the export/import map either: a conf from another box says nothing
+# about these disks. A box laid out before the key existed (rc9 and older) has
+# phase 3 done and its accounts path on a data mount: _disk_record_paths runs at
+# the end of a data layout, and the system-volume layouts record /root/solana.
+# A deliberate re-layout clears the record by writing "none" into the key, which
+# also stops that fallback from answering.
+_disk_laid_out() {                                # stdout: two-nvme | raid-volume, or nothing
+    local m acc
+    if state_has data_layout; then
+        m=$(state_get data_layout "")
+        [[ "$m" == "none" ]] || printf '%s' "$m"
+        return 0
+    fi
+    is_phase_done 3 || return 0
+    acc=$(state_get accounts_path "")
+    case "$acc" in
+        "$ACCOUNTS_MOUNT"/*) printf 'two-nvme' ;;
+        "$DATA_MOUNT"/*)     printf 'raid-volume' ;;
+    esac
+    return 0
+}
+
+# Ledger and accounts go onto the system volume only with the operator's own
+# 'yes' (require_yes: --yes does not answer it, and without a tty it refuses),
+# and never on a box that was laid out on data disks. There the disks that were
+# here are not here now, and this phase cannot find out why: the system-volume
+# layouts write no filesystem, but they repoint solana_home, ledger_path,
+# snapshots_path and accounts_path at the system volume through
+# _disk_record_paths, and the real ledger would sit on a disk nothing
+# references. Both paths onto the system volume come through here: the
+# emergency layout, and a RAID0 array that carries / itself.
+_disk_system_volume_gate() {                      # <the volume, for the operator> <why it is the only one>
+    local prev; prev=$(_disk_laid_out)
+    if [[ -n "$prev" ]]; then
+        fail "Refusing: this box was laid out on data disks (${prev}), and no eligible data disk or data RAID volume is visible now. Putting the ledger and accounts on ${1} would repoint their paths at ${SOLANA_HOME} and leave the real data unreferenced. Attach the data disks and run again. If this box really is being laid out again, clear the record first: echo none > $(_state_file data_layout)"
+    fi
+    warn "$2"
+    warn "The ledger, accounts and snapshots would share ${1} (${SOLANA_HOME}) with the OS. Not recommended for mainnet: expect skipped slots under load."
+    require_yes "Put the ledger, accounts and snapshots on ${1}?" \
+        || fail "Declined (or no terminal to ask on): nothing was changed. Attach data disks — 2 NVMe, or a data RAID volume — and run again."
+}
+
 _disk_resolve() {
     local root; root=$(_disk_root_device)
     _disk_scan_raid
@@ -382,21 +433,14 @@ _disk_resolve() {
     elif [[ -n "$_DISK_RAID0_VOL" ]]; then
         DISK_LAYOUT=raid-volume
         _disk_set_raid_volume "$_DISK_RAID0_VOL"
+        [[ -n "$_DISK_RAID_MOUNT" ]] || _disk_system_volume_gate \
+            "/dev/${_DISK_RAID_MD}, the RAID0 array that also carries /" \
+            "Fewer than 2 eligible NVMe, and the only RAID0 array, /dev/${_DISK_RAID_MD}, is the system volume."
     else
-        # A box that was laid out on data disks does not quietly move to the
-        # system disk. The emergency layout writes no filesystem, but it DOES
-        # rewrite solana_home, ledger_path, snapshots_path and accounts_path
-        # through _disk_record_paths, so a validator would come back pointed at
-        # /root/solana with its real ledger sitting untouched on a disk nothing
-        # references. Refusing is the only honest answer: the disks that were
-        # here are not here now, and this phase cannot find out why.
-        local prev; prev=$(state_get disk_layout "")
-        if [[ "$prev" == "two-nvme" || "$prev" == "raid-volume" ]]; then
-            fail "Refusing: this box was laid out as ${prev}, and no eligible data disk or usable RAID volume is visible now. Falling back to the system disk would repoint the ledger and accounts paths at ${SOLANA_HOME:-/root/solana} and leave the real data unreferenced. Attach the data disks and run again, or clear the recorded layout deliberately if this box really is being rebuilt."
-        fi
-        DISK_LAYOUT=emergency
-        warn "No eligible NVMe (>= ${DISK_MIN_GB} GB, non-system) and no usable RAID0 volume found."
         SOLANA_HOME="${SOLANA_HOME:-/root/solana}"
+        _disk_system_volume_gate "the system disk" \
+            "No eligible NVMe (>= ${DISK_MIN_GB} GB, non-system) and no usable RAID0 volume found."
+        DISK_LAYOUT=emergency
     fi
 
     # two-nvme (chosen directly OR via the Q2 break path): validate + record.
@@ -563,6 +607,7 @@ _disk_finalize_two_nvme() {
     run mkdir -p "$LEDGER_MOUNT/solana" "$ACCOUNTS_MOUNT/solana"
     _disk_symlink_home "$LEDGER_MOUNT/solana" "$SOLANA_LINK"
     _disk_record_paths "$SOLANA_LINK" "$ACCOUNTS_MOUNT/solana/accounts"
+    state_set data_layout two-nvme  # only now: both mounted from their own disks (above)
     _disk_tune_xfs                  # XFS sysctl now that the filesystems are mounted
     run systemctl daemon-reload
 }
@@ -577,6 +622,9 @@ _disk_raid_volume() {
     [[ -n "${_DISK_RAID_MOUNT:-}" ]] && _disk_mount_data_array "/dev/${_DISK_RAID_MD}" "$_DISK_RAID_MOUNT"
     run mkdir -p "$home"/ledger "$home"/accounts "$home"/snapshots
     _disk_record_paths "$home" "$home/accounts"
+    # A data array, mounted from itself (_disk_mount_data_array checked), lays
+    # the box out on data disks; the array that carries / does not.
+    if [[ -n "${_DISK_RAID_MOUNT:-}" ]]; then state_set data_layout raid-volume; fi
     _disk_tune_xfs                  # XFS sysctl (the RAID volume is mkfs.xfs'd above)
     ok "RAID single-volume layout prepared at ${home}"
 }

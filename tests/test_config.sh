@@ -45,6 +45,7 @@ seed_state() {
     state_set isolated_set "1-2,10,25-26,34"
     state_set nic_driver mlx5_core;       state_set retransmit_supported 1; state_set retransmit_zero_copy 1
     state_set disk_layout two-nvme;       state_set ledger_disk /dev/nvme0n1; state_set accounts_disk /dev/nvme1n1
+    state_set data_layout two-nvme        # this box's own record: never exported (R10-7b)
     state_set solana_home /root/solana;   state_set ledger_path /root/solana/ledger
     state_set accounts_path /mnt/accounts/solana/accounts; state_set snapshots_path /root/solana/snapshots
     state_set jito_tag v4.0.0-jito
@@ -72,6 +73,7 @@ check "no FAKE_IDENTITY_KEYPAIR key (mvkfake gone)" "$(grep -c 'FAKE_IDENTITY' "
 check "VOTE pubkey (public)"        "$(grep -c "VOTE_ACCOUNT_PUBKEY=\"$VOTE\"" "$CONFIG_FILE")" "1"
 check "BAM/region captured"         "$(grep -c 'BAM_URL=\"http://slc.mainnet.bam.jito.wtf\"' "$CONFIG_FILE")" "1"
 check "NO key material (JSON array)" "$(grep -cE '\[[0-9]+,[0-9]+' "$CONFIG_FILE")" "0"
+check "data_layout not exported (it says nothing about another box's disks)" "$(grep -ci 'data_layout' "$CONFIG_FILE")" "0"
 check "NO .json contents leaked"    "$(grep -cE '^\[|,[0-9]+,[0-9]+,' "$CONFIG_FILE")" "0"
 # shellcheck disable=SC2012  # ls is fine here; portable perm read for the test
 check "chmod 600"                   "$(ls -l "$CONFIG_FILE" | cut -c1-10)" "-rw-------"

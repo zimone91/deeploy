@@ -14,13 +14,15 @@ binary would build for 30-90 minutes and then refuse to start.
   competing for the same spindle/queue. DeePloy formats them XFS and mounts
   `/mnt/accounts` + `/mnt/ledger` (snapshots ride with the ledger disk).
 - **Single disk or RAID:** works, but is **suboptimal** — accounts and ledger
-  share one volume. DeePloy will deploy this layout and print a clear warning
-  recommending separate NVMe. You are not blocked, but you should understand the
-  I/O contention you're accepting.
+  share one volume, and DeePloy warns and recommends separate NVMe. When that
+  volume is the system volume (a single disk, or a RAID0 array that also
+  carries `/`), DeePloy asks first and you type `yes`. A box that was laid out
+  on data disks is not moved onto the system volume: the run refuses, and says
+  how to clear the record if the box really is being laid out again.
 
 The disk phase **detects** your disks, shows a table, proposes a mapping, and
-**requires you to type `yes`** before wiping anything. `--yes`/`--post-reboot`
-never auto-wipe.
+**requires you to type `yes`** before wiping anything or using the system
+volume. `--yes`/`--post-reboot` never answer that question.
 
 ---
 

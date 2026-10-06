@@ -233,17 +233,22 @@ check "refuse clobbering real dir" "$?" "1"
 
 echo "== emergency layout (1 NVMe + system, no second NVMe, no RAID0) =="
 : >"$CALLS"
-# This scenario is a FIRST install, so the recorded layout has to be empty: a box
-# already laid out on data disks now refuses to fall back to the system disk, and
-# earlier cases in this file leave disk_layout=two-nvme behind.
-state_clear disk_layout 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/disk_layout"
+# This scenario is a FIRST install, so there may be no record of a data layout: a
+# box laid out on data disks refuses to fall back to the system disk, and earlier
+# cases in this file leave data_layout=two-nvme behind (and disk_layout, which a
+# first install would not have either). require_yes is the file's stub here, as
+# if the operator typed 'yes'; section 10 asks for real.
+state_clear data_layout; state_clear disk_layout
 LSBLK_ENUM='nvme0n1 2000398934016 disk 0 OnlyOneNVMe
 sdb 256060514304 disk 0 BootSSD'
 _mp_for() { case "$1" in */sdb) printf '/\n';; *) printf '';; esac; }
 FINDMNT_SRC=/dev/sdb2
 export PROC_MDSTAT="$WORK/no_md"            # absent -> no arrays
 unset ACCOUNTS_DISK LEDGER_DISK
-SOLANA_HOME="$WORK/roothome" disk_run >/dev/null 2>&1
+# In a subshell: a refusal here must fail this check, not end the file. The
+# checks below read files (state, CALLS, directories), not variables.
+( SOLANA_HOME="$WORK/roothome" disk_run ) >/dev/null 2>&1
+check "disk_run rc 0"                "$?" "0"
 check "layout emergency"             "$(state_get disk_layout)" "emergency"
 check "no blkdiscard in emergency"   "$(grep -c blkdiscard "$CALLS")" "0"
 check_true "home dirs created"       "[[ -d \"$WORK/roothome/ledger\" && -d \"$WORK/roothome/accounts\" ]]"
@@ -532,28 +537,98 @@ _disk_adopt_existing_layout >/dev/null 2>&1
 check "nothing mounted -> not a re-run, carry on" "$?" "1"
 check "  and it set no layout"                    "${DISK_LAYOUT:-unset}" "unset"
 
-echo "== 10: a laid-out box never falls back to the system disk =="
-# The emergency layout writes no filesystem, but _disk_record_paths repoints
-# solana_home, ledger_path, snapshots_path and accounts_path at /root/solana —
-# so a validator would come back with its real ledger unreferenced.
+echo "== 10 (R10-7b): the system volume takes the ledger only after a typed yes, and never on a box laid out on data disks =="
+# Both paths onto the system volume — the emergency layout, and a RAID0 array
+# that carries / — write no filesystem, but _disk_record_paths repoints
+# solana_home, ledger_path, snapshots_path and accounts_path at /root/solana. On
+# a box laid out on data disks the real ledger would be left unreferenced, so
+# that refuses; anywhere else the operator's own typed 'yes' decides. The record
+# of "laid out" is data_layout, written by the data layouts after the mount
+# check; disk_layout is recorded before the wipe question and is not it. The
+# questions here go through the real require_yes, not the file's stub.
+eval "$(sed -n '/^require_yes() {/,/^}/p' "$ROOT/lib/common.sh")"
 adopt_reset
 LSBLK_ENUM='sda 256060514304 disk 0 SATA_ONLY'
 _mp_for() { case "$1" in */sda) printf '/\n';; *) printf '';; esac; }
 FINDMNT_SRC=/dev/sda; CK_MOUNT="/"
 export PROC_MDSTAT="$WORK/nomd_e"; : >"$PROC_MDSTAT"
-state_set disk_layout two-nvme
-# Not "the state is empty" — earlier cases in this file recorded paths. What must
-# hold is that the refusal changed NOTHING: the box is left exactly as it was.
-HOME_BEFORE=$(state_get solana_home)
+S10_BEFORE="/before|/before/accounts|<none>"
+s10_reset() {
+    local k; for k in data_layout disk_layout phase-3; do state_clear "$k"; done
+    state_set solana_home /before; state_set accounts_path /before/accounts
+    : >"$CALLS"; unset SOLANA_HOME DISK_LAYOUT
+}
+s10_state() { printf '%s|%s|%s' "$(state_get solana_home)" "$(state_get accounts_path)" "$(state_get disk_layout '<none>')"; }
+ASKED="Type 'yes'|without explicit confirmation"
+
+s10_reset; state_set data_layout two-nvme
 EOUT=$( _disk_resolve 2>&1 ); ERC=$?
-check "state says two-nvme, no disks now -> refused" "$ERC" "1"
-check "  and it names the recorded layout"           "$(grep -c 'was laid out as two-nvme' <<<"$EOUT")" "1"
-check "  and the recorded paths are untouched"       "$(state_get solana_home)" "$HOME_BEFORE"
-check "  and the layout is still what it was"        "$(state_get disk_layout)" "two-nvme"
-state_clear disk_layout 2>/dev/null || rm -f "$DEEPLOY_STATE_DIR/state.d/disk_layout"
+check "R10-7b: laid out as two-nvme, no data disk now -> refused"    "$ERC|$(grep -c 'laid out on data disks (two-nvme)' <<<"$EOUT")" "1|1"
+check "  and nothing asked, nothing changed [two-nvme]"             "$(grep -cE "$ASKED" <<<"$EOUT")|$(s10_state)" "0|$S10_BEFORE"
+check "  and it names how a deliberate re-layout clears the record" "$(grep -c "echo none > $DEEPLOY_STATE_DIR/state.d/data_layout" <<<"$EOUT")" "1"
+s10_reset; state_set data_layout raid-volume
 EOUT=$( _disk_resolve 2>&1 ); ERC=$?
-check "control: a first install still gets emergency" "$ERC" "0"
-check "  and says so"                                 "$(grep -c 'No eligible NVMe' <<<"$EOUT")" "1"
+check "R10-7b: laid out as raid-volume -> refused"                  "$ERC|$(grep -c 'laid out on data disks (raid-volume)' <<<"$EOUT")|$(s10_state)" "1|1|$S10_BEFORE"
+# A box laid out before data_layout existed: phase 3 done, accounts on a data mount.
+s10_reset; state_set phase-3 x; state_set accounts_path /mnt/accounts/solana/accounts
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: rc9 box, accounts under /mnt/accounts -> refused as two-nvme" "$ERC|$(grep -c 'laid out on data disks (two-nvme)' <<<"$EOUT")" "1|1"
+s10_reset; state_set phase-3 x; state_set accounts_path "$DATA_MOUNT/solana/accounts"
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: rc9 box, accounts under the data mount -> refused as raid-volume" "$ERC|$(grep -c 'laid out on data disks (raid-volume)' <<<"$EOUT")" "1|1"
+# Not laid out: the question decides. Without a tty (as here) it refuses.
+s10_reset; state_set phase-3 x; state_set accounts_path /root/solana/accounts
+EOUT=$( disk_run 2>&1 ); ERC=$?
+check "R10-7b: an emergency box (phase 3 done, accounts on /root/solana) -> asked, no tty -> refused" "$ERC|$(grep -c 'without explicit confirmation' <<<"$EOUT")|$(grep -c 'Declined (or no terminal to ask on): nothing was changed' <<<"$EOUT")" "1|1|1"
+check "  and nothing changed, no swapoff [no tty]"                  "$(grep -c swapoff "$CALLS")|$(s10_state)" "0|/before|/root/solana/accounts|<none>"
+s10_reset; state_set accounts_path /mnt/accounts/solana/accounts
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: accounts path without phase 3 (an import) is no record -> asked" "$ERC|$(grep -c 'without explicit confirmation' <<<"$EOUT")|$(grep -c 'laid out on data disks' <<<"$EOUT")" "1|1|0"
+s10_reset; state_set phase-3 x; state_set accounts_path /mnt/accounts/solana/accounts; state_set data_layout none
+EOUT=$( printf 'yes\n' | { NONINTERACTIVE=0; _disk_resolve; } 2>&1 ); ERC=$?
+check "R10-7b: record cleared (data_layout=none) -> asked, yes -> emergency" "$ERC|$(state_get disk_layout '<none>')" "0|emergency"
+# DISK-STATE-BEFORE-GATE: disk_layout is written before the wipe question, so a
+# declined wipe leaves two-nvme behind. That is no record of a data layout.
+s10_reset; state_set disk_layout two-nvme
+EOUT=$( printf 'yes\n' | { NONINTERACTIVE=0; _disk_resolve; } 2>&1 ); ERC=$?
+check "R10-7b: disk_layout=two-nvme from a declined wipe -> asked, yes -> emergency" "$ERC|$(grep -c 'laid out' <<<"$EOUT")|$(state_get disk_layout)" "0|0|emergency"
+s10_reset
+EOUT=$( printf 'no\n' | { NONINTERACTIVE=0; disk_run; } 2>&1 ); ERC=$?
+check "R10-7b: first install, the question is asked"                "$(grep -c 'Put the ledger, accounts and snapshots on the system disk?' <<<"$EOUT")|$(grep -c "Type 'yes' to proceed" <<<"$EOUT")" "1|1"
+check "  answer no -> refused, nothing changed, no swapoff"          "$ERC|$(grep -c swapoff "$CALLS")|$(s10_state)" "1|0|$S10_BEFORE"
+s10_reset
+EOUT=$( printf 'y\n' | { NONINTERACTIVE=0; _disk_resolve; } 2>&1 ); ERC=$?
+check "R10-7b: answer y (not yes) -> refused, nothing changed"       "$ERC|$(s10_state)" "1|$S10_BEFORE"
+s10_reset
+EOUT=$( ASSUME_YES=1 _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: --yes does not answer it (no tty) -> refused"        "$ERC|$(s10_state)" "1|$S10_BEFORE"
+s10_reset
+EOUT=$( printf 'yes\n' | { NONINTERACTIVE=0; _disk_resolve; } 2>&1 ); ERC=$?
+check "R10-7b: answer yes -> emergency, on /root/solana"            "$ERC|$(state_get disk_layout)|$(grep -c '(/root/solana) with the OS' <<<"$EOUT")" "0|emergency|1"
+check "  and it said why there was no other volume"                 "$(grep -c 'No eligible NVMe' <<<"$EOUT")" "1"
+# The other path onto the system volume: a RAID0 array that carries / itself.
+# It used to be taken without a word (the rc8 notes' correction).
+LSBLK_ENUM='sda 480103981056 disk 0 SATA_A
+sdb 480103981056 disk 0 SATA_B'
+_mp_for() { case "$1" in */sda|*/sdb|*/md0) printf '/\n';; *) printf '';; esac; }
+FINDMNT_SRC=/dev/md0
+export PROC_MDSTAT="$WORK/md_sys0"
+printf 'Personalities : [raid0]\nmd0 : active raid0 sdb2[1] sda2[0]\n      937438976 blocks super 1.2 512k chunks\n' >"$PROC_MDSTAT"
+s10_reset
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: system RAID0, no tty -> asked, refused, nothing changed" "$ERC|$(grep -c 'without explicit confirmation' <<<"$EOUT")|$(s10_state)" "1|1|$S10_BEFORE"
+s10_reset
+EOUT=$( printf 'yes\n' | { NONINTERACTIVE=0; _disk_resolve; } 2>&1 ); ERC=$?
+check "R10-7b: system RAID0, the question names the array"         "$(grep -c 'Put the ledger, accounts and snapshots on /dev/md0, the RAID0 array that also carries /?' <<<"$EOUT")" "1"
+check "  answer yes -> raid-volume on /root/solana"                 "$ERC|$(state_get disk_layout)|$(grep -c '(/root/solana) with the OS' <<<"$EOUT")" "0|raid-volume|1"
+s10_reset; state_set data_layout two-nvme
+EOUT=$( _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: system RAID0 on a box laid out as two-nvme -> refused, nothing asked" "$ERC|$(grep -c 'laid out on data disks (two-nvme)' <<<"$EOUT")|$(grep -cE "$ASKED" <<<"$EOUT")|$(s10_state)" "1|1|0|$S10_BEFORE"
+# The probe runs inside $( ): under the production traps the refusal comes out alone.
+s10_reset; state_set phase-3 x; state_set accounts_path /mnt/accounts/solana/accounts
+EOUT=$( set -Eeuo pipefail; deeploy_init_traps; _disk_resolve 2>&1 ); ERC=$?
+check "R10-7b: under the production traps the refusal comes out alone" "$ERC|$(grep -cE 'line [0-9]+:' <<<"$EOUT")|$(grep -c 'laid out on data disks' <<<"$EOUT")" "1|0|1"
+s10_reset
 
 echo "== R10-7a: data directories are created only on the mounted data filesystems =="
 # An empty UUID from blkid wrote no fstab line, 'mount -a' left the point a plain
@@ -653,6 +728,26 @@ check "R10-7a: control: data RAID formatted and mounted -> paths recorded" "$RC|
 r7a_reset
 OUT=$( set -Eeuo pipefail; deeploy_init_traps; _disk_raid_volume 2>&1 ); RC=$?
 check "R10-7a: data RAID under the production traps -> done, no stray [FAIL] line" "$RC|$(grep -cE 'line [0-9]+:' <<<"$OUT")" "0|0"
+
+echo "== R10-7b: data_layout is written only by a data layout, after its mount check =="
+r7a_reset; state_clear data_layout
+( _disk_finalize_two_nvme ) >/dev/null 2>&1
+check "R10-7b: a two-nvme layout records data_layout=two-nvme"     "$(state_get data_layout '<none>')" "two-nvme"
+r7a_reset; state_clear data_layout; MOUNT_SKIP="$LEDGER_MOUNT"
+( _disk_finalize_two_nvme ) >/dev/null 2>&1
+check "  a refused mount check records nothing"                     "$(state_get data_layout '<none>')" "<none>"
+r7a_reset; state_clear data_layout
+( _disk_raid_volume ) >/dev/null 2>&1
+check "R10-7b: a data RAID volume records data_layout=raid-volume" "$(state_get data_layout '<none>')" "raid-volume"
+r7a_reset; state_clear data_layout; MOUNT_SKIP="$_DISK_RAID_MOUNT"
+( _disk_raid_volume ) >/dev/null 2>&1
+check "  a data RAID volume that did not mount records nothing"    "$(state_get data_layout '<none>')" "<none>"
+r7a_reset; state_clear data_layout; _DISK_RAID_MOUNT=""; SOLANA_HOME="$WORK/r7a/sys/solana"
+( _disk_raid_volume ) >/dev/null 2>&1
+check "  the array that carries / records nothing"                  "$(state_get data_layout '<none>')|$(state_get accounts_path)" "<none>|$WORK/r7a/sys/solana/accounts"
+r7a_reset; state_clear data_layout
+( SOLANA_HOME="$WORK/r7a/emerg" _disk_emergency_layout ) >/dev/null 2>&1
+check "  the emergency layout records nothing"                      "$(state_get data_layout '<none>')|$(state_get accounts_path)" "<none>|$WORK/r7a/emerg/accounts"
 
 echo ""
 echo "==================================="
