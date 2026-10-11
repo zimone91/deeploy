@@ -480,12 +480,12 @@ _disk_is_whole_nvme() { [[ "${1##*/}" =~ ^nvme[0-9]+n[0-9]+$ ]]; }
 
 # Nothing mounted at either point reads as a first install: the disk menu, or the
 # break/use question for a data RAID, then the question to erase. On a box laid
-# out on data disks that reading is wrong. Its data filesystems are not mounted
-# because a disk is gone (removed, dead or replaced: fstab names each by UUID,
-# and that UUID is not found), because a filesystem does not mount (nofail lets
-# the boot go on past both), or because someone unmounted them. A disk that is
-# still there still holds the ledger or the accounts, and it passes every filter
-# of the menu: it is an NVMe above the size floor, and nothing on it is mounted.
+# out on data disks that reading is wrong. On two data disks neither point is
+# mounted when neither filesystem mounts at boot (nofail lets the boot go on) or
+# when someone unmounted both. A disk that is gone leaves the other point
+# mounted, a half layout that _disk_adopt_existing_layout refuses itself. The
+# disks still hold the ledger and the accounts, and each passes every filter of
+# the menu: it is an NVMe above the size floor, and nothing on it is mounted.
 # So the record answers first, before any question: laid out, and its mount
 # points not mounted, refuses. Called where neither ACCOUNTS_MOUNT nor
 # LEDGER_MOUNT is mounted. A layout this version does not know refuses too: there
