@@ -20,8 +20,9 @@ the box for it, and leaves the staked-key swap to you.
 ### What you need
 
 ```
-Ubuntu 24.04 x86-64 · root · proven on 377 GiB RAM, 2× 1.92 TB data NVMe + a system disk
-one reboot · a disk wipe you confirm by typing yes · 30-90 min build
+Ubuntu 24.04 x86-64 · root · two data NVMe + a system disk
+one reboot · a disk wipe you confirm by typing yes · ~11-12 min build
+every run so far: 48 threads, 377 GiB RAM, 2× 1.92 TB data NVMe — the build time too
 ```
 
 ## ⚠️ Your staked key
@@ -30,21 +31,27 @@ DeePloy never generates, copies, moves, or transmits your staked key, and it
 won't put the key on the box for you. The node syncs on a throwaway identity;
 you swap the real key in yourself at the end.
 
-It does read the keypair file, from three commands. `install` and `upgrade`
-derive its public key to check it against the running identity. `dz-connect`
-derives it twice more and signs one DoubleZero passport message with it. Those
-five reads are local and read-only.
+In `file` mode, the default, DeePloy reads the keypair file you place on the
+box, from two commands. In phase 5, `install` checks whether the file is
+there; if it is, it derives the public key once, to check it is not the sync
+identity, and once more if you hand it a DoubleZero ID to copy. `dz-connect`
+derives it before each attempt to install the DoubleZero ID and once more for
+the passport, and signs one passport message with it. Those reads are local
+and read-only. In `offbox` mode there is no keypair file on the box for
+DeePloy to read: it keeps only the public key, and you pipe the key to
+`set-identity` over ssh from the machine that holds it.
 
-`dz-connect` then passes the keypair path to `doublezero-solana`, which DeePloy
-does not control. That handoff, and the reasoning behind each read, are in
-[docs/KEY-MODEL.md](docs/KEY-MODEL.md). Skip DoubleZero and it never happens.
+In `file` mode, `dz-connect` then passes the keypair path to
+`doublezero-solana`, which DeePloy does not control. That handoff, and the
+reasoning behind each read, are in [docs/KEY-MODEL.md](docs/KEY-MODEL.md).
+Skip DoubleZero and it never happens.
 
 ## Install (one command)
 
-    sh -c "$(curl -sSfL https://zim.one/deeploy/v0.1.0-rc9)"
+    sh -c "$(curl -sSfL https://zim.one/deeploy/v0.1.0-rc10)"
 
 That downloads the pinned release and its `SHA256SUMS`, checks the tarball
-against the manifest, and unpacks it into `./deeploy-v0.1.0-rc9`. It refuses to
+against the manifest, and unpacks it into `./deeploy-v0.1.0-rc10`. It refuses to
 start if that directory already exists. With `sudo` available it hands the
 checkout to root; without it, it prints the two commands for you to run.
 
@@ -52,18 +59,23 @@ Then it stops. DeePloy wipes disks, rewrites GRUB and reboots the box, so you
 read the checkout and start the install yourself:
 
 ```bash
-cd deeploy-v0.1.0-rc9
-sudo ./deeploy.sh install --dry-run   # prints the whole plan, changes nothing
+cd deeploy-v0.1.0-rc10
+sudo ./deeploy.sh install --dry-run   # the plan, up to the reboot
 sudo ./deeploy.sh install
 ```
 
+The dry-run asks the questions the install asks, the typed `yes` before a
+disk is erased among them, so it needs a terminal, as the install does. It
+ends where the install reboots to apply the CPU isolation, and it changes
+nothing outside a temp dir that it removes on exit.
+
 The paranoid path, which is the one to take for a tool that runs as root:
 
-    curl -fsSLO https://raw.githubusercontent.com/zimone91/deeploy/v0.1.0-rc9/get-deeploy.sh
+    curl -fsSLO https://raw.githubusercontent.com/zimone91/deeploy/v0.1.0-rc10/get-deeploy.sh
 
 Read it, then run `sh get-deeploy.sh`. Or from source:
 
-    git clone --branch v0.1.0-rc9 https://github.com/zimone91/deeploy
+    git clone --branch v0.1.0-rc10 https://github.com/zimone91/deeploy
     cd deeploy
     sudo chown -R root:root . && sudo chmod -R go-w .
     sudo ./deeploy.sh install --dry-run
@@ -96,7 +108,7 @@ a different one, served from zim.one, and its digest is published in the release
 notes. Comparing those two is the check that says something about origin:
 
 ```bash
-curl -sSfL https://zim.one/deeploy/v0.1.0-rc9 | tail -n +2 | sha256sum
+curl -sSfL https://zim.one/deeploy/v0.1.0-rc10 | tail -n +2 | sha256sum
 ```
 
 `tail -n +2` drops the one line the endpoint adds to pin the version. Tags are
@@ -108,7 +120,9 @@ DeePloy is not a daemon and does not supervise the validator. `solana.service`
 runs the node. The rest of what it installs is DeePloy's own and keeps running
 without it: `performance-tweaks.service` and `solana-sysctl.service` reapply
 host tuning at every boot, `solana-poh-pin` re-pins the PoH thread, and an mlx5
-or bnxt_en NIC adds a tuning unit.
+or bnxt_en NIC adds a tuning unit. Phase 2 also leaves exactly one
+`GOVERNOR="performance"` line in `/etc/default/cpufrequtils` and keeps the
+file's other lines.
 
 One unit runs DeePloy itself. `deeploy-resume.service` carries the install
 across its single reboot. The automatic resume disables it; a manual
@@ -130,15 +144,18 @@ Running the tests and the gate: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 DeePloy is a release candidate. The full cycle, from install through
 `catchup 0` to the key swap, was proven on two production boxes in June 2026.
-Nothing since that run has been executed on hardware, the revision you are
-reading included.
+0.1.0-rc9 ran on one mainnet box on 2026-10-05, from install to `catchup 0`
+on the throwaway identity, with `verify` and an `upgrade` that applied a
+private overlay; on 2026-10-06 its staked key was swapped in by hand, and the
+box has run as that validator since. Nothing changed after 0.1.0-rc9 has been
+executed on hardware, the revision you are reading included.
 
-- Agave 4.2 inverted the AF_XDP default, so the generated `validator.sh` had to
-  change on a path that was hardware-proven. Tests cover the new form. Metal
-  has not seen it.
+- Agave 4.2 inverted the AF_XDP default, so the generated `validator.sh`
+  changed on a hardware-proven path. The new form ran on an mlx5 box with
+  zero-copy on 2026-10-05. On bnxt_en, which has no zero-copy, metal has not
+  seen it.
 - `upgrade` is beta. Tests exercise it; a real client upgrade on a staked box
   has not.
-- `upgrade --rollback` does not go through the staked-identity check.
 - `dz-connect` hands your keypair path to `doublezero-solana`, which comes from
   an apt repository and is not pinned here.
 - The build downloads rustup-init, the anza installer, jito-solana at a mutable
@@ -146,7 +163,6 @@ reading included.
   a checksum or a signature.
 - Disk eligibility is checked against the layouts this has run on. Read the
   table it prints before you type `yes`.
-- The `mlx5` IRQ map is static, not computed from the running topology.
 - You are responsible for your keys, your stake, and your slots. No warranty.
 
 Vulnerabilities go through the private advisory link in

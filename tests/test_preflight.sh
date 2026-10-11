@@ -184,9 +184,9 @@ state_clear current-phase
 
 echo "== N8 follow-up: the checkout gate fires at PHASE 0, not at the reboot boundary =="
 # The install-time gate sat in _install_setup_resume_service — reached only after
-# the disk wipe and the 30-90 min build. The README's own path (clone as a user,
+# the disk wipe and the build. The README's own path (clone as a user,
 # then sudo) produces exactly the uid it refuses, so the documented flow used to
-# hard-fail an hour in. Same predicate, now in the first seconds.
+# hard-fail after both. Same predicate, now in the first seconds.
 deeploy_path_uid()  { echo 0; }
 deeploy_path_mode() { echo 755; }
 reset; _pf_check_checkout >/dev/null 2>&1; counts "safe checkout -> no issue" 0 0
@@ -209,7 +209,7 @@ check "wired first in preflight_run" \
 
 echo "== 7c1: _pf_check_self_executable (the installer itself, asked in phase 0) =="
 # The reboot boundary sits between phase 7 and phase 8, so the resume unit is
-# written AFTER the disks are erased (phase 3) and after the 30-90 minute build
+# written AFTER the disks are erased (phase 3) and after the build
 # (phase 4). A checkout that lost its bit in delivery would pay all of that
 # before being refused. Phase 0 is where the question costs nothing.
 SELFX="$WORK/deeploy.sh"; printf '#!/bin/bash\n' >"$SELFX"

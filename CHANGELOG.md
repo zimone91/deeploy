@@ -5,6 +5,250 @@ All notable changes to DeePloy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and DeePloy adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-rc10] - 2026-10-11
+
+0.1.0-rc9 ran on one mainnet box on 2026-10-05: from its release tarball,
+`install --dry-run`, then an install from phase 0 to `catchup 0` on the
+throwaway identity, `verify`, `upgrade --dry-run`, an `upgrade` that applied
+a private overlay, and `verify` again. On 2026-10-06 the staked key was
+swapped in by hand, hot: the old validator's tower was copied over and the
+key was fed on stdin over ssh to `set-identity --require-tower`. The box has
+voted as that validator since. On 2026-10-08 it was connected to DoubleZero
+by hand with the `doublezero` CLI, not with `dz-connect`: IBRL, then
+multicast as a publisher of `edge-solana-shreds`. Whether its shreds reach
+that group was not measured. The fixes below come from that run and from
+reading the code around it.
+
+None of the changes in this release has been executed on hardware.
+
+### Fixed
+- **`upgrade` asks the node which identity it runs on.** The guard before a
+  restart read `--identity` from the process's command line, and that always
+  names the sync identity: `set-identity` swaps the key at runtime. Measured
+  on 2026-10-05: after a `set-identity`, the guard printed the sync pubkey
+  while `getIdentity` returned another key. A process whose command line could
+  not be parsed was let through, and `upgrade --rollback` restarted solana
+  without the check. The guard now asks `getIdentity` on the local RPC before
+  the build, again right before the restart, and in `--rollback` before the
+  release is switched. A validator that is not running, and one on the sync
+  identity, pass without a prompt. The staked key, an unknown key, and a
+  running process that gives no answer need a typed `yes`, which a run
+  without a terminal refuses. `upgrade` no longer reads the staked keypair
+  file.
+- **The printed key swap moves the tower with the identity.** The swap steps
+  said "No tower transfer needed"; see the correction below. Phase 5 and the
+  final summary now print the hot swap with the tower. The old validator stops
+  voting first, and a restart of it must come back unstaked: its startup
+  `--identity` points at the unstaked key, and failover automation is off. Its
+  `tower-1_9-<staked-pubkey>.bin` is copied to this box's ledger, and the
+  vote-history file too once the vote account has Alpenglow votes. Then
+  `set-identity --require-tower`, which refuses without the tower, and
+  `authorized-voter add`. A cold bring-up is printed with its condition: the
+  old validator stopped, and the cluster's finalized slot at least 300 slots
+  past the vote account's `lastVote`. `docs/KEY-MODEL.md` point 3 says the
+  same.
+- **The build's tag is checked before phase 3 erases disks.** The 0.1.0-rc9
+  entry lists this as a known issue. Phase 3 now starts, while the build is
+  still ahead, by checking the jito tag: its form, the version floor, and that
+  it exists both in the jito-solana repository and as an Anza CLI release for
+  its Agave base. A tag that does not exist, and a tag whose existence could
+  not be checked, are refused before phase 3 changes anything.
+- **A data disk without a filesystem UUID no longer leads to a ledger on the
+  system disk.** When `blkid` gave no UUID for a data disk, phase 3 wrote no
+  fstab line for its mount point and said nothing. `mount -a` then left the
+  point a plain directory on `/`, and the data directories were created and
+  recorded there. agave creates a missing ledger directory itself, so the
+  validator would have written its ledger to the system disk. An empty UUID
+  now refuses before its fstab line is written, and after `mount -a` each
+  mount point must be mounted from its own device before the data directories
+  are created under it or their paths recorded. A data RAID array mounted
+  somewhere else is refused; it used to be a warning.
+- **The emergency layout and a RAID0 array that carries `/` ask before the
+  ledger goes on the system volume.** Both put the ledger, accounts and
+  snapshots under `/root/solana` on the system volume without a question.
+  Both now ask for a typed `yes`; `--yes` does not answer it, and without a
+  terminal the run refuses. A box laid out on data disks refuses instead, and
+  the refusal says how to clear the record for a deliberate re-layout. The
+  record is a new state key, `data_layout`, written only by the data layouts
+  after their mount check, and not exported. On a box laid out by 0.1.0-rc9
+  or older, phase 3 done with the accounts path on a data mount counts as
+  laid out.
+- **A laid-out box whose data filesystems are not mounted is not a first
+  install.** Phase 3 took nothing mounted at `/mnt/accounts` and `/mnt/ledger`
+  for a first install. On a box laid out on two data disks that happens when
+  neither filesystem mounts at boot (`nofail` lets the boot go on) or someone
+  unmounted both; with both disks there, the disk menu offered them, the one
+  with the ledger included, and then asked to erase. Phase 3 now checks the
+  record before the disk menu and any question about the disks: such a box
+  refuses, says what to mount, and says how to clear the record for a
+  deliberate re-layout. A box laid out on a data RAID array refuses the same
+  way when `/mnt/data` is not mounted.
+- **A dry-run plans with what earlier phases decided.** It wrote no state, so
+  on a fresh box later steps read defaults instead of what earlier ones had
+  decided. Measured on 2026-10-05: a dry-run planned no XDP cores on an mlx5
+  NIC with zero-copy, left DoubleZero's packages and firewall rules out after
+  a "y", and refused in phase 6 because the region scan's answer was lost.
+  Phase 1 also limited ufw to port 22, the port sshd was still on, after a
+  move to another SSH port was planned. A dry-run now keeps its state in a
+  temp dir under `$TMPDIR`, or `/tmp`, reads it before the real state, never
+  writes the real state, and removes the temp dir on exit; if it cannot make
+  one, it refuses. It asks phase 1's "Proceed with SSH port change" question
+  as a real run does, and on a yes plans ufw and the fail2ban jail for the
+  new port. A full dry-run ends at the reboot question, as a real run does; a
+  yes prints `[dry-run] systemctl reboot`. It still reads the network: phase
+  0's genesis check and region probe, the bandwidth probe with `--net-test`,
+  and the tag check. It no longer reports the sysctl files it plans as
+  missing.
+- **The performance governor holds on every CPU.** cpufrequtils, a base
+  package, sets the CPUs' governor at boot; on that box, with no
+  `/etc/default/cpufrequtils`, it set ondemand. Nothing ordered it against
+  `performance-tweaks.service`: after a reboot on 2026-10-05, 32 of 48 CPUs
+  were on ondemand, the PoH core and an XDP core among them. Phase 2 now
+  leaves exactly one `GOVERNOR="performance"` line in
+  `/etc/default/cpufrequtils` and keeps the file's other lines, and
+  `performance-tweaks.service` runs after cpufrequtils. `verify` read cpu0
+  only; it now reads every CPU with a cpufreq governor and names the ones
+  that are not on performance.
+- **mlx5: no IRQ of the NIC stays on an isolated CPU.** The IRQ script carried
+  a map written for one CPU layout. On 2026-10-05 it left `mlx5_comp34` on
+  CPU 34, the PoH core's SMT sibling, at 259.7 IRQ/s, and on a dual-port card
+  it could take the other port's IRQ. The map is now computed at boot from the
+  kernel's isolated set: every IRQ of the default-route NIC whose effective
+  CPU is isolated, XDP cores included, moves round-robin to a non-isolated CPU
+  other than CPU 0, which keeps `mlx5_comp0`. IRQs are matched by the NIC's
+  PCI address. `verify` warns on any IRQ of that NIC on an isolated CPU.
+- **XDP gets its huge pages.** Each XDP queue asks for 2 MiB huge pages for
+  its UMEM and falls back to regular pages with a warning. None were reserved:
+  on 2026-10-05 every start logged "huge page alloc failed, falling back to
+  regular page size" once per XDP queue. With XDP on, phase 2 now sets
+  `vm.nr_hugepages` in `/etc/sysctl.d/21-agave-validator.conf` to twice what
+  the XDP queues map, counted from the NIC's ring sizes: 32 for two XDP cores
+  with rings of 1024/1024. `verify` checks `HugePages_Total`, and the fallback
+  line since the validator's last start.
+- **The catchup waits report while the node is behind, and can time out.**
+  The phase 8 wait, `verify` and `wait_and_pin_poh.sh` each took the first
+  line of `solana catchup --our-localhost`. Once the node's RPC answered,
+  that command printed nothing through a pipe until the node had caught up,
+  so each blocked in that one call and the 3600 s timeout could not fire: on
+  2026-10-05, with the node 190 slots behind, it printed nothing in 30 s.
+  They now make two `getSlot` calls at "confirmed", the cluster's from the
+  public RPC and then the node's, each capped at 5 s, and log a line on every
+  poll. A node at most 4 slots behind counts as caught up. `solana catchup`
+  accepts at least that lag: up to 4 at the 400 ms target slot time, about 6
+  at the 268.8 ms per slot measured on mainnet on 2026-10-05, and about 8 at
+  the roughly 218 ms per slot measured there since 2026-10-09. In the 26
+  "has caught up" lines of 2026-10-05 and 2026-10-06 the node was at most 3
+  slots behind.
+- **`dz-connect` says what the passport request did.**
+  `doublezero-solana passport request-validator-access` (0.5.12, the version
+  on that box) exits 0 and sends nothing when its own checks fail.
+  `dz-connect` then printed "Passport access requested" and waited for a pass
+  that could not come; a re-run stopped at the passport while a request was
+  pending. It now reads the outcome from the CLI's output: sent only when the
+  CLI prints the request's transaction; "Access request already exists" goes
+  on to connect; "Errors found:" stops with nothing sent; anything else stops
+  as not confirmed and names `doublezero-solana passport fetch
+  --access-request` to check before a re-run.
+- **A failing probe no longer ends a run before its own message.** Under
+  DeePloy's error trap, a check that failed inside a command substitution
+  printed a stray `[FAIL] line N`, and in some places ended the run: phase 0's
+  port check when `ss` writes after `awk` has exited, phase 0 without
+  `/etc/os-release` or where `ethtool -i` does not answer for the NIC, and
+  phase 5 when the sync identity or a file at the real-key path cannot be
+  read. Each now reaches its own message. In `file` mode an unreadable file at
+  the real-key path stops phase 5 with "Could not read a pubkey from the key
+  at the real-key path", and says to fix the file or move it off that path.
+
+### Changed
+- **`solana-sysctl.service` runs before `solana.service`.** It re-applies
+  `21-agave-validator.conf` at boot and had no order against the validator,
+  so the two could start side by side. It is ordering only: if the re-apply
+  fails, the validator still starts.
+- **The release notes count changes since the tree that ran on hardware.**
+  `hardware-drift.sh` counted the changes to `deeploy.sh` and `lib/` since
+  676be33 (2026-06-15), a lower bound for the last tree run on hardware. Its
+  anchor is now 1729f1e, the commit tagged 0.1.0-rc9, which ran on the box
+  above. Its comment lists what ran there and what did not.
+- **The build time given is the one measured.** The README said "30-90
+  min" and `docs/INSTALL.md` "30-90 minutes". On 2026-10-05 the build of
+  v4.3.0-jito.0 took 664 s in phase 4 and 712 s in an `upgrade` that applied
+  a private overlay, on a box with 48 threads; every run so far was on that
+  hardware. Both now say about 11-12 minutes, with that condition; smaller
+  machines were not measured. Code and test comments no longer carry a
+  number.
+
+### Added
+- **An `offbox` mode for the staked key** (`STAKED_KEY_MODE`, asked in phase
+  5). `file`, the default, is the behaviour so far. In `offbox` the keypair
+  never has to be on the box: DeePloy keeps only its pubkey, checks no path for
+  it, and prints the swap as commands that feed the key on stdin over ssh. In
+  `dz-connect` you sign the passport message where the key lives and pass the
+  signature with `--dz-signature`; the sync identity pays for the request,
+  which is simulated first and sent only when the simulation passes.
+  `docs/KEY-MODEL.md` lists every read of the key in `file` mode: in
+  `dz-connect` it signs the passport message and the request transaction.
+- **Phase 5 checks the staked pubkey against the vote account,** where it
+  knows the pubkey: a vote account that names another validator identity
+  on-chain is a warning. Once the staked pubkey is recorded, `verify` warns
+  while the node is not on it.
+- **A core dump of the validator carries no heap or stack.** The validator's
+  memory holds the identity key. `solana.service` sets `LimitCORE=0` and
+  `CoredumpFilter=elf-headers`: with a pipe `core_pattern` the kernel hands a
+  core to the helper whatever the limit, and the filter keeps the heap and
+  the stacks out of it. Measured on 2026-10-05, before this change: core limit
+  0 soft, unlimited hard, and `coredump_filter` 0x33, which includes them.
+  `verify` checks both on the running process. A box already installed gets
+  the lines when phase 6 renders the unit again, from the next start of the
+  validator.
+- **`verify` reports BAM connection events** from `solana.log`, unless the MEV
+  mode is relayer. In the 10 minutes up to the log's last line, or since the
+  validator's start or the log's first line if later, the last event decides:
+  established is ok; a loss, a failed connect or an unhealthy attempt is a
+  warning. The line also counts the events, and the server's "Challenge
+  expired" and "Validator is not on the leader schedule" answers. Measured on
+  2026-10-05: 2507 "Challenge expired" in 68 minutes (p50 31.15 ms against a
+  30 ms limit), and 845 "Validator is not on the leader schedule" since the
+  validator's first start that day. Before the swap the second is expected:
+  the proof is signed by the running identity.
+
+### Known issues
+- **A dry-run still prints some lines as if it had acted,** such as phase 3's
+  "XFS tuning written (…) and applied" and `upgrade --dry-run`'s "Upgraded
+  to …".
+- **The XDP huge pages are counted once, in phase 2,** from the ring sizes at
+  that time; rings changed later need a recount. One NUMA node is the only
+  layout measured.
+- **On a data RAID array kept as one volume, a `SOLANA_HOME` set outside
+  `/mnt/data` takes the ledger off the array.** Phase 3 mounts the array at
+  `/mnt/data`, then creates the ledger, accounts and snapshots under
+  `SOLANA_HOME`, with no question. `deeploy.conf.example` sets
+  `SOLANA_HOME="/root/solana"`, on `/`; with a data RAID array, leave it
+  unset.
+- **`dz-connect` reports multicast from the tunnel status, not from
+  delivery.** With both BGP sessions up and `edge-solana-shreds` in the
+  multicast groups, it prints "publishing shreds to edge-solana-shreds".
+  Whether shreds reach the group is not checked; on the box above it was
+  not measured.
+
+### Correction to 0.1.0 through 0.1.0-rc9
+Every release before this one printed in the key-swap steps, in phase 5 and in
+the final summary, "No tower transfer needed: a fresh node rebuilds its vote
+floor from the cluster." (`lib/start.sh:147`, and in other words
+`lib/keys.sh:115`, as of 0.1.0-rc9). The key model said the same, "the safe
+path for a first bring-up": in the README through 0.1.0-rc5, and in
+`docs/KEY-MODEL.md:18-21` from 0.1.0-rc6. That holds for a cold bring-up only,
+with the old validator stopped and the cluster's finalized slot at least 300
+slots past the vote account's `lastVote`. In a hot swap the old validator
+switches seconds before: its votes that have not landed are missing on the
+new node, and their lockouts can be violated. Fixed in this release.
+
+### The correction to 0.1.0-rc8, fixed
+The 0.1.0-rc9 entry corrects 0.1.0-rc8: on a box whose system volume is a
+RAID0 array, phase 3 could place the ledger and accounts on the system volume
+without a prompt. It ends "Not fixed in this release." This release fixes it:
+that path now asks for a typed `yes`, and a box laid out on data disks
+refuses.
+
 ## [0.1.0-rc9] - 2026-10-05
 
 rc8 could not install `v4.3.0-jito.0`, the jito-solana release marked Mainnet:

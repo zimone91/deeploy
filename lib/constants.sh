@@ -74,7 +74,7 @@ ALT_PROGRAM_KEY="AddressLookupTab1e1111111111111111111111111"
 # generated validator.sh uses --no-xdp and --poh-pinned-cpu-core, and BOTH first
 # exist in 4.2.0 (the XDP flags landed in 4.1.0, --no-xdp and the PoH rename in
 # 4.2.0). On anything older the validator rejects the argv and never starts —
-# after a 30-90 minute build. One constant, three checks (build, upgrade,
+# after the whole build. One constant, three checks (build, upgrade,
 # render) so the floor cannot drift between them.
 DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
 

@@ -45,9 +45,9 @@ _pf_base_disk() {
 
 # --- checkout: safe to hand a boot-time root unit? (N8) -----------------------
 # The install-time gate refuses an unsafe checkout only when the resume unit is
-# written — at the reboot boundary, i.e. AFTER the disk wipe and the 30-90 min
+# written — at the reboot boundary, i.e. AFTER the disk wipe and the whole
 # build. The README's own path (clone as a user, then sudo) produces exactly the
-# uid mismatch it refuses, so the documented flow used to hard-fail an hour in.
+# uid mismatch it refuses, so the documented flow used to hard-fail after both.
 # Same predicate, run in the first seconds instead. Blocking, not a warning: an
 # install cannot complete without the resume unit.
 _pf_check_checkout() {
@@ -63,7 +63,7 @@ _pf_check_checkout() {
 # only where it is used. The resume unit is written at the reboot boundary, which
 # sits between phase 7 and phase 8 — so a checkout that lost its bit in delivery
 # (a zip round-trip, a copy across filesystems, someone else's umask) passes
-# phase 0, erases the data disks in phase 3, spends 30-90 minutes building in
+# phase 0, erases the data disks in phase 3, spends the whole build in
 # phase 4, and only then is refused. Same shape as the missing mkfs.xfs: the
 # thing the run needs was absent from the start and nothing asked until the cost
 # was already paid.

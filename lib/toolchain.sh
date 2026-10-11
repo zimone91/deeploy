@@ -73,7 +73,7 @@ _toolchain_tag_resolve() {
     # writes into validator.sh.
     deeploy_tag_agave_base "$JITO_TAG" >/dev/null \
         || fail "refusing to build '${JITO_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0). Use a tag from github.com/jito-foundation/jito-solana/releases."
-    # Version floor, checked BEFORE the 30-90 minute build (this is the whole
+    # Version floor, checked BEFORE the build (this is the whole
     # point): the generated validator.sh passes flags that do not exist on older
     # clients, so an old tag builds fine and then refuses to start.
     local why

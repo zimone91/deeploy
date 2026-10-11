@@ -45,7 +45,7 @@ getcap() { echo "getcap $*" >>"$CALLS"; }
 JITO_TAG="v3.1.14-jito"
 
 echo "== version floor: refuse to BUILD below the minimum client (phase 4, pre-build) =="
-# The whole point of checking here: an old tag builds for 30-90 minutes and only
+# The whole point of checking here: an old tag builds to the end and only
 # then produces a binary that rejects the rendered argv.
 state_clear jito_tag
 ( JITO_TAG=v4.0.0-jito toolchain_resolve_config ) >/dev/null 2>&1

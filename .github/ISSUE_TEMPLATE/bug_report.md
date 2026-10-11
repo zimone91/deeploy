@@ -37,8 +37,9 @@ the exact command, flags included
 ## What did `--dry-run` print?
 
 <!-- Every destructive path has a --dry-run that prints the plan and changes
-nothing. Whether the plan was already wrong, or only the execution went wrong,
-is usually most of the answer. -->
+nothing outside a temp dir it removes on exit; for install the plan ends at
+the reboot. Whether the plan was already wrong, or only the execution went
+wrong, is usually most of the answer. -->
 
 ## Environment
 
