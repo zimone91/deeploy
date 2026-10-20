@@ -170,7 +170,29 @@ toolchain_fetch_source() {
     run git clone "$JITO_REPO" "$JITO_SRC"
     run git -C "$JITO_SRC" fetch --tags
     run git -C "$JITO_SRC" checkout "tags/${JITO_TAG}"
+    toolchain_check_commit
     run git -C "$JITO_SRC" submodule update --init --recursive
+}
+
+# The commit the tag checked out. The pin must be at its pinned commit,
+# DEEPLOY_PIN_JITO_COMMIT, and a moved pin is refused before any of it is built.
+# Any other tag is built, and its commit is named so it can be compared with the
+# release page. The submodules follow the superproject's gitlinks, so its commit
+# fixes theirs too, as far as their repositories serve those commits.
+toolchain_check_commit() {
+    if is_dry_run; then return 0; fi
+    local head
+    head="$(git -C "$JITO_SRC" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$head" =~ ^[0-9a-f]{40}$ ]] \
+        || fail "could not read the commit ${JITO_TAG} checked out in ${JITO_SRC} (git rev-parse HEAD gave '${head}')"
+    if [[ "$JITO_TAG" == "$DEEPLOY_PIN_JITO_TAG" ]]; then
+        [[ "$head" == "$DEEPLOY_PIN_JITO_COMMIT" ]] \
+            || fail "refusing to build ${JITO_TAG}: it checks out ${head}, not the pinned ${DEEPLOY_PIN_JITO_COMMIT}. The pinned tag has moved since DeePloy pinned it."
+        ok "${JITO_TAG} is the pinned commit ${head}"
+    else
+        info "${JITO_TAG} is commit ${head}. DeePloy checks the commit of its pin (${DEEPLOY_PIN_JITO_TAG}) only; compare this one with the release page."
+    fi
+    state_set jito_commit "$head"
 }
 
 # --- THE OVERLAY SEAM (the only path to a non-vanilla build) -----------------

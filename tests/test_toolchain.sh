@@ -170,6 +170,40 @@ OUT=$( ( git() { return 0; }; curl() { printf 000; return 7; }
 check "R10-7d: under the production traps the refusal comes out alone" "$RC|$(grep -cE 'line [0-9]+:' <<<"$OUT")|$(grep -c 'could not check the Anza CLI release' <<<"$OUT")" "1|0|1"
 ANZA_CODE=200; state_clear jito_tag
 
+echo "== the pin is at its pinned commit; any other tag is named by its commit =="
+# toolchain_check_commit reads HEAD after the checkout. The suite-wide git mock
+# prints nothing, so these answer rev-parse themselves and log every call.
+# ${…:-}: without the constants (the old tree) these fail instead of set -u
+# killing the file.
+GITLOG="$WORK/gitlog"
+commit_check() {                                  # <tag> <head> -> output; git calls in GITLOG
+    : >"$GITLOG"
+    ( git() { echo "git $*" >>"$GITLOG"; [[ "$*" == *"rev-parse HEAD"* ]] && printf '%s\n' "$CC_HEAD"; return 0; }
+      CC_HEAD="$2" JITO_TAG="$1" toolchain_check_commit; echo "CHECKED rc=$?" ) 2>&1
+}
+PIN="${DEEPLOY_PIN_JITO_TAG:-<no pin>}"; PINC="${DEEPLOY_PIN_JITO_COMMIT:-<no commit>}"
+OTHER=0123456789abcdef0123456789abcdef01234567
+state_clear jito_commit
+OUT=$(commit_check "$PIN" "$PINC")
+check "the pin at its pinned commit -> ok, recorded" "$(lines_with CHECKED "$OUT")|$(grep -c "is the pinned commit ${PINC}" <<<"$OUT")|$(state_get jito_commit '<none>')" "CHECKED rc=0|1|${PINC}"
+state_clear jito_commit
+OUT=$(commit_check "$PIN" "$OTHER")
+check "the pin at another commit -> refused, both named, nothing recorded" "$(lines_with CHECKED "$OUT")|$(grep -c "it checks out ${OTHER}, not the pinned ${PINC}" <<<"$OUT")|$(state_get jito_commit '<none>')" "|1|<none>"
+OUT=$(commit_check v4.3.3-jito "$OTHER")
+check "another tag -> built, its commit named and recorded" "$(lines_with CHECKED "$OUT")|$(grep -c "v4.3.3-jito is commit ${OTHER}" <<<"$OUT")|$(state_get jito_commit '<none>')" "CHECKED rc=0|1|${OTHER}"
+state_clear jito_commit
+OUT=$(commit_check "$PIN" "")
+check "no commit from rev-parse -> refused" "$(lines_with CHECKED "$OUT")|$(grep -c 'could not read the commit' <<<"$OUT")" "|1"
+OUT=$( ( DRY_RUN=1; commit_check "$PIN" "$OTHER" ) )
+check "dry-run -> nothing asked (nothing is checked out)" "$(lines_with CHECKED "$OUT")|$(grep -c 'rev-parse' "$GITLOG")" "CHECKED rc=0|0"
+# The wiring: after the checkout, before the submodules, in a fresh source dir.
+: >"$GITLOG"
+OUT=$( ( git() { echo "git $*" >>"$GITLOG"; [[ "$*" == *"rev-parse HEAD"* ]] && printf '%s\n' "$PINC"; return 0; }
+         JITO_SRC="$WORK/fetch-src" JITO_TAG="$PIN" toolchain_fetch_source; echo "FETCHED rc=$?" ) 2>&1 )
+check "fetch: the checkout, then the commit check, then the submodules" \
+      "$(lines_with FETCHED "$OUT")|$(awk '/ checkout tags\//{c=NR} / rev-parse HEAD/{r=NR} / submodule update/{s=NR} END{print (c && r && s && c < r && r < s) ? "in order" : "c=" c " r=" r " s=" s}' "$GITLOG")" "FETCHED rc=0|in order"
+state_clear jito_commit
+
 echo "== overlay seam: no patch -> vanilla =="
 OVERLAY_DIR="$WORK/empty"; mkdir -p "$OVERLAY_DIR"
 _OVERLAY_APPLIED=9; : >"$CALLS"

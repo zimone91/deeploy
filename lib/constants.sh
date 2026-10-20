@@ -108,6 +108,11 @@ DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063
 # at the install's tag prompt builds. It may move ahead of the recommendation,
 # never below it (test_common).
 DEEPLOY_PIN_JITO_TAG="v4.3.2-jito"
+# The commit it is pinned to. v4.3.2-jito is an annotated tag that peels to it
+# (git ls-remote on 2026-10-19; the box's 4.3.2 build reports src:013a4306).
+# A tag can be moved after it was pinned and a commit cannot, so a build of the
+# pin refuses any other commit (toolchain_check_commit). Bump the two together.
+DEEPLOY_PIN_JITO_COMMIT="013a4306f585cbd213ee5071550339af766f930c"
 
 # Public community metrics endpoints (NOT secrets). mainnet-beta is the default:
 # SFDP's metric-reporting check reads one core metric, optimistic_slot.slot, from

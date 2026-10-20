@@ -546,6 +546,7 @@ check_true "recommended constant is itself a version tag" "deeploy_tag_version \
 check_true "the recommendation clears the floor"          "deeploy_tag_floor_problem \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-}\" >/dev/null"
 check_true "the pin is a version tag"                     "deeploy_tag_version \"\${DEEPLOY_PIN_JITO_TAG:-}\" >/dev/null"
 check_true "the pin is not below the recommendation"      "deeploy_tag_floor_problem \"\${DEEPLOY_PIN_JITO_TAG:-}\" \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-v999.0.0-jito}\" >/dev/null"
+check_true "the pinned commit is 40 hex digits"          "[[ \"\${DEEPLOY_PIN_JITO_COMMIT:-}\" =~ ^[0-9a-f]{40}\$ ]]"
 RNOTE=$(deeploy_tag_recommendation_note v4.3.0-jito.1); RNRC=$?
 check "below -> rc 0 (a note, not a refusal)" "$RNRC" "0"
 check "below -> one line: tag, recommendation, reason" \
