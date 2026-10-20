@@ -3,9 +3,9 @@
 # DeePloy — lib/start.sh   (Phase 8: start -> catchup 0 -> verify)
 # Pre-start free-disk check -> enable+start solana.service -> wait for the node
 # to catch up (catchup 0) -> pin the PoH thread -> run the verification block ->
-# print the final summary with the MANUAL staked-key hot-swap (the tower moved
-# first; keys_print_swap_steps: path form in file mode, stdin form in offbox
-# mode) and a pointer to the separate failover tool.
+# print the final summary with the MANUAL staked-key hot-swap (the vote history
+# moved first; keys_print_swap_steps: path form in file mode, stdin form in
+# offbox mode) and a pointer to the separate failover tool.
 #
 # Requires: common.sh and constants.sh sourced (verify.sh for the verification
 # block, keys.sh for the swap steps in the summary). All mutations go through

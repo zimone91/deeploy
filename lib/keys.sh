@@ -187,13 +187,17 @@ keys_print_manual() {
 }
 
 # --- the hot swap — printed in phase 5 and in the final summary --------------
-# A hot swap moves the tower. The old validator stops voting first — and a
-# restart of it must come back unstaked, or two nodes vote — its tower file
-# comes here, and set-identity --require-tower refuses without it: without the
-# tower, votes the old node cast that have not landed are unknown here and
-# their lockouts can be violated. A cold bring-up (old validator stopped, the
-# cluster finalized at least 300 slots past the vote account's lastVote) needs
-# no tower.
+# A hot swap moves the vote history. The old validator stops voting first — and
+# a restart of it must come back unstaked, or two nodes vote — and its
+# vote_history-<staked-pubkey>.bin comes here, into the ledger
+# (votor/src/vote_history_storage.rs 157-165, validator/src/commands/run/
+# execute.rs 590-592, jito-solana v4.3.0-jito.1). set-identity refuses without
+# it: without the vote history, the votes the old node cast are unknown here, and
+# this node could cast conflicting ones. The authorized voter goes in before the
+# identity, so the identity is never staked while nothing can sign its votes. A
+# cold bring-up (the old validator stopped, no process at all; the cluster
+# finalized past the vote account's lastVote) has no vote history to move and
+# says so with --do-not-require-vote-history. A hot swap never passes that flag.
 #
 # With no keypair path (offbox mode) step c is the stdin form: the operator pipes
 # the key over ssh from the machine that holds it, so it never touches this
@@ -207,24 +211,26 @@ keys_print_swap_steps() {      # <agave-validator command> <ledger> [<staked key
     info "          agave-validator --ledger <old-ledger> set-identity <old-unstaked-keypair.json>"
     info "        Make sure a restart of the OLD validator comes back unstaked: point its startup"
     info "        --identity (argv or symlink) at the unstaked key, and turn off any failover automation."
-    info "     b) Copy its tower here (not a secret; after Alpenglow, vote_history-<staked-pubkey>.bin too):"
-    info "          scp <old>:<old-ledger>/tower-1_9-<staked-pubkey>.bin <this-box>:${ledger}/"
+    info "     b) Copy its vote history here (not a secret):"
+    info "          scp <old>:<old-ledger>/vote_history-<staked-pubkey>.bin <this-box>:${ledger}/"
     if [[ -n "$key" ]]; then
-        info "     c) This box — take the identity; --require-tower refuses without the tower:"
-        info "          ${av} --ledger ${ledger} set-identity --require-tower ${key}"
+        info "     c) This box — the voter first, then the identity; set-identity refuses without the vote history:"
         info "          ${av} --ledger ${ledger} authorized-voter add ${key}"
+        info "          ${av} --ledger ${ledger} set-identity ${key}"
     else
         info "     c) From the machine that holds the key (staked.json there) — it goes over ssh on stdin"
-        info "        and never touches this box's disk; --require-tower refuses without the tower:"
-        info "          ssh <this-box> 'sudo -n ${av} --ledger ${ledger} set-identity --require-tower' < staked.json"
+        info "        and never touches this box's disk. The voter first, then the identity;"
+        info "        set-identity refuses without the vote history:"
         info "          ssh <this-box> 'sudo -n ${av} --ledger ${ledger} authorized-voter add' < staked.json"
+        info "          ssh <this-box> 'sudo -n ${av} --ledger ${ledger} set-identity' < staked.json"
         info "        Keep ssh without -t: the key must reach agave-validator through a pipe, not a terminal."
     fi
     info "        Any restart of solana (crash, reboot, upgrade) brings this node back on the sync"
-    info "        identity: it does not vote until you repeat these two commands (the tower is local by then)."
-    info "     Cold bring-up instead, no tower: only when the old validator is stopped and the"
-    info "     finalized slot is at least 300 slots past the vote account's lastVote — step c"
-    info "     without --require-tower."
+    info "        identity: it does not vote until you repeat these two commands (the vote history is"
+    info "        local by then)."
+    info "     Cold bring-up instead, no vote history: only when the old validator is stopped (no process"
+    info "     at all, not just unstaked) and the finalized slot is past the vote account's lastVote —"
+    info "     step c with set-identity --do-not-require-vote-history. Never in a hot swap."
 }
 
 # --- orchestrator ------------------------------------------------------------

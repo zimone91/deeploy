@@ -39,20 +39,21 @@ from "I know what I'm doing on mainnet":
    on the sync identity, and it does not vote until you repeat the two
    commands. `deeploy.sh verify` warns while the node is not on the staked
    identity (in `file` mode, once DeePloy has derived the staked pubkey).
-3. **In a hot swap the tower moves with the identity.** While the old validator
-   is still running, it stops voting first (`set-identity` to its unstaked key),
-   and a restart of it must come back unstaked too: its startup `--identity`
-   (argv or symlink) points at the unstaked key, and failover automation is off.
-   Otherwise a crash or a restart brings it back staked, and two nodes vote. Its
-   `tower-1_9-<staked-pubkey>.bin` is copied to this box, and `set-identity
-   --require-tower` refuses to take the identity without it. Without the tower,
-   votes the old node cast that have not landed are unknown here, and their
-   lockouts can be violated. After Alpenglow activates, the vote-history file
-   travels with the tower. A **cold bring-up** needs no tower: when the old
-   validator is stopped and the cluster's finalized slot is at least 300 slots
-   past the vote account's `lastVote` — a margin for a vote that did not land
-   and may still hold a lockout — the node rebuilds its lockouts from the vote
-   account's on-chain state.
+3. **In a hot swap the vote history moves with the identity.** While the old
+   validator is still running, it stops voting first (`set-identity` to its
+   unstaked key), and a restart of it must come back unstaked too: its startup
+   `--identity` (argv or symlink) points at the unstaked key, and failover
+   automation is off. Otherwise a crash or a restart brings it back staked, and
+   two nodes vote. Its `vote_history-<staked-pubkey>.bin` is copied into this
+   box's ledger. Then the staked key goes in as the authorized voter first and as
+   the identity second, so the identity is never staked while nothing can sign
+   its votes; `set-identity` refuses to take the identity without the vote
+   history. Without it, the votes the old node cast are unknown here, and this
+   node could cast conflicting ones. A **cold bring-up** has no vote history to
+   move: only when the old validator is stopped — no process at all, not just
+   unstaked — and the cluster's finalized slot is past the vote account's
+   `lastVote`, the same two commands run with `set-identity
+   --do-not-require-vote-history`. A hot swap never passes that flag.
 4. The node uses `--private-rpc` bound to `127.0.0.1`; RPC is never exposed.
 5. **No core dumps.** The validator's memory holds its identity key, so a crash
    must not write that memory to disk. `solana.service` sets `LimitCORE=0`

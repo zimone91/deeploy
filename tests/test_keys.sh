@@ -100,16 +100,21 @@ check "combined call has --url"        "$(grep -c 'config set --url https://api.
 check "combined call has real keypair" "$(grep -c -- '--keypair /root/solana/mainnet-validator-keypair.json' "$CALLS")" "1"
 MAN=$(STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json LEDGER_PATH=/root/solana/ledger keys_print_manual 2>&1)
 check_ge "manual shows real-key path"        "$(grep -c '/root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
-check    "set-identity --require-tower path-form" "$(grep -c 'set-identity --require-tower /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
+check    "set-identity path-form, no --require-tower" "$(grep -c 'set-identity /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
 check    "authorized-voter add path-form"    "$(grep -c 'authorized-voter add /root/solana/mainnet-validator-keypair.json' <<<"$MAN")" "1"
 check    "NO stdin redirect form (dropped)"  "$(grep -c 'set-identity < ' <<<"$MAN")" "0"
 check_ge "never-touch wording"               "$(grep -ci 'never' <<<"$MAN")" "1"
-# R10-9: hot swap = the old validator stops, its tower moves here, then
-# --require-tower; the cold line carries its condition.
+# R10-9, after Alpenglow: hot swap = the old validator stops, its vote history
+# moves here, the voter goes in before the identity; the cold line carries its
+# condition and the only --do-not-require-vote-history.
 check    "old validator stops voting first"  "$(grep -c 'OLD validator first' <<<"$MAN")" "1"
 check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a restart of the OLD validator comes back unstaked' <<<"$MAN")" "1"
-check    "tower copied to this ledger"       "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
-check    "cold bring-up states its condition" "$(grep -c "finalized slot is at least 300 slots past the vote account's lastVote" <<<"$MAN")" "1"
+check    "vote history copied to this ledger" "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
+check    "no tower file, no --require-tower" "$(grep -c 'tower-1_9' <<<"$MAN")|$(grep -c -- '--require-tower' <<<"$MAN")" "0|0"
+check    "the voter goes in before the identity" \
+         "$(awk '/authorized-voter add \/root\/solana\/mainnet-validator-keypair.json/ {v = NR} /set-identity \/root\/solana\/mainnet-validator-keypair.json/ {s = NR} END {print (v && s && v < s) ? "voter first" : "v=" v " s=" s}' <<<"$MAN")" "voter first"
+check    "cold bring-up states its condition" "$(grep -c 'only when the old validator is stopped (no process' <<<"$MAN")|$(grep -c "and the finalized slot is past the vote account's lastVote" <<<"$MAN")" "1|1"
+check    "--do-not-require-vote-history only on the cold line" "$(grep -c -- '--do-not-require-vote-history' <<<"$MAN")|$(grep -c 'step c with set-identity --do-not-require-vote-history. Never in a hot swap.' <<<"$MAN")" "1|1"
 check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$MAN")" "0"
 # R10-6 (KEYMODEL-DZ-READS): in dz-connect the key signs twice, not "one message".
 check    "file mode names both dz-connect signatures" "$(grep -c 'signs the passport message and the request transaction it pays for' <<<"$MAN")" "1"
@@ -203,11 +208,13 @@ MAN=$(STAKED_KEY_MODE=offbox STAKED_PUBKEY="$STAKED_OK" STAKED_KEYPAIR=/root/sol
       LEDGER_PATH=/root/solana/ledger keys_print_manual 2>&1)
 check "offbox manual: says DeePloy does not read the key" "$(grep -c 'DeePloy does not read the staked key' <<<"$MAN")" "1"
 check "offbox manual: names the staked pubkey"      "$(grep -c "$STAKED_OK" <<<"$MAN")" "1"
-check "offbox manual: set-identity on stdin over ssh" "$(grep -c "ssh <this-box> 'sudo -n /opt/bin/agave-validator --ledger /root/solana/ledger set-identity --require-tower' < staked.json" <<<"$MAN")" "1"
+check "offbox manual: set-identity on stdin over ssh" "$(grep -c "ssh <this-box> 'sudo -n /opt/bin/agave-validator --ledger /root/solana/ledger set-identity' < staked.json" <<<"$MAN")" "1"
 check "offbox manual: authorized-voter on stdin"    "$(grep -c "ssh <this-box> 'sudo -n /opt/bin/agave-validator --ledger /root/solana/ledger authorized-voter add' < staked.json" <<<"$MAN")" "1"
+check "offbox manual: the voter goes in before the identity" \
+      "$(awk "/authorized-voter add' < staked.json/ {v = NR} /set-identity' < staked.json/ {s = NR} END {print (v && s && v < s) ? \"voter first\" : \"v=\" v \" s=\" s}" <<<"$MAN")" "voter first"
 check "offbox manual: ssh stays without -t"         "$(grep -c 'Keep ssh without -t: the key must reach agave-validator through a pipe, not a terminal.' <<<"$MAN")" "1"
 check "offbox manual: a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$MAN")" "1"
-check "offbox manual: tower step kept"              "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
+check "offbox manual: vote history step kept"      "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
 check "offbox manual: no staked keypair path at all" "$(grep -c 'mainnet-validator-keypair' <<<"$MAN")" "0"
 
 echo "== PROBE-RC-ZERO: the real _keys_pubkey answers 0 inside \$( ) =="

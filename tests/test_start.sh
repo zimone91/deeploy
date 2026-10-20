@@ -193,17 +193,22 @@ OUT=$( set -Eeuo pipefail; SET_POH_SCRIPT="$WORK/failpin.sh" start_pin_poh 2>&1 
 check    "pin failure does not abort phase 8 (rc 0)" "$RC" "0"
 check_ge "pin failure surfaced as a warning"         "$(grep -ci 'did not succeed' <<<"$OUT")" "1"
 
-echo "== final summary: hot swap with the tower (PATH form), no stdin, failover pointer =="
+echo "== final summary: hot swap with the vote history (PATH form), no stdin, failover pointer =="
 SUM=$(start_print_summary 2>&1)
-check    "set-identity --require-tower, path form" "$(grep -c 'set-identity --require-tower /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
+check    "set-identity path form, no --require-tower" "$(grep -c 'set-identity /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
 check    "authorized-voter add path"   "$(grep -c 'authorized-voter add /root/solana/mainnet-validator-keypair.json' <<<"$SUM")" "1"
 check    "NO stdin redirect form"      "$(grep -cE 'set-identity <[^a-z]' <<<"$SUM")" "0"   # '<old-…>' is a placeholder, '< file' a redirect
-# R10-9: the step is called a hot swap, so it moves the tower; the cold path is
-# a separate line that states its condition.
+# R10-9, after Alpenglow: the step is called a hot swap, so it moves the vote
+# history, and the voter goes in before the identity; the cold path is a
+# separate line with its condition and the only --do-not-require-vote-history.
 check    "old validator stops voting first"  "$(grep -c 'OLD validator first' <<<"$SUM")" "1"
 check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a restart of the OLD validator comes back unstaked' <<<"$SUM")" "1"
-check    "tower copied to this ledger"       "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$SUM")" "1"
-check    "cold bring-up states its condition" "$(grep -c "finalized slot is at least 300 slots past the vote account's lastVote" <<<"$SUM")" "1"
+check    "vote history copied to this ledger" "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$SUM")" "1"
+check    "no tower file, no --require-tower" "$(grep -c 'tower-1_9' <<<"$SUM")|$(grep -c -- '--require-tower' <<<"$SUM")" "0|0"
+check    "the voter goes in before the identity" \
+         "$(awk '/authorized-voter add \/root\/solana\/mainnet-validator-keypair.json/ {v = NR} /set-identity \/root\/solana\/mainnet-validator-keypair.json/ {s = NR} END {print (v && s && v < s) ? "voter first" : "v=" v " s=" s}' <<<"$SUM")" "voter first"
+check    "cold bring-up states its condition" "$(grep -c 'only when the old validator is stopped (no process' <<<"$SUM")|$(grep -c "and the finalized slot is past the vote account's lastVote" <<<"$SUM")" "1|1"
+check    "--do-not-require-vote-history only on the cold line" "$(grep -c -- '--do-not-require-vote-history' <<<"$SUM")|$(grep -c 'step c with set-identity --do-not-require-vote-history. Never in a hot swap.' <<<"$SUM")" "1|1"
 check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$SUM")" "0"
 check    "R10-6: file mode also says a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$SUM")" "1"
 check_ge "dz-connect mentioned (DZ on)" "$(grep -c 'dz-connect' <<<"$SUM")" "1"
@@ -219,10 +224,12 @@ echo "== R10-6: offbox summary — stdin form over ssh, no staked path, the pass
 OFFPK=kBi4uaoKafaLnLz7yjSScDDBTSH3riu7rGRm56txbNu
 OSUM=$(STAKED_KEY_MODE=offbox STAKED_PUBKEY="$OFFPK" STAKED_KEYPAIR=/root/solana/mainnet-validator-keypair.json start_print_summary 2>&1)   # a stale path must not print
 check "offbox: the key stays off this box, pubkey named" "$(grep -c "The staked key stays off this box — DeePloy knows only its pubkey ($OFFPK)" <<<"$OSUM")" "1"
-check "offbox: set-identity fed on stdin over ssh"   "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger set-identity --require-tower' < staked.json" <<<"$OSUM")" "1"
+check "offbox: set-identity fed on stdin over ssh"   "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger set-identity' < staked.json" <<<"$OSUM")" "1"
 check "offbox: authorized-voter fed on stdin"        "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger authorized-voter add' < staked.json" <<<"$OSUM")" "1"
 check "offbox: a restart reverts the identity"       "$(grep -c 'brings this node back on the sync' <<<"$OSUM")" "1"
-check "offbox: tower step kept"                      "$(grep -c 'tower-1_9-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$OSUM")" "1"
+check "offbox: vote history step kept"               "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$OSUM")" "1"
+check "offbox: the voter goes in before the identity" \
+      "$(awk "/authorized-voter add' < staked.json/ {v = NR} /set-identity' < staked.json/ {s = NR} END {print (v && s && v < s) ? \"voter first\" : \"v=\" v \" s=\" s}" <<<"$OSUM")" "voter first"
 check "offbox: no staked keypair path, no 'Place …'" "$(grep -c 'mainnet-validator-keypair' <<<"$OSUM")|$(grep -c 'Place the real staked keypair' <<<"$OSUM")" "0|0"
 check "offbox: dz-connect hint names --dz-signature" "$(grep -c -- '--dz-signature' <<<"$OSUM")" "1"
 # start_resolve_config in offbox resolves no staked path, even with a stale one
@@ -250,7 +257,7 @@ check "dry-run: no synced claim"                   "$(grep -c 'Node is synced' <
 check "dry-run: says where the plan ends"          "$(grep -c 'DRY-RUN — the plan ends here' <<<"$RSUM")" "1"
 check "dry-run: nothing was installed or started"  "$(grep -c 'Nothing was installed or started. A real run prints this summary only after the node reaches catchup 0.' <<<"$RSUM")" "1"
 check "dry-run: the swap is marked for after a real run" "$(grep -c 'After that real run and catchup 0 — MANUAL staked-key hot-swap' <<<"$RSUM")" "1"
-check "dry-run: the swap steps are kept"           "$(grep -c 'set-identity --require-tower /root/solana/mainnet-validator-keypair.json' <<<"$RSUM")" "1"
+check "dry-run: the swap steps are kept"           "$(grep -c 'set-identity /root/solana/mainnet-validator-keypair.json' <<<"$RSUM")" "1"
 check "dry-run: no post-install verify warning"    "$(grep -c 'Post-install verification' <<<"$RSUM")" "0"
 RSUM1=$(DRY_RUN=1 start_print_summary 1 0 2>&1)
 check "dry-run: a non-zero catchup rc is not 'incomplete'" "$(grep -c 'DEPLOYMENT INCOMPLETE' <<<"$RSUM1")|$(grep -c 'DRY-RUN — the plan ends here' <<<"$RSUM1")" "0|1"
