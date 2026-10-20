@@ -3,12 +3,16 @@
 Target: a fresh Ubuntu 24.04 x86-64 box (every run so far: 48 threads,
 377 GiB RAM, 2× ~1.92 TB data NVMe + a separate system disk).
 
-**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.0-jito.0"`;
-the code enforces a floor of **v4.2.0-jito**. Older clients are refused before
-the build: the generated `validator.sh` passes `--no-xdp` and
-`--poh-pinned-cpu-core`, neither of which exists before 4.2.0, so an older
-binary would go through a whole build (v4.3.0-jito.0 took about 11-12 minutes
-on the hardware above) and then refuse to start. While the build
+**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.2-jito"`,
+and a bare Enter at the install's tag prompt builds the same tag; a run without
+a terminal has to name one. It is also the **recommended** minimum: SFDP
+requires Agave 4.3.2 or newer from epoch 1063, and Jito advises 4.3.2 before
+Alpenglow. A tag below it gets a warning at the build, the upgrade and the
+render, and the run goes on. The code enforces a floor of **v4.2.0-jito**.
+Older clients are refused before the build: the generated `validator.sh` passes
+`--no-xdp` and `--poh-pinned-cpu-core`, neither of which exists before 4.2.0, so
+an older binary would go through a whole build (v4.3.2-jito took 724 s on the
+hardware above) and then refuse to start. While the build
 is still ahead, the tag is checked before the disk phase erases anything: its
 form, the floor, and that it exists, both in the jito-solana repository and as
 an Anza CLI release for its base. A tag that does not exist, and one that cannot

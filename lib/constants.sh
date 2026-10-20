@@ -78,6 +78,19 @@ ALT_PROGRAM_KEY="AddressLookupTab1e1111111111111111111111111"
 # render) so the floor cannot drift between them.
 DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
 
+# Recommended jito-solana tag. The floor above refuses; this only warns, at the
+# same three checks, and the run goes on. SFDP requires Agave 4.3.2 or newer from
+# epoch 1063 (api.solana.org/api/community/v1/sfdp_required_versions), and Jito
+# advises 4.3.2 before Alpenglow. The note is deeploy_tag_recommendation_note
+# (common.sh): the floor's own comparison, against this tag.
+DEEPLOY_RECOMMENDED_JITO_TAG="v4.3.2-jito"
+DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063, and Jito advises 4.3.2 before Alpenglow"
+
+# The shipped pin: the tag deeploy.conf.example names, and the one a bare Enter
+# at the install's tag prompt builds. It may move ahead of the recommendation,
+# never below it (test_common).
+DEEPLOY_PIN_JITO_TAG="v4.3.2-jito"
+
 # Public community metrics endpoints (NOT secrets). BAM is the default to pair
 # with BAM-default MEV; the mainnet-beta one is the switchable alternative.
 SOLANA_METRICS_BAM="host=http://bam-public-metrics.jito.wtf:8086,db=mainnet-bam-validators,u=mainnet-bam-validator,p=wambamdamn"

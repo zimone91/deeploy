@@ -11,3 +11,7 @@ and **requires an explicit `yes`**, and a non-interactive (fleet/cron) upgrade
 **aborts** rather than restart that node (a restart brings it back on the sync
 identity and skips its leader slots; prefer the failover path). The previous
 release is kept, so rollback is one symlink flip, behind the same check.
+
+The tag has the install's floor: below **v4.2.0-jito** the upgrade is refused
+before anything is built. Below the recommended **v4.3.2-jito** it warns (SFDP
+requires Agave 4.3.2 or newer from epoch 1063) and goes on.

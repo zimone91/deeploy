@@ -75,8 +75,13 @@ state_clear jito_tag
 TSOUT=$( ( JITO_TAG=v4.3.0-jito.0 toolchain_resolve_config; echo RESOLVED ) 2>&1 ); TSRC=$?
 check "v4.3.0-jito.0 -> resolve ok"            "$TSRC" "0"
 check "v4.3.0-jito.0 -> ran to its end"        "$(lines_with RESOLVED "$TSOUT")" "RESOLVED"
-check "v4.3.0-jito.0 -> no warning"            "$(lines_with WARN "$TSOUT")" ""
+# No shape warning; the one warning left is the recommendation (v4.3.0 < 4.3.2).
+check "v4.3.0-jito.0 -> one warning, the recommendation" \
+      "$(lines_with WARN "$TSOUT" | grep -c "below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}")|$(lines_with WARN "$TSOUT" | wc -l | tr -d ' ')" "1|1"
 check "v4.3.0-jito.0 recorded to state"        "$(state_get jito_tag '<none>')" "v4.3.0-jito.0"
+state_clear jito_tag
+TROUT=$( ( JITO_TAG="${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}" toolchain_resolve_config; echo RESOLVED ) 2>&1 ); TRRC=$?
+check "the recommended tag -> resolves, no warning" "$TRRC|$(lines_with RESOLVED "$TROUT")|$(lines_with WARN "$TROUT")" "0|RESOLVED|"
 state_clear jito_tag
 TSOUT=$( ( JITO_TAG=v4.3.0 toolchain_resolve_config; echo RESOLVED ) 2>&1 ); TSRC=$?
 check "bare Agave v4.3.0 -> resolve fails"     "$([[ $TSRC -ne 0 ]] && echo refused || echo "rc=$TSRC")" "refused"
@@ -149,6 +154,15 @@ OUT=$(tag_check "")
 check "R10-7d: no tag and no terminal -> refused, no network asked" "$(lines_with CHECKED "$OUT")|$(grep -c 'no value and no default for: jito-solana build tag' <<<"$OUT")|$(wc -l <"$NETLOG" | tr -d ' ')" "|1|0"
 OUT=$(printf 'v4.3.0-jito.0\n' | { NONINTERACTIVE=0; tag_check ""; })
 check "R10-7d: no tag -> asked; the answer is the tag checked" "$(lines_with CHECKED "$OUT")|$(grep -c 'jito-solana build tag' <<<"$OUT")|$(grep -c 'refs/tags/v4.3.0-jito.0' "$NETLOG")|$(state_get jito_tag)" "CHECKED rc=0|1|1|untouched"
+# A bare Enter builds the pin; without a terminal the refusal above stands.
+# ${…:-}: without the constant (the old tree) these fail instead of set -u
+# killing the file.
+OUT=$(printf '\n' | { NONINTERACTIVE=0; tag_check ""; })
+check "no tag, bare Enter -> the pin is the tag checked" "$(lines_with CHECKED "$OUT")|$(grep -cF "[${DEEPLOY_PIN_JITO_TAG:-<no pin>}]:" <<<"$OUT")|$(grep -cF "refs/tags/${DEEPLOY_PIN_JITO_TAG:-<no pin>}" "$NETLOG")" "CHECKED rc=0|1|1"
+state_clear jito_tag
+# The prompt ends without a newline, so RESOLVED goes on a line of its own.
+OUT=$(printf '\n' | { NONINTERACTIVE=0; unset JITO_TAG; toolchain_resolve_config; printf '\nRESOLVED\n'; } 2>&1)
+check "phase 4: no tag, bare Enter -> the pin, recorded" "$(lines_with RESOLVED "$OUT")|$(state_get jito_tag '<none>')" "RESOLVED|${DEEPLOY_PIN_JITO_TAG:-<no pin>}"
 # curl's status sits inside $( ): under the production traps the refusal comes out alone.
 ANZA_CODE=000
 OUT=$( ( git() { return 0; }; curl() { printf 000; return 7; }

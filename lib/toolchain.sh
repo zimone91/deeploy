@@ -45,25 +45,29 @@ TOOLCHAIN_BUILD_DEPS=(
 TOOLCHAIN_CAPS="cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon,cap_sys_nice"
 
 # scripts/cargo-install-all.sh flags — both measured present in the script at
-# v4.3.0-jito.0, the current pin (2026-10-05):
+# v4.3.0-jito.0 (2026-10-05) and at the v4.3.2-jito pin (2026-10-19), which a
+# mainnet box built with both (2026-10-19, 724 s):
 #   --release-with-lto         build with the release-with-lto profile. Upstream
-#                              ships both the profile and this flag at the pin,
-#                              and the two guards below leave both files there
-#                              byte-identical; they stay for older tags.
+#                              ships both the profile and this flag at both
+#                              tags, and the two guards below leave both files
+#                              there byte-identical; they stay for older tags.
 #   --no-build-platform-tools  skip the SBF platform-tools build (not needed for
-#                              a validator; accepted at the pin)
+#                              a validator; accepted at both tags)
 TOOLCHAIN_BUILD_FLAGS=(--release-with-lto --no-build-platform-tools)
 
 _OVERLAY_APPLIED=0
 
 # --- config ------------------------------------------------------------------
 # The tag: asked for when unset, refused when it is not a jito-solana tag or is
-# older than the floor. Phase 4 records it (toolchain_resolve_config); phase 3
-# asks the same before it erases anything (toolchain_check_tag) and records
-# nothing.
+# older than the floor. At a terminal a bare Enter builds the pin,
+# DEEPLOY_PIN_JITO_TAG. Without one nobody pressed Enter, and a run that names
+# no tag is refused (R10-7d): the pin is no default for a run that cannot ask.
+# Phase 4 records it (toolchain_resolve_config); phase 3 asks the same before it
+# erases anything (toolchain_check_tag) and records nothing.
 _toolchain_tag_resolve() {
     if [[ -z "${JITO_TAG:-}" ]]; then
-        ask "jito-solana build tag (e.g. v4.3.0-jito.0)" "${JITO_TAG:-}"
+        if is_interactive; then ask "jito-solana build tag" "$DEEPLOY_PIN_JITO_TAG"
+        else ask "jito-solana build tag (e.g. ${DEEPLOY_PIN_JITO_TAG})" ""; fi
         JITO_TAG="$REPLY"
     fi
     [[ -n "$JITO_TAG" ]] || fail "JITO_TAG is required"
@@ -72,13 +76,15 @@ _toolchain_tag_resolve() {
     # validator source at v4.3.0 defines none of the Jito-only flags DeePloy
     # writes into validator.sh.
     deeploy_tag_agave_base "$JITO_TAG" >/dev/null \
-        || fail "refusing to build '${JITO_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0). Use a tag from github.com/jito-foundation/jito-solana/releases."
+        || fail "refusing to build '${JITO_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.2-jito). Use a tag from github.com/jito-foundation/jito-solana/releases."
     # Version floor, checked BEFORE the build (this is the whole
     # point): the generated validator.sh passes flags that do not exist on older
     # clients, so an old tag builds fine and then refuses to start.
-    local why
+    local why note
     why="$(deeploy_tag_floor_problem "$JITO_TAG")" \
         || fail "refusing to build '${JITO_TAG}': ${why}. DeePloy generates a validator.sh that passes --no-xdp and --poh-pinned-cpu-core, and both first exist in ${DEEPLOY_MIN_JITO_TAG} — an older client rejects the argv and never starts, after the entire build. Set JITO_TAG to ${DEEPLOY_MIN_JITO_TAG} or newer."
+    note="$(deeploy_tag_recommendation_note "$JITO_TAG")"
+    [[ -z "$note" ]] || warn "${note}. Building it anyway."
 }
 toolchain_resolve_config() {
     _toolchain_tag_resolve
@@ -148,7 +154,7 @@ toolchain_anza_cli() {
     # The Anza release named by the jito tag's base: v4.3.0-jito.0 -> v4.3.0.
     local ver
     ver="$(deeploy_tag_agave_base "${JITO_TAG:-}")" \
-        || fail "refusing '${JITO_TAG:-}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0), so no Anza release name can be derived from it."
+        || fail "refusing '${JITO_TAG:-}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.2-jito), so no Anza release name can be derived from it."
     step "anza CLI ${ver} (PATH + install scaffold)"
     if is_dry_run; then info "${C_DIM}[dry-run]${C_NC} would install anza CLI ${ver}"; return 0; fi
     local inst; inst=$(_mktemp)

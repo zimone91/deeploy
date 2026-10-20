@@ -51,13 +51,15 @@ upgrade_check_releases() {
     # floor on their numbers, and the jito-solana repo carries some of them
     # (v4.3.0 among them).
     deeploy_tag_agave_base "$UPGRADE_TAG" >/dev/null \
-        || fail "refusing to upgrade to '${UPGRADE_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.0-jito.0). Pick from the jito-solana list; the agave tags are shown for reference."
+        || fail "refusing to upgrade to '${UPGRADE_TAG}': it is not a jito-solana version tag (expected vMAJOR.MINOR.PATCH[-alpha.N|-beta.N|-rc.N]-jito[.N], e.g. v4.3.2-jito). Pick from the jito-solana list; the agave tags are shown for reference."
     # Same floor as the install path (constants.sh): upgrading DOWN to a client
     # that predates --no-xdp / --poh-pinned-cpu-core would rebuild fine and then
     # fail to start against the validator.sh already on the box.
-    local why
+    local why note
     why="$(deeploy_tag_floor_problem "$UPGRADE_TAG")" \
         || fail "refusing to upgrade to '${UPGRADE_TAG}': ${why}. The validator.sh on this box passes --no-xdp and --poh-pinned-cpu-core, which only exist from ${DEEPLOY_MIN_JITO_TAG} on. Choose ${DEEPLOY_MIN_JITO_TAG} or newer."
+    note="$(deeploy_tag_recommendation_note "$UPGRADE_TAG")"
+    [[ -z "$note" ]] || warn "${note}. Upgrading to it anyway."
 }
 
 # --- live-identity guard -----------------------------------------------------

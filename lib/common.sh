@@ -249,6 +249,18 @@ deeploy_tag_floor_problem() {                     # <tag> [<floor-tag>]
     return 1
 }
 
+# Prints one line when <tag> is a version below DEEPLOY_RECOMMENDED_JITO_TAG,
+# nothing otherwise: the floor's comparison above, against the recommendation.
+# Always returns 0, because the three callers read it inside $( ), where a
+# non-zero status wakes the ERR trap. Garbage prints nothing: refusing it is the
+# floor's job, and every caller runs that check first.
+deeploy_tag_recommendation_note() {               # <tag>
+    deeploy_tag_floor_problem "${1:-}" "${DEEPLOY_RECOMMENDED_JITO_TAG:-}" >/dev/null && return 0
+    deeploy_tag_version "${1:-}" >/dev/null || return 0
+    printf '%s is below the recommended %s: %s' "$1" "$DEEPLOY_RECOMMENDED_JITO_TAG" "$DEEPLOY_RECOMMENDED_JITO_WHY"
+    return 0
+}
+
 # ensure_cargo_env — make the rustup-installed cargo/rustc resolvable for THIS
 # process. rustup installs to $HOME/.cargo/bin and writes $HOME/.cargo/env, but a
 # fresh install only affects PATH if that env is sourced — and it must reach

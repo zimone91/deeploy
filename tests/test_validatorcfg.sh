@@ -232,8 +232,10 @@ echo "== H1: solana.service installs as a REAL file under /etc, not on a data mo
 # systemd loads enabled units at early boot, before local-fs mounts; an on-mount
 # unit ($SOLANA_HOME -> ledger symlink) is unreadable then and dropped from the
 # boot transaction. The default install path must be /etc/systemd/system.
+# stderr apart: the suite's tag (v4.2.1-jito) is below the recommendation, and
+# the render warns about it there.
 ( unset SOLANA_SERVICE; state_set solana_home /root/solana; validatorcfg_resolve_config
-  echo "$SOLANA_SERVICE" ) >"$WORK/svpath" 2>&1
+  echo "$SOLANA_SERVICE" ) >"$WORK/svpath" 2>"$WORK/svpath.err"
 check "H1: unit path is /etc/systemd/system (root fs)"  "$(cat "$WORK/svpath")" "/etc/systemd/system/solana.service"
 check "H1: unit NOT under SOLANA_HOME (the ledger mount)" "$(grep -c '/root/solana/solana.service' "$WORK/svpath")" "0"
 validatorcfg_resolve_config
@@ -451,6 +453,12 @@ check "env tag below floor overrides good state -> refused" "$?" "1"
 state_set jito_tag v4.0.0-jito
 ( JITO_TAG=v4.2.1-jito MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
 check "env tag above floor overrides old state -> ok"       "$?" "0"
+# Below the recommendation: rendered, with one warning that names it.
+VRW=$( ( JITO_TAG=v4.2.1-jito MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 ); VRWRC=$?
+check "env tag below the recommendation -> rendered (rc 0)" "$VRWRC" "0"
+check "  with one warning naming the recommendation"        "$(grep -c "below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}" <<<"$VRW")" "1"
+VRN=$( ( JITO_TAG="${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}" MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 )
+check "the recommended tag -> no such warning"              "$(grep -c 'below the recommended' <<<"$VRN")" "0"
 # nothing known at all -> proceed, but SAY what is being assumed
 state_clear jito_tag
 VFW=$( ( unset JITO_TAG; MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 ); VFWRC=$?

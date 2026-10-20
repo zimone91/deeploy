@@ -263,6 +263,10 @@ check "example: MEV_MODE parsed"                   "$MEV_MODE" "bam"
 # checked here.
 check "example: JITO_TAG parsed"                   "$(deeploy_tag_version "$JITO_TAG" >/dev/null && echo parses || echo NO)" "parses"
 check_true "example: JITO_TAG meets our own floor" "deeploy_tag_floor_problem \"\$JITO_TAG\" >/dev/null"
+# and the recommendation; without the constant (the old tree) the floor is set
+# out of reach, so this fails instead of set -u killing the file
+check_true "example: JITO_TAG meets the recommendation" "deeploy_tag_floor_problem \"\$JITO_TAG\" \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-v999.0.0-jito}\" >/dev/null"
+check "example: JITO_TAG is the shipped pin"       "$JITO_TAG" "${DEEPLOY_PIN_JITO_TAG:-<no pin>}"
 check "example: JITO_TAG matches the file"         "$JITO_TAG" "$(sed -n 's/^JITO_TAG="\([^"]*\)".*/\1/p' "$EX")"
 # Phase 4's own toolchain_anza_cli, dry-run, on the tag the parser just read. The
 # expected name is derived here, independently: the tag with -jito[.N] cut off.

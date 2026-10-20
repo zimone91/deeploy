@@ -539,6 +539,24 @@ UWHY=$(deeploy_tag_floor_problem v4.2.1-jito "not-a-tag"); URC=$?
 check "bad floor -> rc1"                 "$URC" "1"
 check "bad floor -> named internal"      "$(grep -c 'internal: version floor' <<<"$UWHY")" "1"
 
+echo "== recommendation: below it a note, never a refusal (the floor's comparison) =="
+# ${…:-}: without the constant (the old tree) these checks fail instead of set -u
+# killing the file.
+check_true "recommended constant is itself a version tag" "deeploy_tag_version \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-}\" >/dev/null"
+check_true "the recommendation clears the floor"          "deeploy_tag_floor_problem \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-}\" >/dev/null"
+check_true "the pin is a version tag"                     "deeploy_tag_version \"\${DEEPLOY_PIN_JITO_TAG:-}\" >/dev/null"
+check_true "the pin is not below the recommendation"      "deeploy_tag_floor_problem \"\${DEEPLOY_PIN_JITO_TAG:-}\" \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-v999.0.0-jito}\" >/dev/null"
+RNOTE=$(deeploy_tag_recommendation_note v4.3.0-jito.1); RNRC=$?
+check "below -> rc 0 (a note, not a refusal)" "$RNRC" "0"
+check "below -> one line: tag, recommendation, reason" \
+      "$(grep -c "^v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.3.2" <<<"$RNOTE")" "1"
+for t in "${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}" v4.3.3-jito v4.4.0-beta.1-jito v5.0.0-jito; do
+    TN=$(deeploy_tag_recommendation_note "$t"); TNRC=$?
+    check "at or above: $t -> nothing, rc 0" "${TNRC}/${TN}" "0/"
+done
+TN=$(deeploy_tag_recommendation_note latest); TNRC=$?
+check "garbage -> nothing, rc 0 (refusing it is the floor's job)" "${TNRC}/${TN}" "0/"
+
 echo "== statedir-unavailable: root loud, non-root quiet =="
 rootmsg=$(_common_statedir_unavailable 1 2>&1)
 nonrootmsg=$(_common_statedir_unavailable 0 2>&1)
