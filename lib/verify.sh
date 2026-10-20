@@ -99,6 +99,18 @@ _vf_bam_lines() {
 _vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
 _vf_identity()     { deeploy_live_identity; }     # getIdentity, local RPC (common.sh)
 _vf_sync_pubkey()  { deeploy_sync_pubkey; }
+# The vote account as the public RPC parses it (getAccountInfo, jsonParsed), and
+# the rent-exempt minimum for its size. Each prints nothing when nothing answers.
+_vf_vote_account() {           # <vote pubkey, already checked to be 32 bytes of base58>
+    curl -sS -m 5 -H 'Content-Type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountInfo\",\"params\":[\"$1\",{\"encoding\":\"jsonParsed\"}]}" \
+        "$DEFAULT_PUBLIC_RPC" 2>/dev/null || true
+}
+_vf_rent_min() {               # <bytes>
+    curl -sS -m 5 -H 'Content-Type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getMinimumBalanceForRentExemption\",\"params\":[$1]}" \
+        "$DEFAULT_PUBLIC_RPC" 2>/dev/null | sed -nE 's/.*"result"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' || true
+}
 
 # --- checks ------------------------------------------------------------------
 verify_process() {
@@ -337,6 +349,40 @@ verify_identity() {
     fi
 }
 
+# Alpenglow needs a BLS key in the vote account (blsPubkeyCompressed), and burns
+# a validator admission ticket from it every epoch: the account must hold its
+# rent-exempt minimum plus VAT_LAMPORTS_PER_EPOCH (constants.sh) once Alpenglow
+# is active. Read from the public RPC and advisory, like the on-chain identity
+# check in phase 5 (R10-6): a problem warns, no answer is info.
+verify_vote_account() {
+    local vote acct lamports space rent need
+    vote=$(state_get vote_account_pubkey "")
+    [[ -n "$vote" ]] || { info "vote account pubkey not recorded — BLS key and VAT balance not checked"; return 0; }
+    [[ "$(b58_len "$vote")" == 32 ]] || { vf_warn "vote account pubkey '${vote}' is not 32 bytes of base58 — not checked"; return 0; }
+    acct=$(_vf_vote_account "$vote")
+    if grep -qE '"value"[[:space:]]*:[[:space:]]*null' <<<"$acct"; then
+        vf_warn "vote account ${vote} does not exist on ${DEFAULT_PUBLIC_RPC} (getAccountInfo answered null) — BLS key and VAT balance not checked"; return 0
+    fi
+    lamports=$(printf '%s\n' "$acct" | sed -nE 's/.*"lamports"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')
+    space=$(printf '%s\n' "$acct" | sed -nE 's/.*"space"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')
+    if [[ -z "$lamports" || -z "$space" ]]; then
+        info "vote account ${vote} not read from ${DEFAULT_PUBLIC_RPC} — BLS key and VAT balance not checked"; return 0
+    fi
+    if grep -qE '"blsPubkeyCompressed"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$acct"; then
+        vf_ok "vote account carries a BLS key (blsPubkeyCompressed)"
+    else
+        vf_warn "vote account ${vote} has no BLS key (blsPubkeyCompressed): Alpenglow needs one in the vote account"
+    fi
+    rent=$(_vf_rent_min "$space")
+    [[ -n "$rent" ]] || { info "rent-exempt minimum for ${space} bytes not read from ${DEFAULT_PUBLIC_RPC} — VAT balance not checked"; return 0; }
+    need=$(( rent + VAT_LAMPORTS_PER_EPOCH ))
+    if (( lamports >= need )); then
+        vf_ok "vote account holds ${lamports} lamports: rent ${rent} + $(( (lamports - rent) / VAT_LAMPORTS_PER_EPOCH )) epoch(s) of VAT (${VAT_LAMPORTS_PER_EPOCH} each)"
+    else
+        vf_warn "vote account holds ${lamports} lamports, below rent ${rent} + one epoch of VAT ${VAT_LAMPORTS_PER_EPOCH} = ${need}. The VAT minimum applies once Alpenglow is active; until then the rent alone is enough"
+    fi
+}
+
 # --- orchestrator ------------------------------------------------------------
 verify_run() {
     step "Post-install verification"
@@ -357,6 +403,7 @@ verify_run() {
     verify_catchup
     verify_bam
     verify_identity
+    verify_vote_account
     verify_pohpin_timer
     echo ""
     info "Verification: ${_VF_WARN} warning(s), ${_VF_FAIL} failure(s)"

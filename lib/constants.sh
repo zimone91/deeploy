@@ -15,10 +15,18 @@ _DEEPLOY_CONSTANTS_SOURCED=1
 # mainnet-beta genesis hash — the cluster identity guard.
 MAINNET_GENESIS_HASH="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-# Public RPC used for preflight reachability/genesis probing and for the
-# cluster's slot in the catchup status (never for the validator, which is
-# --private-rpc on 127.0.0.1).
+# Public RPC used for preflight reachability/genesis probing, for the
+# cluster's slot in the catchup status and for verify's read of the vote
+# account (never for the validator, which is --private-rpc on 127.0.0.1).
 DEFAULT_PUBLIC_RPC="https://api.mainnet-beta.solana.com"
+
+# Alpenglow's validator admission ticket (VAT): 0.8 SOL per epoch (at 200 ms
+# slots), burned from the vote account (runtime/src/bank.rs,
+# maybe_burn_vat_from_staked_accounts, jito-solana v4.3.0-jito.1). Once Alpenglow
+# is active the account must hold its rent-exempt minimum plus this
+# (minimum_vote_account_balance_for_vat); before that, the rent alone. verify
+# reads the rent from the RPC, never from a constant.
+VAT_LAMPORTS_PER_EPOCH=800000000
 
 # A node at most this many slots behind the cluster counts as caught up.
 # 'solana catchup' (jito c21f9074), from its second poll, needs node_slot >

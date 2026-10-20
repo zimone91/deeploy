@@ -14,6 +14,12 @@ deeploy.sh dz-connect --dz-signature <sig>   # offbox: the passport signature, m
 Flags: `--dry-run`, `--resume`, `--only <phase>`, `--force`, `--yes`,
 `--config <path>`, `--rescore`, `--rollback`, `--dz-signature <sig>`.
 
+`deeploy.sh verify` also reads the vote account from the public RPC. It warns
+when the account does not exist, when it has no BLS key (`blsPubkeyCompressed`),
+and when it holds less than its rent-exempt minimum plus one epoch of Alpenglow's
+validator admission ticket (0.8 SOL). The ticket's minimum applies once Alpenglow
+is active; until then the rent alone is enough.
+
 ## Config (`deeploy.conf`)
 
 A single bash-env file (see [`deeploy.conf.example`](deeploy.conf.example)) holding

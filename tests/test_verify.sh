@@ -432,6 +432,54 @@ verify_run >/dev/null 2>&1; check "all-good verify_run passes" "$?" "0"
 _vf_isolated() { echo "wrong-set"; }
 verify_run >/dev/null 2>&1; check "verify_run with a FAIL returns 1" "$?" "1"
 
+echo "== Alpenglow: BLS key and VAT balance in the vote account (public RPC, advisory) =="
+# getAccountInfo jsonParsed, in the RPC's own shape: value.lamports, value.space.
+# The rent for 3762 bytes is the one measured from the RPC on 2026-10-14 and -19.
+VACCT=Vote111111111111111111111111111111111111111     # 32 bytes of base58 (test_common)
+RENT=19761200
+vacct() {                         # <lamports> <bls: key | null | absent> [space, default 3762]
+    local bls="" space=${3:-3762}
+    case "$2" in null) bls='"blsPubkeyCompressed":null,' ;; absent) ;; *) bls="\"blsPubkeyCompressed\":\"$2\"," ;; esac
+    printf '{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":{"data":{"parsed":{"info":{%s"commission":0,"nodePubkey":"NodePk1111111111111111111111111111111111111"},"type":"vote"},"program":"vote","space":%s},"executable":false,"lamports":%s,"owner":"Vote111111111111111111111111111111111111111","rentEpoch":18446744073709551615,"space":%s}},"id":1}\n' "$bls" "$space" "$1" "$space"
+}
+# A second size answers its own rent, a stand-in and not a measured value: the
+# rent must be read for the account's own size.
+RENT2=30000000
+ACCT=""; RENTOUT=$RENT; VREADS="$WORK/vreads"; : >"$VREADS"
+_vf_vote_account() { printf '%s\n' "$1" >>"$VREADS"; printf '%s' "$ACCT"; }
+_vf_rent_min()     { case "$1" in 3762) printf '%s' "$RENTOUT" ;; 4000) printf '%s' "$RENT2" ;; esac; return 0; }
+state_set vote_account_pubkey "$VACCT"
+ACCT=$(vacct 1000000000 b4Rf2kBLSkey); reset; verify_vote_account >"$WORK/va" 2>&1
+check "BLS key + 1 SOL -> no warning"           "$_VF_WARN" "0"
+check "  the BLS key is named ok"                "$(grep -c 'carries a BLS key (blsPubkeyCompressed)' "$WORK/va")" "1"
+check "  the balance is named ok, with its epochs" "$(grep -c "holds 1000000000 lamports: rent ${RENT} + 1 epoch(s) of VAT" "$WORK/va")" "1"
+ACCT=$(vacct 1000000000 b4Rf2kBLSkey 4000); reset; verify_vote_account >"$WORK/va" 2>&1
+check "  the rent is read for the account's own size" "$_VF_WARN|$(grep -c "holds 1000000000 lamports: rent ${RENT2} + 1 epoch(s) of VAT" "$WORK/va")" "0|1"
+ACCT=$(vacct 1000000000 null); reset; verify_vote_account >"$WORK/va" 2>&1
+check "BLS null -> one warning, naming it"       "$_VF_WARN|$(grep -c 'has no BLS key (blsPubkeyCompressed)' "$WORK/va")" "1|1"
+ACCT=$(vacct 1000000000 absent); reset; verify_vote_account >"$WORK/va" 2>&1
+check "BLS absent -> one warning"                "$_VF_WARN|$(grep -c 'has no BLS key' "$WORK/va")" "1|1"
+ACCT=$(vacct 500000000 b4Rf2kBLSkey); reset; verify_vote_account >"$WORK/va" 2>&1
+check "0.5 SOL -> one warning, below rent + VAT" "$_VF_WARN|$(grep -c "below rent ${RENT} + one epoch of VAT 800000000 = $((RENT + 800000000))" "$WORK/va")" "1|1"
+check "  and it says when the minimum applies"   "$(grep -c 'applies once Alpenglow is active; until then the rent alone is enough' "$WORK/va")" "1"
+ACCT=$(vacct $((RENT + 800000000)) b4Rf2kBLSkey); reset; verify_vote_account >/dev/null 2>&1
+check "exactly rent + one epoch -> no warning"   "$_VF_WARN" "0"
+ACCT=""; reset; verify_vote_account >"$WORK/va" 2>&1
+check "no answer from the RPC -> info, no warning" "$_VF_WARN|$(grep -c 'not read from' "$WORK/va")" "0|1"
+ACCT='{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":null},"id":1}'; reset; verify_vote_account >"$WORK/va" 2>&1
+check "no such account (value null) -> one warning, naming it" "$_VF_WARN|$(grep -c 'does not exist on' "$WORK/va")|$(grep -c 'not read from' "$WORK/va")" "1|1|0"
+ACCT=$(vacct 1000000000 b4Rf2kBLSkey); RENTOUT=""; reset; verify_vote_account >"$WORK/va" 2>&1
+check "no rent from the RPC -> info, the balance unchecked" "$_VF_WARN|$(grep -c 'rent-exempt minimum for 3762 bytes not read' "$WORK/va")" "0|1"
+RENTOUT=$RENT
+state_set vote_account_pubkey "$(printf 'z%.0s' {1..44})"; : >"$VREADS"; reset; verify_vote_account >"$WORK/va" 2>&1
+check "a pubkey that is not 32 bytes -> one warning, no read" "$_VF_WARN|$(grep -c 'is not 32 bytes of base58' "$WORK/va")|$(grep -c . "$VREADS")" "1|1|0"
+state_clear vote_account_pubkey; reset; verify_vote_account >"$WORK/va" 2>&1
+check "no vote pubkey recorded -> skipped, no warning" "$_VF_WARN|$(grep -c 'vote account pubkey not recorded' "$WORK/va")" "0|1"
+state_set vote_account_pubkey "$VACCT"; ACCT=$(vacct 1000000000 null)
+verify_run >"$WORK/run" 2>&1
+check "verify_run runs it"                       "$(grep -c 'has no BLS key' "$WORK/run")" "1"
+state_clear vote_account_pubkey
+
 echo ""
 echo "==================================="
 printf 'RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
