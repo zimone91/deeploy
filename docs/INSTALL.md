@@ -73,3 +73,16 @@ identity, before the swap, the second one is expected.
 > [docs.jito.wtf/lowlatencytxnsend](https://docs.jito.wtf/lowlatencytxnsend/)
 > rather than trusting the built-in tables forever. `import --rescore` re-pings.
 
+## Metrics
+
+The validator's metrics go to mainnet-beta (`metrics.solana.com`) by default.
+SFDP's metric-reporting check reads one core metric, `optimistic_slot.slot`,
+from that database, so metrics sent anywhere else do not count for it. It is
+also the endpoint Anza's cluster docs give for Mainnet Beta
+([docs.anza.xyz/clusters/available](https://docs.anza.xyz/clusters/available)),
+and the one Jito's BAM validator guide recommends
+([bam.dev/validators](https://bam.dev/validators), step 3, "Enabling Metrics
+Collection").
+`METRICS_TARGET="bam"` in `deeploy.conf` sends them to the BAM community
+endpoint instead, and `export` carries that choice. `SOLANA_METRICS_CONFIG` in
+the environment overrides both.

@@ -101,7 +101,9 @@ DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063
 # never below it (test_common).
 DEEPLOY_PIN_JITO_TAG="v4.3.2-jito"
 
-# Public community metrics endpoints (NOT secrets). BAM is the default to pair
-# with BAM-default MEV; the mainnet-beta one is the switchable alternative.
+# Public community metrics endpoints (NOT secrets). mainnet-beta is the default:
+# SFDP's metric-reporting check reads one core metric, optimistic_slot.slot, from
+# that database (metrics.solana.com). The BAM endpoint is an explicit choice,
+# METRICS_TARGET=bam (lib/validatorcfg.sh).
 SOLANA_METRICS_BAM="host=http://bam-public-metrics.jito.wtf:8086,db=mainnet-bam-validators,u=mainnet-bam-validator,p=wambamdamn"
 SOLANA_METRICS_MAINNET_BETA="host=https://metrics.solana.com:8086,db=mainnet-beta,u=mainnet-beta_write,p=password"

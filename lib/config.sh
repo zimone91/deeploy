@@ -57,6 +57,8 @@ BLOCK_ENGINE_URL block_engine_url
 SHRED_RECEIVER_ADDRESS shred_receiver
 COMMISSION_BPS commission_bps
 RELAYER_URL relayer_url
+@ Metrics
+METRICS_TARGET metrics_target
 @ Validator network (advanced; usually auto/default — env or conf override)
 GOSSIP_PORT gossip_port
 RPC_PORT rpc_port
@@ -116,6 +118,7 @@ BLOCK_ENGINE_URL url
 SHRED_RECEIVER_ADDRESS hostport
 COMMISSION_BPS bps
 RELAYER_URL url
+METRICS_TARGET metrics
 GOSSIP_PORT port
 RPC_PORT port
 RPC_BIND_ADDRESS ip
@@ -167,6 +170,7 @@ _cfg_t_hostport()  { [[ "$1" =~ ^[A-Za-z0-9.-]+:[0-9]+$ ]]; }
 _cfg_t_tag()       { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
 _cfg_t_word()      { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
 _cfg_t_mev()       { [[ "$1" =~ ^(bam|relayer)$ ]]; }
+_cfg_t_metrics()   { [[ "$1" =~ ^(mainnet-beta|bam)$ ]]; }
 _cfg_t_keymode()   { [[ "$1" =~ ^(file|offbox)$ ]]; }
 _cfg_t_ip()        { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
 
@@ -187,6 +191,7 @@ _cfg_validate_type() {
         tag)       _cfg_t_tag       "$2" ;;
         word)      _cfg_t_word      "$2" ;;
         mev)       _cfg_t_mev       "$2" ;;
+        metrics)   _cfg_t_metrics   "$2" ;;
         keymode)   _cfg_t_keymode   "$2" ;;
         ip)        _cfg_t_ip        "$2" ;;
         *)         return 1 ;;

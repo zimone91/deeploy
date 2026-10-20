@@ -238,7 +238,8 @@ check "LimitNOFILE 2000000"     "$(grep -c 'LimitNOFILE=2000000' <<<"$S")" "1"
 check "R10-10: LimitCORE=0 (no core dumps)"              "$(grep -c '^LimitCORE=0$' <<<"$S")" "1"
 check "R10-10: CoredumpFilter=elf-headers (no heap/stack)" "$(grep -c '^CoredumpFilter=elf-headers$' <<<"$S")" "1"
 check "ExecStartPost poh-pin"   "$(grep -c 'ExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service' <<<"$S")" "1"
-check "metrics = BAM endpoint"  "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$S")" "1"
+check "metrics = mainnet-beta (SFDP reads it)" "$(grep -c '^Environment="SOLANA_METRICS_CONFIG=host=https://metrics.solana.com:8086,db=mainnet-beta,' <<<"$S")" "1"
+check "metrics: not the BAM endpoint"          "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$S")" "0"
 check "RequiresMountsFor (two-nvme)" "$(grep -c 'RequiresMountsFor=/mnt/accounts /mnt/ledger' <<<"$S")" "1"
 check "ExecStart = validator.sh" "$(grep -c 'ExecStart=/root/solana/validator.sh' <<<"$S")" "1"
 check "R4: StartLimitIntervalSec=0 (rate limiter disabled)" "$(grep -c '^StartLimitIntervalSec=0' <<<"$S")" "1"
@@ -247,6 +248,34 @@ check "R4: NOT the permanent-down =5"                        "$(grep -c 'StartLi
 state_set disk_layout root; validatorcfg_resolve_config
 check "no RequiresMountsFor on root layout" "$(grep -c 'RequiresMountsFor' "$(_vcfg_render_solana_service >"$WORK/sv"; echo "$WORK/sv")")" "0"
 state_set disk_layout two-nvme
+
+echo "== metrics: mainnet-beta unless BAM is chosen; the choice is recorded =="
+# SFDP's metric-reporting check reads optimistic_slot.slot from the mainnet-beta
+# database; a box reporting to the BAM endpoint has passed:false there (epochs
+# 1055-1061).
+state_clear metrics_target
+SVC=$( ( unset METRICS_TARGET SOLANA_METRICS_CONFIG; MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1; _vcfg_render_solana_service ) )
+check "default -> metrics.solana.com"          "$(grep -c 'host=https://metrics.solana.com:8086,db=mainnet-beta,' <<<"$SVC")" "1"
+check "default recorded"                       "$(state_get metrics_target '<none>')" "mainnet-beta"
+SVC=$( ( unset SOLANA_METRICS_CONFIG; METRICS_TARGET=bam MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1; _vcfg_render_solana_service ) )
+check "METRICS_TARGET=bam -> the BAM endpoint" "$(grep -c 'host=http://bam-public-metrics.jito.wtf:8086,db=mainnet-bam-validators,' <<<"$SVC")" "1"
+check "  and not mainnet-beta"                 "$(grep -c 'metrics.solana.com' <<<"$SVC")" "0"
+check "bam recorded"                           "$(state_get metrics_target '<none>')" "bam"
+SVC=$( ( unset METRICS_TARGET SOLANA_METRICS_CONFIG; MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1; _vcfg_render_solana_service ) )
+check "a re-render with nothing set keeps the recorded bam" "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$SVC")" "1"
+( unset SOLANA_METRICS_CONFIG; METRICS_TARGET=influx MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "METRICS_TARGET=influx -> refused"       "$?" "1"
+SVC=$( ( METRICS_TARGET=bam SOLANA_METRICS_CONFIG='host=https://example.org:8086,db=x,u=y,p=z' MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1
+         _vcfg_render_solana_service ) )
+check "env SOLANA_METRICS_CONFIG overrides the target" "$(grep -c '^Environment="SOLANA_METRICS_CONFIG=host=https://example.org:8086,db=x,u=y,p=z"$' <<<"$SVC")" "1"
+# Two resolves in one process: the first one's result is not taken for an override.
+SVC=$( ( unset METRICS_TARGET SOLANA_METRICS_CONFIG; state_clear metrics_target
+         MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1
+         METRICS_TARGET=bam MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1
+         _vcfg_render_solana_service ) )
+check "a second resolve follows its own target" "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$SVC")" "1"
+state_clear metrics_target
+MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1   # restore clean globals
 
 echo "== H1: solana.service installs as a REAL file under /etc, not on a data mount =="
 # systemd loads enabled units at early boot, before local-fs mounts; an on-mount

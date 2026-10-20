@@ -127,13 +127,26 @@ validatorcfg_resolve_config() {
     state_set shred_receiver "$SHRED_RECEIVER_ADDRESS"
     state_set commission_bps "$COMMISSION_BPS"
 
-    # Metrics (BAM community endpoint by default).
-    SOLANA_METRICS_CONFIG="${SOLANA_METRICS_CONFIG:-$SOLANA_METRICS_BAM}"
-    # N16: env-only render vector (deliberately NOT in the conf whitelist) that
-    # lands raw in a systemd Environment= line. Its legit shape carries ',' and
-    # '=' (host=...,db=...,u=...,p=...), so no strict type fits — assert no
-    # shell/unit metacharacters instead, fail-closed like the X1 render gate.
-    case "$SOLANA_METRICS_CONFIG" in
+    # Metrics: mainnet-beta (metrics.solana.com) unless BAM is chosen. SFDP's
+    # metric-reporting check reads one core metric, optimistic_slot.slot, from
+    # that database; a box reporting to the BAM endpoint has passed:false there
+    # (SFDP API, epochs 1055-1061, read 2026-10-19; not enforced yet).
+    # METRICS_TARGET (conf or env) is the choice. It is recorded, so export
+    # carries it and a re-render keeps it.
+    METRICS_TARGET="${METRICS_TARGET:-$(state_get metrics_target mainnet-beta)}"
+    _cfg_validate_type metrics "$METRICS_TARGET" \
+        || fail "METRICS_TARGET must be mainnet-beta or bam, not '${METRICS_TARGET}'"
+    state_set metrics_target "$METRICS_TARGET"
+    if [[ "$METRICS_TARGET" == bam ]]; then SOLANA_METRICS_CONFIG_RESOLVED="$SOLANA_METRICS_BAM"
+    else SOLANA_METRICS_CONFIG_RESOLVED="$SOLANA_METRICS_MAINNET_BETA"; fi
+    # N16: SOLANA_METRICS_CONFIG is an env-only override (deliberately NOT in the
+    # conf whitelist) that lands raw in a systemd Environment= line. Its legit
+    # shape carries ',' and '=' (host=...,db=...,u=...,p=...), so no strict type
+    # fits — assert no shell/unit metacharacters instead, fail-closed like the X1
+    # render gate. It is only read here: written back, it would turn this
+    # resolve's own result into an "override" for the next one.
+    [[ -n "${SOLANA_METRICS_CONFIG:-}" ]] && SOLANA_METRICS_CONFIG_RESOLVED="$SOLANA_METRICS_CONFIG"
+    case "$SOLANA_METRICS_CONFIG_RESOLVED" in
         *'"'*|*"'"*|*'$'*|*'`'*|*';'*|*$'\n'*)
             fail "SOLANA_METRICS_CONFIG contains a forbidden character (quote/backtick/\$/;/newline) — refusing to render it into solana.service" ;;
     esac
@@ -381,7 +394,7 @@ KillSignal=SIGTERM
 TimeoutStopSec=300
 
 # Environment
-Environment="SOLANA_METRICS_CONFIG=${SOLANA_METRICS_CONFIG}"
+Environment="SOLANA_METRICS_CONFIG=${SOLANA_METRICS_CONFIG_RESOLVED}"
 Environment="PATH=/bin:/usr/bin:${SOLANA_INSTALL_DIR}/active_release/bin"
 
 ExecStart=${VALIDATOR_SH}

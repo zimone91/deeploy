@@ -53,6 +53,9 @@ BLOCK_ENGINE_URL="https://frankfurt.mainnet.block-engine.jito.wtf"   # EXAMPLE r
 SHRED_RECEIVER_ADDRESS="203.0.113.7:1002"   # EXAMPLE ip:port for your block-engine region — see docs.jito.wtf/lowlatencytxnsend
 COMMISSION_BPS="0"                     # 0 is required by many pools (you are prompted at install)
 
+# --- Metrics ---
+METRICS_TARGET="mainnet-beta"          # mainnet-beta (metrics.solana.com; SFDP's metric check reads it) | bam
+
 # --- DoubleZero (optional) ---
 DZ_ENABLED="false"                     # true = prepare DZ in Phase 7 AND add the DZ multicast shred address to validator.sh
 DZ_ENV="mainnet-beta"

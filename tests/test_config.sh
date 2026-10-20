@@ -249,6 +249,18 @@ CONFIG_FILE="$WORK/p11.conf" config_export >/dev/null 2>&1
 check "export has NO NODE_NAME line"           "$(grep -c 'NODE_NAME' "$WORK/p11.conf")" "0"
 check "NODE_NAME not a whitelisted type"       "$(_config_key_type NODE_NAME)" ""
 
+echo "== METRICS_TARGET: exported, imported, typed mainnet-beta|bam =="
+# The metrics choice used to be env-only, so an exported conf could not carry it.
+seed_state; state_set metrics_target bam
+CONFIG_FILE="$WORK/metrics.conf" config_export >/dev/null 2>&1
+check "export carries METRICS_TARGET"          "$(grep -c '^METRICS_TARGET="bam"$' "$WORK/metrics.conf")" "1"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( CONFIG_FILE="$WORK/metrics.conf" RESCORE=0 config_import ) >/dev/null 2>&1
+check "import restores it to state"            "$(state_get metrics_target '<none>')" "bam"
+check "type: mainnet-beta"                     "$(_cfg_validate_type metrics mainnet-beta && echo ok || echo refused)" "ok"
+check "type: bam"                              "$(_cfg_validate_type metrics bam && echo ok || echo refused)" "ok"
+check "type: anything else is refused"         "$(_cfg_validate_type metrics influx && echo ok || echo refused)" "refused"
+
 echo "== Fix1: deeploy.conf.example parses with EVERY key valid =="
 EX="$ROOT/deeploy.conf.example"
 check_true "example file exists"               "[[ -f \"$EX\" ]]"
@@ -257,6 +269,7 @@ check "example: all keys validate (rc 0)"      "$rc" "0"
 check "example: SSH_PORT parsed, comment ignored"  "$SSH_PORT" "22"
 check "example: SHRED hostport parsed"             "$SHRED_RECEIVER_ADDRESS" "203.0.113.7:1002"
 check "example: MEV_MODE parsed"                   "$MEV_MODE" "bam"
+check "example: METRICS_TARGET parsed"             "${METRICS_TARGET:-<unset>}" "mainnet-beta"
 # Not pinned to a literal tag (that pin drifted every bump and the test just
 # followed). The example tag parses, clears our floor, and maps to an Anza
 # release name by the code phase 4 uses; whether that release exists is not
