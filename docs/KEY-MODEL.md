@@ -61,6 +61,17 @@ from "I know what I'm doing on mainnet":
    and the filter keeps the heap and stack out of it. `deeploy.sh verify` checks
    both on the running process. This holds in both modes: a core would be one
    more copy of the key even where a file exists.
+6. **Run a swap over one ssh connection.** Phase 1 rate-limits SSH with
+   `ufw limit`, which refuses an address that has opened 6 or more connections
+   in the last 30 seconds (ufw(8)). A swap run as a chain of `ssh` and `scp`
+   calls can hit that halfway: the printed `offbox` steps alone make three, before
+   any check of your own. Open one multiplexed connection first and run every step
+   over it:
+   `X="ssh -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-%C -o ControlPersist=600 -o ServerAliveInterval=5 <box>"`,
+   then `$X true` as a command of its own — inside `$( )` it hangs, because the
+   master keeps that output open — then
+   `ssh -o ControlPath=$HOME/.ssh/cm-%C -O check <box>`, and only then the steps,
+   each as `$X '…'`.
 
 If you don't want a node to come up and start voting on a fresh identity, **do not
 run the final start phase on a key that is already staked elsewhere.**

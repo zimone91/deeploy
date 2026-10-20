@@ -250,6 +250,13 @@ state_clear ssh_port; state_clear dz_enabled; : >"$CALLS"
 SSHD_CONFIG="$FDMG" base_firewall >/dev/null 2>&1
 check "firewall: limits the single sshd port"     "$(grep -c 'ufw limit 2255/tcp' "$CALLS")" "1"
 check "firewall: no gate on a single port"        "$(grep -c '^GATE:' "$CALLS")" "0"
+# ufw limit refuses an address with 6 or more new connections in 30 s, which an
+# ssh chain such as a swap can reach; the docs say so, and how to run one over a
+# single connection.
+check "docs: INSTALL names the SSH rate limit"    "$(grep -c 'SSH is rate-limited (.ufw limit.: an address with 6 or more new connections in 30 s is refused)' "$ROOT/docs/INSTALL.md")" "1"
+check "docs: KEY-MODEL runs a swap over one multiplexed connection" \
+      "$(grep -c 'ControlMaster=auto' "$ROOT/docs/KEY-MODEL.md")|$(grep -c -- '-O check' "$ROOT/docs/KEY-MODEL.md")" "1|1"
+check "docs: FAILOVER points there"               "$(grep -c 'rate-limits SSH' "$ROOT/docs/FAILOVER.md")" "1"
 # Edit skipped/declined on a multi-port image -> base_firewall's OWN gate.
 FDM2=$(fresh_sshd $'Port 2222\nPort 2244'); state_clear ssh_port
 GATE_RC=1; : >"$CALLS"

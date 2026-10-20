@@ -41,7 +41,7 @@ volume. `--yes`/`--post-reboot` never answer that question.
 | # | Phase | What it does |
 |---|---|---|
 | 0 | Preflight | root/OS/CPU/RAM/disk/NIC audit, mainnet genesis guard, closest-region scoring |
-| 1 | Base | packages, SSH-port change (verify-or-rollback), core ufw |
+| 1 | Base | packages, SSH-port change (verify-or-rollback), core ufw; SSH is rate-limited (`ufw limit`: an address with 6 or more new connections in 30 s is refused) |
 | 2 | Tuning | **dynamic CPU isolation → GRUB**, performance-tweaks, sysctl, NOFILE → reboot gate |
 | 3 | Disk | detect → confirm → blkdiscard + mkfs.xfs + mount + fstab + symlink |
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
