@@ -23,3 +23,14 @@ that contains embedded key material**) before loading it. This is the
 "reproduce an identical box without re-typing" path — and what a DoubleZero
 migration carries over.
 
+`install --only 6` regenerates `validator.sh` from these settings, so a value
+edited into `validator.sh` by hand is lost there; set it in the conf instead.
+`MAX_LOCAL_SNAPSHOT_AGE` (default 10240 slots, two incremental intervals) is how
+far a local snapshot may lag the newest one the cluster offers and still be
+loaded at start instead of downloading one. Too small, and a restart refuses its
+own snapshot and goes to the network for one (with 4000, on 2026-10-13, that
+download looped). Too large, and the node can start from a snapshot so far
+behind that every missing slot has to come in through repair. On 2026-10-19 a
+restart 1960 slots behind loaded its own snapshot and caught up in about 9
+minutes. It must exceed `INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS` (default 5120), or
+the render refuses.

@@ -289,6 +289,16 @@ keys_set="$(_config_keys     | awk '$1!="@"{print $1}' | sort)"
 types_set="$(_config_key_types | awk '{print $1}'      | sort)"
 check "typed-key set == _config_keys key set"  "$types_set" "$keys_set"
 
+echo "== MAX_LOCAL_SNAPSHOT_AGE: a conf key (int), exported and imported =="
+# It used to be a literal in validator.sh, so a re-render dropped a hand edit.
+check "typed int"                              "$(_config_key_type MAX_LOCAL_SNAPSHOT_AGE)" "int"
+seed_state; state_set max_local_snapshot_age 20480
+CONFIG_FILE="$WORK/age.conf" config_export >/dev/null 2>&1
+check "export carries it"                      "$(grep -c '^MAX_LOCAL_SNAPSHOT_AGE="20480"$' "$WORK/age.conf")" "1"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+( CONFIG_FILE="$WORK/age.conf" RESCORE=0 config_import ) >/dev/null 2>&1
+check "import restores it to state"            "$(state_get max_local_snapshot_age '<none>')" "20480"
+
 echo "== R10-6: offbox round-trips — mode + pubkey out, no staked path, back in =="
 seed_state
 state_clear staked_keypair                       # offbox keeps no staked path

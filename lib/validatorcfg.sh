@@ -68,6 +68,17 @@ validatorcfg_resolve_config() {
     MIN_SNAPSHOT_DOWNLOAD_SPEED="${MIN_SNAPSHOT_DOWNLOAD_SPEED:-83886080}"
     FULL_SNAPSHOT_INTERVAL_SLOTS="${FULL_SNAPSHOT_INTERVAL_SLOTS:-102400}"
     INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS="${INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS:-5120}"
+    # --maximum-local-snapshot-age: how many slots a local snapshot may lag the
+    # newest one the cluster offers and still be loaded at start instead of a
+    # download. It was a hardcoded 4000, below the 5120-slot incremental
+    # interval, and on 2026-10-13 that refused a local snapshot 4882 slots behind.
+    # The default, and why it sits there: DEFAULT_MAX_LOCAL_SNAPSHOT_AGE
+    # (constants.sh).
+    MAX_LOCAL_SNAPSHOT_AGE="${MAX_LOCAL_SNAPSHOT_AGE:-$DEFAULT_MAX_LOCAL_SNAPSHOT_AGE}"
+    if _cfg_validate_type int "$MAX_LOCAL_SNAPSHOT_AGE" && _cfg_validate_type int "$INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS" \
+        && (( 10#$MAX_LOCAL_SNAPSHOT_AGE <= 10#$INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS )); then
+        fail "MAX_LOCAL_SNAPSHOT_AGE (${MAX_LOCAL_SNAPSHOT_AGE}) must exceed INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS (${INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS}): at or below it, a restart that finds the cluster's next incremental already out refuses the local snapshot as too old and downloads one instead"
+    fi
 
     # MEV (BAM default; commission-bps tied to mode).
     MEV_MODE="${MEV_MODE:-bam}"
@@ -169,6 +180,7 @@ _vcfg_assert_render_safe() {
     _cfg_validate_type int      "$MIN_SNAPSHOT_DOWNLOAD_SPEED"      || bad+=" MIN_SNAPSHOT_DOWNLOAD_SPEED"
     _cfg_validate_type int      "$FULL_SNAPSHOT_INTERVAL_SLOTS"     || bad+=" FULL_SNAPSHOT_INTERVAL_SLOTS"
     _cfg_validate_type int      "$INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS" || bad+=" INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS"
+    _cfg_validate_type int      "$MAX_LOCAL_SNAPSHOT_AGE"           || bad+=" MAX_LOCAL_SNAPSHOT_AGE"
     _cfg_validate_type hostport "$SHRED_RECEIVER_ADDRESS"          || bad+=" SHRED_RECEIVER_ADDRESS"
     _cfg_validate_type bps      "$COMMISSION_BPS"                  || bad+=" COMMISSION_BPS"
     _cfg_validate_type url      "$BLOCK_ENGINE_URL"                || bad+=" BLOCK_ENGINE_URL"
@@ -302,7 +314,7 @@ SNAPSHOTS=(
   --full-snapshot-interval-slots "${FULL_SNAPSHOT_INTERVAL_SLOTS}"
   --incremental-snapshot-interval-slots "${INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS}"
   --snapshot-packager-niceness-adjustment 20
-  --maximum-local-snapshot-age 4000
+  --maximum-local-snapshot-age "${MAX_LOCAL_SNAPSHOT_AGE}"
   --use-snapshot-archives-at-startup when-newest
 )
 

@@ -69,6 +69,7 @@ LIMIT_LEDGER_SIZE limit_ledger_size
 MIN_SNAPSHOT_DOWNLOAD_SPEED min_snapshot_download_speed
 FULL_SNAPSHOT_INTERVAL_SLOTS full_snapshot_interval_slots
 INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS incremental_snapshot_interval_slots
+MAX_LOCAL_SNAPSHOT_AGE max_local_snapshot_age
 @ DoubleZero
 DZ_ENABLED dz_enabled
 DZ_ENV dz_env
@@ -125,6 +126,7 @@ LIMIT_LEDGER_SIZE int
 MIN_SNAPSHOT_DOWNLOAD_SPEED int
 FULL_SNAPSHOT_INTERVAL_SLOTS int
 INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS int
+MAX_LOCAL_SNAPSHOT_AGE int
 DZ_ENABLED bool
 DZ_ENV word
 DZ_KEYPAIR path

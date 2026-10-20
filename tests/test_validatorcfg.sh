@@ -80,6 +80,26 @@ check "unsupported NIC -> explicit --no-xdp"  "$(grep -c -- '--no-xdp' <<<"$V")"
 check "shred single address"   "$(grep -c -- '--shred-receiver-address "74.118.140.240:1002"$' <<<"$V")" "1"
 check "every interpolated value is double-quoted (no bare --ledger)" "$(grep -c -- '--ledger /' <<<"$V")" "0"
 
+echo "== --maximum-local-snapshot-age: a knob, one constant by default, above the incremental interval =="
+# It was a hardcoded 4000, below the 5120-slot incremental interval: on
+# 2026-10-13 the start check found the cluster's next incremental 4882 slots
+# ahead, refused the local snapshot as too old, and the fetch that followed looped.
+# ${…:-}: without the constant (the old tree) these fail instead of set -u
+# killing the file.
+check "default age = DEFAULT_MAX_LOCAL_SNAPSHOT_AGE" "$(grep -c -- "--maximum-local-snapshot-age \"${DEFAULT_MAX_LOCAL_SNAPSHOT_AGE:-<no default>}\"" <<<"$V")" "1"
+check_true "  which is above the default incremental interval (5120)" "(( ${DEFAULT_MAX_LOCAL_SNAPSHOT_AGE:-0} > 5120 ))"
+SA=$( ( MAX_LOCAL_SNAPSHOT_AGE=200000; MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1; _vcfg_render_validator_sh ) 2>/dev/null )
+check "MAX_LOCAL_SNAPSHOT_AGE=200000 -> rendered" "$(grep -c -- '--maximum-local-snapshot-age "200000"' <<<"$SA")" "1"
+SAOUT=$( ( MAX_LOCAL_SNAPSHOT_AGE=4000; INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS=5120; MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 ); SARC=$?
+check "age 4000 at incremental 5120 -> refused"  "$SARC" "1"
+check "  the refusal names both numbers"          "$(grep -c 'MAX_LOCAL_SNAPSHOT_AGE (4000) must exceed INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS (5120)' <<<"$SAOUT")" "1"
+( MAX_LOCAL_SNAPSHOT_AGE=5120; INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS=5120; MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "age equal to the interval -> refused"     "$?" "1"
+( MAX_LOCAL_SNAPSHOT_AGE=5121; INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS=5120; MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1
+check "age one above the interval -> ok"         "$?" "0"
+( MAX_LOCAL_SNAPSHOT_AGE=lots; MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1; _vcfg_render_validator_sh ) >/dev/null 2>&1
+check "a non-number age -> the render refuses"   "$?" "1"
+
 echo "== N4: generated header advertises a RUNNABLE regenerate hint (rendered, not template) =="
 check "header: runnable numeric form via DEEPLOY_CMD" "$(grep -c -- 'regenerate via: ./deeploy.sh install --only 6' <<<"$V")" "1"
 check "header: NOT the broken '--only validatorcfg'"  "$(grep -c -- '--only validatorcfg' <<<"$V")" "0"

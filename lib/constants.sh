@@ -55,6 +55,16 @@ RETRANSMIT_ZC_DRIVERS=(mlx5_core)            # zero-copy flag supported (bnxt is
 # when DZ multicast (edge-solana-shreds) is enabled.
 DZ_MULTICAST_SHRED="233.84.178.1:7733"
 
+# Default for MAX_LOCAL_SNAPSHOT_AGE, validator.sh's --maximum-local-snapshot-age:
+# two incremental snapshot intervals (5120 slots each). Too small, and a restart
+# refuses its own snapshot: on 2026-10-13, at 4000, the cluster's next
+# incremental was already 4882 slots ahead, and the download that followed
+# looped. Too large, and a start can load a snapshot so far behind that the
+# missing slots must come in through repair. On 2026-10-19 a restart 1960 slots
+# behind loaded its snapshot and caught up in about 9 minutes. The render
+# refuses any age at or below INCREMENTAL_SNAPSHOT_INTERVAL_SLOTS.
+DEFAULT_MAX_LOCAL_SNAPSHOT_AGE=10240
+
 # Mainnet known validators (Solana Foundation public set) — --known-validator args.
 MAINNET_KNOWN_VALIDATORS=(
     7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2
