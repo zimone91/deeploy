@@ -268,8 +268,11 @@ _vcfg_render_validator_sh() {
     fi
     retransmit_section+=")"$'\n'
 
+    # No REPORTING block: the validator reports its OS stats (network, memory,
+    # CPU, disk) with the rest of its metrics. The four
+    # --no-os-*-stats-reporting flags that block carried turned them off.
     local blocks=(CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT)
-    blocks+=(LEDGER SNAPSHOTS LOG REPORTING JITO)
+    blocks+=(LEDGER SNAPSHOTS LOG JITO)
     exec_lines="exec agave-validator"
     for b in "${blocks[@]}"; do exec_lines+=" \\"$'\n'"  \"\${${b}[@]}\""; done
 
@@ -333,13 +336,6 @@ SNAPSHOTS=(
 
 LOG=(
   --log "${SOLANA_HOME}/solana.log"
-)
-
-REPORTING=(
-  --no-os-network-stats-reporting
-  --no-os-memory-stats-reporting
-  --no-os-cpu-stats-reporting
-  --no-os-disk-stats-reporting
 )
 
 JITO=(

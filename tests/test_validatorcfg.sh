@@ -104,6 +104,19 @@ echo "== N4: generated header advertises a RUNNABLE regenerate hint (rendered, n
 check "header: runnable numeric form via DEEPLOY_CMD" "$(grep -c -- 'regenerate via: ./deeploy.sh install --only 6' <<<"$V")" "1"
 check "header: NOT the broken '--only validatorcfg'"  "$(grep -c -- '--only validatorcfg' <<<"$V")" "0"
 
+echo "== OS stats: the validator reports them with its metrics =="
+# A REPORTING block of four --no-os-*-stats-reporting flags turned them off.
+check "no --no-os-*-stats-reporting flag"  "$(grep -c -- '--no-os-' <<<"$V")" "0"
+check "no REPORTING block, defined or run" "$(grep -c 'REPORTING' <<<"$V")" "0"
+# control: every other block is still defined and run, in the same order
+for b in CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT LEDGER SNAPSHOTS LOG JITO; do
+    check "block $b defined and run" "$(grep -c "^${b}=(" <<<"$V")|$(grep -cF "\"\${${b}[@]}\"" <<<"$V")" "1|1"
+done
+# SC2016: the literal ${NAME[@]} of the generated script is what is matched.
+# shellcheck disable=SC2016
+check "blocks run in order" "$(grep -o '\${[A-Z]*\[@\]}' <<<"$V" | sed 's/^\${\([A-Z]*\)\[@\]}$/\1/' | tr '\n' ' ')" \
+      "CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT LEDGER SNAPSHOTS LOG JITO "
+
 echo "== RETRANSMIT: mlx5 = cpu-cores + zero-copy, in order =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores 1-2
 validatorcfg_resolve_config
