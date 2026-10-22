@@ -47,9 +47,14 @@ from "I know what I'm doing on mainnet":
    two nodes vote. Its `vote_history-<staked-pubkey>.bin` is copied into this
    box's ledger. Then the staked key goes in as the authorized voter first and as
    the identity second, so the identity is never staked while nothing can sign
-   its votes; `set-identity` refuses to take the identity without the vote
-   history. Without it, the votes the old node cast are unknown here, and this
-   node could cast conflicting ones. The old node's votor keeps rewriting the
+   its votes. `set-identity` refuses to take the identity without the vote
+   history while the vote account names that identity and has voted past the
+   Alpenglow genesis; the refusal reads `Unable to load vote history file for
+   identity <pubkey>: <error>. The vote account <vote account> has prior
+   Alpenglow votes. Ensure the vote history file is present or (dangerous) use
+   --do-not-require-vote-history if you know what you're doing`. Without the vote
+   history, the votes the old node cast are unknown here, and this node could
+   cast conflicting ones. The old node's votor keeps rewriting the
    file after every vote until it has handled the identity change, so the copy
    waits until the latest `set-identity:` line in the old node's log reads
    `from <staked-pubkey> to …` and until two sha256 readings 2 s apart agree, goes

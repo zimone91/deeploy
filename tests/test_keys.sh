@@ -229,6 +229,21 @@ check "KEY-MODEL: the file must change within about 15 s, and the three log line
 check "KEY-MODEL: the connection count of the offbox steps is the printed text's, five, and step d a sixth" \
       "$(grep -c 'ssh <this-box> ' <<<"$SWAP_OFF")|$(grep -cF "the printed \`offbox\` steps alone make five connections to the box, and step d's login a sixth" <<<"$KMJ")" "5|1"
 
+echo "== R10-9c: set-identity's refusal is conditional — step c and KEY-MODEL say when =="
+# The client refuses a set-identity without the vote history only while the bank has the Alpenglow genesis
+# certificate, the vote account names the identity being set and it has voted past the genesis slot
+# (core/src/validator.rs 2187-2224, v4.3.2-jito). Step c names that, in both forms, before its commands.
+for form in file offbox; do
+    if [[ $form == file ]]; then t=$SWAP_FILE; vp="authorized-voter add /root/solana/mainnet-validator-keypair.json"
+    else t=$SWAP_OFF; vp="authorized-voter add' < staked.json"; fi
+    cl=$(first "$t" "while the vote account names this identity and has voted past the Alpenglow genesis:"); vl=$(first "$t" "$vp")
+    check "$form: c) the refusal comes with its condition, once, before the voter command" \
+          "$(grep -cF 'set-identity refuses without the vote history' <<<"$t")|$(grep -cF 'while the vote account names this identity and has voted past the Alpenglow genesis:' <<<"$t")|$( increasing "$cl" "$vl" && echo ordered || echo "condition=$cl voter=$vl")" "1|1|ordered"
+    check "$form: c) no unconditional refusal left" "$(grep -cF 'set-identity refuses without the vote history:' <<<"$t")" "0"
+done
+check "KEY-MODEL: the refusal is conditional on the vote account, and its text is quoted" \
+      "$(grep -cF 'without the vote history while the vote account names that identity and has voted past the Alpenglow genesis' <<<"$KMJ")|$(grep -cF "Unable to load vote history file for identity <pubkey>: <error>. The vote account <vote account> has prior Alpenglow votes. Ensure the vote history file is present or (dangerous) use --do-not-require-vote-history if you know what you're doing" <<<"$KMJ")" "1|1"
+
 echo "== R10-6: staked_key_mode — offbox: the pubkey only, no staked path consulted =="
 STAKED_OK=$(mkpub Staked); SHORT31="2$(printf '1%.0s' $(seq 42))"
 check "fixture: the staked pubkey decodes to 32 bytes" "$(b58_len "$STAKED_OK")" "32"

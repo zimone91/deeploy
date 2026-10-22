@@ -191,9 +191,18 @@ keys_print_manual() {
 # a restart of it must come back unstaked, or two nodes vote — and its
 # vote_history-<staked-pubkey>.bin comes here, into the ledger
 # (votor/src/vote_history_storage.rs 157-165, validator/src/commands/run/
-# execute.rs 590-592, jito-solana v4.3.0-jito.1). set-identity refuses without
-# it: without the vote history, the votes the old node cast are unknown here, and
-# this node could cast conflicting ones. The authorized voter goes in before the
+# execute.rs 590-592, jito-solana v4.3.0-jito.1). Without it the votes the old
+# node cast are unknown here, and this node could cast conflicting ones, so
+# set-identity refuses to take the identity without it — but only while the bank
+# has the Alpenglow genesis certificate, the vote account names the identity being
+# set, and it has voted past the genesis slot (should_require_vote_history_file,
+# core/src/validator.rs 2187-2224, v4.3.2-jito). It does not look at the file when
+# there is no certificate yet, when the vote account names another node, or when it
+# has not voted past the genesis. The client's refusal reads "Unable to load vote
+# history file for identity <pubkey>: <error>. The vote account <vote> has prior
+# Alpenglow votes. Ensure the vote history file is present or (dangerous) use
+# --do-not-require-vote-history if you know what you're doing" (validator/src/
+# admin_rpc_service.rs 1148-1174). The authorized voter goes in before the
 # identity, so the identity is never staked while nothing can sign its votes. A
 # cold bring-up (the old validator stopped, no process at all; the cluster
 # finalized past the vote account's lastVote) has no vote history to move and
@@ -268,13 +277,15 @@ keys_print_swap_steps() {      # <agave-validator command> <ledger> [<staked key
     info "          ssh <this-box> 'sudo -n sha256sum ${vh}.tmp'      (the same sha256 as the old node's)"
     info "          ssh <this-box> 'sudo -n mv ${vh}.tmp ${vh}'"
     if [[ -n "$key" ]]; then
-        info "     c) This box — the voter first, then the identity; set-identity refuses without the vote history:"
+        info "     c) This box — the voter first, then the identity. set-identity refuses without the vote history"
+        info "        while the vote account names this identity and has voted past the Alpenglow genesis:"
         info "          ${av} --ledger ${ledger} authorized-voter add ${key}"
         info "          ${av} --ledger ${ledger} set-identity ${key}"
     else
         info "     c) From the machine that holds the key (staked.json there) — it goes over ssh on stdin"
-        info "        and never touches this box's disk. The voter first, then the identity;"
-        info "        set-identity refuses without the vote history:"
+        info "        and never touches this box's disk. The voter first, then the identity."
+        info "        set-identity refuses without the vote history"
+        info "        while the vote account names this identity and has voted past the Alpenglow genesis:"
         info "          ssh <this-box> 'sudo -n ${av} --ledger ${ledger} authorized-voter add' < staked.json"
         info "          ssh <this-box> 'sudo -n ${av} --ledger ${ledger} set-identity' < staked.json"
         info "        Keep ssh without -t: the key must reach agave-validator through a pipe, not a terminal."
