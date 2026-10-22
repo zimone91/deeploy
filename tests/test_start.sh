@@ -203,7 +203,7 @@ check    "NO stdin redirect form"      "$(grep -cE 'set-identity <[^a-z]' <<<"$S
 # separate line with its condition and the only --do-not-require-vote-history.
 check    "old validator stops voting first"  "$(grep -c 'OLD validator first' <<<"$SUM")" "1"
 check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a restart of the OLD validator comes back unstaked' <<<"$SUM")" "1"
-check    "vote history copied to this ledger" "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$SUM")" "1"
+check    "vote history copied to this ledger" "$(grep -cF "ssh <this-box> 'sudo -n tee /root/solana/ledger/vote_history-<staked-pubkey>.bin.tmp >/dev/null'" <<<"$SUM")" "1"
 check    "no tower file, no --require-tower" "$(grep -c 'tower-1_9' <<<"$SUM")|$(grep -c -- '--require-tower' <<<"$SUM")" "0|0"
 check    "the voter goes in before the identity" \
          "$(awk '/authorized-voter add \/root\/solana\/mainnet-validator-keypair.json/ {v = NR} /set-identity \/root\/solana\/mainnet-validator-keypair.json/ {s = NR} END {print (v && s && v < s) ? "voter first" : "v=" v " s=" s}' <<<"$SUM")" "voter first"
@@ -227,7 +227,7 @@ check "offbox: the key stays off this box, pubkey named" "$(grep -c "The staked 
 check "offbox: set-identity fed on stdin over ssh"   "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger set-identity' < staked.json" <<<"$OSUM")" "1"
 check "offbox: authorized-voter fed on stdin"        "$(grep -c "sudo -n ${SOLANA_BIN}/agave-validator --ledger /root/solana/ledger authorized-voter add' < staked.json" <<<"$OSUM")" "1"
 check "offbox: a restart reverts the identity"       "$(grep -c 'brings this node back on the sync' <<<"$OSUM")" "1"
-check "offbox: vote history step kept"               "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$OSUM")" "1"
+check "offbox: vote history step kept"               "$(grep -cF "ssh <this-box> 'sudo -n tee /root/solana/ledger/vote_history-<staked-pubkey>.bin.tmp >/dev/null'" <<<"$OSUM")" "1"
 check "offbox: the voter goes in before the identity" \
       "$(awk "/authorized-voter add' < staked.json/ {v = NR} /set-identity' < staked.json/ {s = NR} END {print (v && s && v < s) ? \"voter first\" : \"v=\" v \" s=\" s}" <<<"$OSUM")" "voter first"
 check "offbox: no staked keypair path, no 'Place …'" "$(grep -c 'mainnet-validator-keypair' <<<"$OSUM")|$(grep -c 'Place the real staked keypair' <<<"$OSUM")" "0|0"

@@ -109,7 +109,7 @@ check_ge "never-touch wording"               "$(grep -ci 'never' <<<"$MAN")" "1"
 # condition and the only --do-not-require-vote-history.
 check    "old validator stops voting first"  "$(grep -c 'OLD validator first' <<<"$MAN")" "1"
 check    "a restart of the old one comes back unstaked" "$(grep -c 'Make sure a restart of the OLD validator comes back unstaked' <<<"$MAN")" "1"
-check    "vote history copied to this ledger" "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
+check    "vote history copied to this ledger" "$(grep -cF "ssh <this-box> 'sudo -n tee /root/solana/ledger/vote_history-<staked-pubkey>.bin.tmp >/dev/null'" <<<"$MAN")" "1"
 check    "no tower file, no --require-tower" "$(grep -c 'tower-1_9' <<<"$MAN")|$(grep -c -- '--require-tower' <<<"$MAN")" "0|0"
 check    "the voter goes in before the identity" \
          "$(awk '/authorized-voter add \/root\/solana\/mainnet-validator-keypair.json/ {v = NR} /set-identity \/root\/solana\/mainnet-validator-keypair.json/ {s = NR} END {print (v && s && v < s) ? "voter first" : "v=" v " s=" s}' <<<"$MAN")" "voter first"
@@ -120,6 +120,114 @@ check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer need
 check    "file mode names both dz-connect signatures" "$(grep -c 'signs the passport message and the request transaction it pays for' <<<"$MAN")" "1"
 check    "no 'sign one DoubleZero passport message'"  "$(grep -c 'sign one DoubleZero passport message' <<<"$MAN")" "0"
 check    "R10-6: file mode also says a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$MAN")" "1"
+
+echo "== R10-9b: the printed swap — the vote history moves once the old node has switched and the file has stopped changing; step d checks that the node votes =="
+# The old node's votor rewrites vote_history-<staked-pubkey>.bin after every vote, by renaming a
+# .bin.new over it, until it has handled the identity change of step a, and then logs the switch.
+# Step b waits for that line, then for two equal sha256, 2 s apart, copies as root at both ends under
+# a temporary name, compares, and only then moves the copy in; step d reads the file's time and the
+# log, as root too. Both forms print the same b and d, so the same checks run on both.
+first() { grep -nF -- "$2" <<<"$1" | head -1 | cut -d: -f1; }        # <text> <fixed string> -> its first line number
+increasing() { local p=0 x; for x in "$@"; do [[ -n $x && $x -gt $p ]] || return 1; p=$x; done; }
+tac() { awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) print a[i] }' "$@"; }    # the printed log checks on any userland
+sudo() { [[ "${1:-}" == -n ]] && shift; "$@"; }                       # ... and where sudo is not at hand
+swap_steps_checks() {    # <label> <printed text> <voter line> <identity line> <log path> <lines that open an ssh to this box>
+    local l=$1 t=$2 vp=$3 ip=$4 lg=$5 nssh=$6 vh="/root/solana/ledger/vote_history-<staked-pubkey>.bin"
+    local old="<old-ledger>/vote_history-<staked-pubkey>.bin" w s k m n e f g h cmd out SWLOG OLDLOG statl
+    check "$l: b) waits until the latest set-identity line in the old node's log is the switch away from the staked key" \
+          "$(grep -cF -- "ssh <old> 'sudo -n tac <old-log> | grep -m1 \"set-identity: from \" | grep \"from <staked-pubkey> to \"'" <<<"$t")" "1"
+    check "$l: b) reads the old file's sha256 twice, 2 s apart" \
+          "$(grep -cF -- "sha256sum $old; sleep 2; sudo -n sha256sum $old'" <<<"$t")" "1"
+    check "$l: b) copies as root at both ends, to a temporary name in this ledger" \
+          "$(grep -cF -- "ssh <old> 'sudo -n cat $old' | ssh <this-box> 'sudo -n tee $vh.tmp >/dev/null'" <<<"$t")" "1"
+    check "$l: b) compares the copy's sha256" \
+          "$(grep -cF -- "ssh <this-box> 'sudo -n sha256sum $vh.tmp'" <<<"$t")" "1"
+    check "$l: b) moves the copy into place" \
+          "$(grep -cF -- "ssh <this-box> 'sudo -n mv $vh.tmp $vh'" <<<"$t")" "1"
+    check "$l: b) nothing is written to the final name but by the mv, and no scp" \
+          "$(grep -F -- "tee $vh" <<<"$t" | grep -cvF -- "$vh.tmp")|$(grep -c 'scp ' <<<"$t")" "0|0"
+    check "$l: the printed text opens $nssh ssh connections to this box" "$(grep -c 'ssh <this-box> ' <<<"$t")" "$nssh"
+    check "$l: d) is its own step, on this box, after c" "$(grep -cF -- 'd) On this box' <<<"$t")" "1"
+    # shellcheck disable=SC2016    # the printed line carries a literal $( ) and $t
+    statl='t=$(sudo -n stat -c %y '"$vh"'); sleep 15; [ "$(sudo -n stat -c %y '"$vh"')" != "$t" ] && echo VOTING || echo NOT-VOTING'
+    check "$l: d) the file's time, read as root, must move within about 15 s" "$(grep -cF -- "$statl" <<<"$t")" "1"
+    check "$l: d) the file check is valid shell" \
+          "$(bash -n <<<"$(grep -F 'sleep 15;' <<<"$t" | sed 's/^ *//')" 2>&1; echo "rc=$?")" "rc=0"
+    check "$l: d) the log is read as root, backwards, from the state's solana_home, up to its latest set-identity line" \
+          "$(grep -cF -- "sudo -n tac $lg | awk '/set-identity: from / {s=1; f = (\$0 ~ / to <staked-pubkey>/); exit} " <<<"$t")" "1"
+    check "$l: d) the three lines of a node that does not vote" \
+          "$(grep -cF -- '/Failed to generate vote message|No authorized voter keypair matches|Rank-map node pubkey mismatch/ {n++; print}' <<<"$t")" "1"
+    w=$(first "$t" "sudo -n tac <old-log>"); s=$(first "$t" "; sleep 2; sudo -n sha256sum <old-ledger>")
+    k=$(first "$t" "<this-box> 'sudo -n tee $vh.tmp"); m=$(first "$t" "ssh <this-box> 'sudo -n sha256sum $vh.tmp'")
+    n=$(first "$t" "ssh <this-box> 'sudo -n mv $vh.tmp $vh'"); e=$(first "$t" "$vp"); f=$(first "$t" "$ip")
+    g=$(first "$t" "stat -c %y"); h=$(first "$t" "sudo -n tac $lg")
+    check "$l: order — the switch line, settle, copy, compare, move, voter, identity, the file check, the log check" \
+          "$( increasing "$w" "$s" "$k" "$m" "$n" "$e" "$f" "$g" "$h" && echo ordered || echo "w=$w s=$s k=$k m=$m n=$n e=$e f=$f g=$g h=$h")" "ordered"
+    # The wait for the old node's switch, run on logs. The LATEST set-identity line must read "from <staked> to <anything>".
+    # The line that put the old node on the staked identity ("from <sync> to <staked>") is not the signal, and neither is an
+    # older switch away from it with the switch back onto the staked key above it: the first line of that direction would pass
+    # the wait before votor has handled step a.
+    OLDLOG="$WORK/old-log"
+    cmd=$(grep -F 'tac <old-log>' <<<"$t" | head -1 | sed -E "s/^ *ssh <old> '(.*)'\$/\\1/"); cmd=${cmd//<old-log>/$OLDLOG}; cmd=${cmd//<staked-pubkey>/$STAKED_PUB}
+    {   echo "set-identity: from $SYNC_PUB to $STAKED_PUB"; echo "a vote went out"; } >"$OLDLOG"
+    check "$l: b) the wait, while the old node is still on the staked identity: nothing printed" "$(eval "$cmd" 2>&1 | grep -c .)" "0"
+    {   echo "set-identity: from $STAKED_PUB to $SYNC_PUB"; echo "set-identity: from $SYNC_PUB to $STAKED_PUB"; echo "a vote went out"; } >"$OLDLOG"
+    check "$l: b) the wait, an older switch away from the staked key under the latest switch onto it: nothing printed" "$(eval "$cmd" 2>&1 | grep -c .)" "0"
+    echo "set-identity: from $STAKED_PUB to $SYNC_PUB" >>"$OLDLOG"
+    check "$l: b) the wait, after its switch: the line prints" "$(eval "$cmd" 2>&1)" "set-identity: from $STAKED_PUB to $SYNC_PUB"
+    # The printed log check, run on logs: what is above the latest set-identity line is not the swap's, and that line must be the
+    # switch onto the staked key; with another switch as the latest line votor has not handled step c yet, and nothing is counted.
+    SWLOG="$WORK/swap-log"
+    cmd=$(grep -F -- "sudo -n tac $lg | awk" <<<"$t" | head -1 | sed 's/^ *//'); cmd=${cmd//"$lg"/$SWLOG}; cmd=${cmd//<staked-pubkey>/$STAKED_PUB}
+    {   echo "Failed to generate vote message: NonVoting"
+        echo "Rank-map node pubkey mismatch: rank=7; expected=$STAKED_PUB; got=$SYNC_PUB"
+        echo "set-identity: from $SYNC_PUB to $STAKED_PUB"
+        echo "Failed to generate vote message: after an older switch"
+        echo "set-identity: from $SYNC_PUB to $STAKED_PUB"
+        echo "a vote went out"; } >"$SWLOG"
+    out=$(eval "$cmd" 2>&1)
+    check "$l: d) the log check, clean after the latest switch (bad lines above it do not count)" "$out" "0 such lines after the switch"
+    echo "Rank-map node pubkey mismatch: rank=7; expected=$STAKED_PUB; got=$SYNC_PUB" >>"$SWLOG"
+    out=$(eval "$cmd" 2>&1)
+    check "$l: d) the log check, one bad line after the switch" "$(grep -c 'Rank-map node pubkey mismatch' <<<"$out")|$(tail -1 <<<"$out")" "1|1 such lines after the switch"
+    {   echo "set-identity: from $SYNC_PUB to $STAKED_PUB"
+        echo "Failed to generate vote message: while staked"
+        echo "set-identity: from $STAKED_PUB to $SYNC_PUB"
+        echo "Rank-map node pubkey mismatch: rank=7; expected=$STAKED_PUB; got=$SYNC_PUB"; } >"$SWLOG"
+    out=$(eval "$cmd" 2>&1)
+    check "$l: d) the log check, the latest set-identity line is another switch: it says to wait" \
+          "$(tail -1 <<<"$out")" "the latest set-identity line is not the switch to $STAKED_PUB: wait, run it again"
+    echo "set-identity: from $SYNC_PUB to $STAKED_PUB" >>"$SWLOG"
+    out=$(eval "$cmd" 2>&1)
+    check "$l: d) the log check, once the switch onto the staked key is the latest line: clean" "$out" "0 such lines after the switch"
+    {   echo "Failed to generate vote message: NonVoting"; echo "a vote went out"; } >"$SWLOG"
+    out=$(eval "$cmd" 2>&1)
+    check "$l: d) the log check, no set-identity line at all" "$(tail -1 <<<"$out")" "no set-identity line in the log"
+}
+# the log is the one validatorcfg renders: SOLANA_HOME from the state (lib/validatorcfg.sh:32), whatever the environment says
+HOME_BEFORE=$(state_get solana_home "")
+state_set solana_home /srv/sol
+SWAP_FILE=$(keys_print_swap_steps agave-validator /root/solana/ledger /root/solana/mainnet-validator-keypair.json 2>&1)
+swap_steps_checks "file" "$SWAP_FILE" "authorized-voter add /root/solana/mainnet-validator-keypair.json" \
+                  "set-identity /root/solana/mainnet-validator-keypair.json" /srv/sol/solana.log 3
+SWAP_OFF=$(keys_print_swap_steps /opt/bin/agave-validator /root/solana/ledger 2>&1)
+swap_steps_checks "offbox" "$SWAP_OFF" "authorized-voter add' < staked.json" "set-identity' < staked.json" /srv/sol/solana.log 5
+check "the log path comes from the state, not from the environment: SOLANA_HOME=/env/other changes nothing" \
+      "$( SOLANA_HOME=/env/other keys_print_swap_steps agave-validator /root/solana/ledger 2>&1 | grep -cF 'sudo -n tac /srv/sol/solana.log | awk')" "1"
+state_clear solana_home
+check "no solana_home in the state: /root/solana/solana.log, as validatorcfg" \
+      "$( unset SOLANA_HOME; keys_print_swap_steps agave-validator /root/solana/ledger 2>&1 | grep -cF 'sudo -n tac /root/solana/solana.log | awk')" "1"
+[[ -n "$HOME_BEFORE" ]] && state_set solana_home "$HOME_BEFORE"
+unset -f sudo tac
+# tests/test_docs.sh checks anchors only: the sentences in KEY-MODEL items 3 and 6 are checked here, with the code they describe
+KM="$ROOT/docs/KEY-MODEL.md"
+KMJ=$(tr '\n' ' ' <"$KM" | tr -s ' ')                    # the sentences wrap in the file
+check "KEY-MODEL: the copy waits until the old node's latest set-identity line is the switch away from the staked key, and for two equal sha256, and moves in under a temporary name" \
+      "$(grep -cF "the copy waits until the latest \`set-identity:\` line in the old node's log reads \`from <staked-pubkey> to …\` and until two sha256 readings 2 s apart agree" <<<"$KMJ")|$(grep -cF "is moved into place when its sha256 matches the source's" <<<"$KMJ")" "1|1"
+check "KEY-MODEL: the file must change within about 15 s, and the three log lines after the latest set-identity line" \
+      "$(grep -cF 'the file in this ledger must change within about 15 s' <<<"$KMJ")|$(grep -cF "none of \`Failed to generate vote message\`, \`No authorized voter keypair matches\` or \`Rank-map node pubkey mismatch\` after its latest \`set-identity:\` line, which must be the switch to the staked key" <<<"$KMJ")" "1|1"
+check "KEY-MODEL: the connection count of the offbox steps is the printed text's, five, and step d a sixth" \
+      "$(grep -c 'ssh <this-box> ' <<<"$SWAP_OFF")|$(grep -cF "the printed \`offbox\` steps alone make five connections to the box, and step d's login a sixth" <<<"$KMJ")" "5|1"
 
 echo "== R10-6: staked_key_mode — offbox: the pubkey only, no staked path consulted =="
 STAKED_OK=$(mkpub Staked); SHORT31="2$(printf '1%.0s' $(seq 42))"
@@ -214,7 +322,7 @@ check "offbox manual: the voter goes in before the identity" \
       "$(awk "/authorized-voter add' < staked.json/ {v = NR} /set-identity' < staked.json/ {s = NR} END {print (v && s && v < s) ? \"voter first\" : \"v=\" v \" s=\" s}" <<<"$MAN")" "voter first"
 check "offbox manual: ssh stays without -t"         "$(grep -c 'Keep ssh without -t: the key must reach agave-validator through a pipe, not a terminal.' <<<"$MAN")" "1"
 check "offbox manual: a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$MAN")" "1"
-check "offbox manual: vote history step kept"      "$(grep -c 'vote_history-<staked-pubkey>.bin <this-box>:/root/solana/ledger/' <<<"$MAN")" "1"
+check "offbox manual: vote history step kept"      "$(grep -cF "ssh <this-box> 'sudo -n tee /root/solana/ledger/vote_history-<staked-pubkey>.bin.tmp >/dev/null'" <<<"$MAN")" "1"
 check "offbox manual: no staked keypair path at all" "$(grep -c 'mainnet-validator-keypair' <<<"$MAN")" "0"
 
 echo "== PROBE-RC-ZERO: the real _keys_pubkey answers 0 inside \$( ) =="

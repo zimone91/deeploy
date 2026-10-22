@@ -199,6 +199,50 @@ keys_print_manual() {
 # finalized past the vote account's lastVote) has no vote history to move and
 # says so with --do-not-require-vote-history. A hot swap never passes that flag.
 #
+# The file keeps changing while the old node votes: its votor rewrites it after
+# every vote it casts, a .bin.new written and renamed over it, no fsync (jito-solana
+# v4.3.2-jito, votor/src/: voting_utils.rs 299-303, vote_history_storage.rs
+# 185-199). The rename makes every read a whole file, so a copy taken meanwhile
+# loads, and lacks the votes cast after it was read: the votes this node must know.
+# The admin RPC changes the identity and only then sends votor a SetIdentity event
+# (validator/src/admin_rpc_service.rs 1207-1217), which votor handles later, in its
+# own loop (event_handler.rs 568-581, 667-687); from then on it writes the new
+# identity's file and not this one, and says so: "set-identity: from <staked> to
+# ..." (event_handler.rs 684-687). getIdentity is no sign of that, it answers with
+# the new identity before the event is sent. Nor is the first line of that kind in
+# the old node's log: an older swap of the same node leaves its own "from <staked>
+# to ..." there, with the switch back onto the staked key above it. Step b therefore
+# waits until the LATEST set-identity line in that log reads "from <staked> to ...",
+# reads the file's sha256 twice, 2 s apart, copies it to a .tmp name in this ledger,
+# compares the sha256 with the source's, and only then mv's it into place. The
+# ledger sits under SOLANA_HOME, /root/solana by default, and /root
+# is 0700 on Ubuntu, so the copy runs through sudo -n at both ends (cat on the old
+# node, tee on this one), not through scp. A copy cut short does not load: in a hot
+# swap set-identity refuses it (admin_rpc_service.rs 1157-1172); the empty history
+# votor takes without a word (event_handler.rs 680-682) is reached only when
+# set-identity did not ask for the file (core/src/validator.rs 2187-2224,
+# admin_rpc_service.rs 1148-1174).
+# Step d reads what votor does with it. votor rewrites the file only after it has
+# built a vote (voting_utils.rs 286-303), so a file whose time moves belongs to a
+# node that votes. Every try that does not end in a vote is logged as "Failed to
+# generate vote message: <why>" (voting_utils.rs 233-263, 265-280, 319): no voter
+# in memory (160-162), an identity that is not the rank map's node (195-202, which
+# also logs "Rank-map node pubkey mismatch", 197), a voter whose BLS key is not the
+# vote account's (204-219, which also logs "No authorized voter keypair matches",
+# 217). Until step c is done the node is in one of those states on every try, so
+# the log is read backwards, up to its latest set-identity line (event_handler.rs
+# 684-687), which must be the switch to <staked>: what is above that line is not the
+# swap's. If the latest line is another switch, votor has not handled step c yet; the
+# check says so and counts nothing, for the failed tries below an older switch are
+# the sync identity's, not the swap's. The log is the one validatorcfg renders
+# (--log, lib/validatorcfg.sh
+# 338) under the state's solana_home (32), and it is read from there: phase 3 sets
+# the global SOLANA_HOME only in the run that executes it (lib/disk.sh 364-369,
+# 440), so on install --resume or --only 5 the global is not there, and on the
+# data-RAID layout it is not /root/solana (369). The file and the log are root's,
+# like the ledger, so step d reads them through sudo -n as well: without it stat and
+# tac fail with EACCES, and the check calls a node that votes one that does not.
+#
 # With no keypair path (offbox mode) step c is the stdin form: the operator pipes
 # the key over ssh from the machine that holds it, so it never touches this
 # box's disk. sudo -n never prompts: where sudo wants a password it fails
@@ -207,12 +251,22 @@ keys_print_manual() {
 # process only, so a restart of solana comes back on the sync identity.
 keys_print_swap_steps() {      # <agave-validator command> <ledger> [<staked keypair>; none = offbox]
     local av=$1 ledger=$2 key=${3:-}
+    local vh="${ledger}/vote_history-<staked-pubkey>.bin" log
+    log="$(state_get solana_home /root/solana)/solana.log"
     info "     a) OLD validator first — stop voting as staked:"
     info "          agave-validator --ledger <old-ledger> set-identity <old-unstaked-keypair.json>"
     info "        Make sure a restart of the OLD validator comes back unstaked: point its startup"
     info "        --identity (argv or symlink) at the unstaked key, and turn off any failover automation."
-    info "     b) Copy its vote history here (not a secret):"
-    info "          scp <old>:<old-ledger>/vote_history-<staked-pubkey>.bin <this-box>:${ledger}/"
+    info "     b) Move its vote history here (not a secret). The old node keeps writing it until its voting loop"
+    info "        has handled step a: wait for that, then for the file to stop changing, copy it under a"
+    info "        temporary name, compare, and move it in (the ledgers are root's: every step runs under sudo -n):"
+    info "          ssh <old> 'sudo -n tac <old-log> | grep -m1 \"set-identity: from \" | grep \"from <staked-pubkey> to \"'"
+    info "            (this line must print: the old node's latest switch is away from the staked key; if it does not, wait, run it again)"
+    info "          ssh <old> 'sudo -n sha256sum <old-ledger>/vote_history-<staked-pubkey>.bin; sleep 2; sudo -n sha256sum <old-ledger>/vote_history-<staked-pubkey>.bin'"
+    info "            (the same sha256 twice; if not, the file keeps changing: run it again)"
+    info "          ssh <old> 'sudo -n cat <old-ledger>/vote_history-<staked-pubkey>.bin' | ssh <this-box> 'sudo -n tee ${vh}.tmp >/dev/null'"
+    info "          ssh <this-box> 'sudo -n sha256sum ${vh}.tmp'      (the same sha256 as the old node's)"
+    info "          ssh <this-box> 'sudo -n mv ${vh}.tmp ${vh}'"
     if [[ -n "$key" ]]; then
         info "     c) This box — the voter first, then the identity; set-identity refuses without the vote history:"
         info "          ${av} --ledger ${ledger} authorized-voter add ${key}"
@@ -228,6 +282,11 @@ keys_print_swap_steps() {      # <agave-validator command> <ledger> [<staked key
     info "        Any restart of solana (crash, reboot, upgrade) brings this node back on the sync"
     info "        identity: it does not vote until you repeat these two commands (the vote history is"
     info "        local by then)."
+    info "     d) On this box (offbox mode: log in to it, no key is involved) — within about 15 s of step c, check that it votes:"
+    info "          t=\$(sudo -n stat -c %y ${vh}); sleep 15; [ \"\$(sudo -n stat -c %y ${vh})\" != \"\$t\" ] && echo VOTING || echo NOT-VOTING"
+    info "          sudo -n tac ${log} | awk '/set-identity: from / {s=1; f = (\$0 ~ / to <staked-pubkey>/); exit} /Failed to generate vote message|No authorized voter keypair matches|Rank-map node pubkey mismatch/ {n++; print} END {print (!s ? \"no set-identity line in the log\" : f ? (n+0) \" such lines after the switch\" : \"the latest set-identity line is not the switch to <staked-pubkey>: wait, run it again\")}'"
+    info "        The file must change, and none of those three lines may follow the switch. If not, this node does"
+    info "        not vote and the old one has stopped: nobody votes until it is fixed."
     info "     Cold bring-up instead, no vote history: only when the old validator is stopped (no process"
     info "     at all, not just unstaked) and the finalized slot is past the vote account's lastVote —"
     info "     step c with set-identity --do-not-require-vote-history. Never in a hot swap."

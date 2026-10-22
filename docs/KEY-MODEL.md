@@ -49,10 +49,19 @@ from "I know what I'm doing on mainnet":
    the identity second, so the identity is never staked while nothing can sign
    its votes; `set-identity` refuses to take the identity without the vote
    history. Without it, the votes the old node cast are unknown here, and this
-   node could cast conflicting ones. A **cold bring-up** has no vote history to
-   move: only when the old validator is stopped — no process at all, not just
-   unstaked — and the cluster's finalized slot is past the vote account's
-   `lastVote`, the same two commands run with `set-identity
+   node could cast conflicting ones. The old node's votor keeps rewriting the
+   file after every vote until it has handled the identity change, so the copy
+   waits until the latest `set-identity:` line in the old node's log reads
+   `from <staked-pubkey> to …` and until two sha256 readings 2 s apart agree, goes
+   under a temporary name, and is moved into place when its sha256 matches the
+   source's; and once the identity is in, the file in this ledger must change
+   within about 15 s while the log has none of `Failed to generate vote message`,
+   `No authorized voter keypair matches` or `Rank-map node pubkey mismatch` after
+   its latest `set-identity:` line, which must be the switch to the staked key. A
+   **cold bring-up** has
+   no vote history to move: only when the old validator is stopped — no process at
+   all, not just unstaked — and the cluster's finalized slot is past the vote
+   account's `lastVote`, the same two commands run with `set-identity
    --do-not-require-vote-history`. A hot swap never passes that flag.
 4. The node uses `--private-rpc` bound to `127.0.0.1`; RPC is never exposed.
 5. **No core dumps.** The validator's memory holds its identity key, so a crash
@@ -64,10 +73,10 @@ from "I know what I'm doing on mainnet":
    more copy of the key even where a file exists.
 6. **Run a swap over one ssh connection.** Phase 1 rate-limits SSH with
    `ufw limit`, which refuses an address that has opened 6 or more connections
-   in the last 30 seconds (ufw(8)). A swap run as a chain of `ssh` and `scp`
-   calls can hit that halfway: the printed `offbox` steps alone make three, before
-   any check of your own. Open one multiplexed connection first and run every step
-   over it:
+   in the last 30 seconds (ufw(8)). A swap run as a chain of `ssh` calls can hit
+   that halfway: the printed `offbox` steps alone make five connections to the box,
+   and step d's login a sixth, before any check of your own. Open one multiplexed
+   connection first and run every step over it:
    `X="ssh -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-%C -o ControlPersist=600 -o ServerAliveInterval=5 <box>"`,
    then `$X true` as a command of its own — inside `$( )` it hangs, because the
    master keeps that output open — then
