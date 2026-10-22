@@ -24,7 +24,9 @@ DEFAULT_PUBLIC_RPC="https://api.mainnet-beta.solana.com"
 # slots), burned from the vote account (runtime/src/bank.rs,
 # maybe_burn_vat_from_staked_accounts, jito-solana v4.3.0-jito.1). Once Alpenglow
 # is active the account must hold its rent-exempt minimum plus this
-# (minimum_vote_account_balance_for_vat); before that, the rent alone. verify
+# (minimum_vote_account_balance_for_vat); before that, the rent alone. Alpenglow is
+# active on mainnet-beta since epoch 1064 (2026-10-21) and DeePloy runs on
+# mainnet-beta only (MAINNET_GENESIS_HASH), so verify always asks for the sum. verify
 # reads the rent from the RPC, never from a constant.
 VAT_LAMPORTS_PER_EPOCH=800000000
 
@@ -98,11 +100,13 @@ DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
 
 # Recommended jito-solana tag. The floor above refuses; this only warns, at the
 # same three checks, and the run goes on. SFDP requires Agave 4.3.2 or newer from
-# epoch 1063 (api.solana.org/api/community/v1/sfdp_required_versions), and Jito
-# advises 4.3.2 before Alpenglow. The note is deeploy_tag_recommendation_note
-# (common.sh): the floor's own comparison, against this tag.
+# epoch 1063 (api.solana.org/api/community/v1/sfdp_required_versions). The note is
+# deeploy_tag_recommendation_note (common.sh): the floor's own comparison, against
+# this tag. It is SFDP's requirement and says nothing of which tags run Alpenglow:
+# votor, the migration code and the vote-history guard are already in the
+# v4.2.0-jito tree.
 DEEPLOY_RECOMMENDED_JITO_TAG="v4.3.2-jito"
-DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063, and Jito advises 4.3.2 before Alpenglow"
+DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063"
 
 # The shipped pin: the tag deeploy.conf.example names, and the one a bare Enter
 # at the install's tag prompt builds. It may move ahead of the recommendation,

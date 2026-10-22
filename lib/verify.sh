@@ -351,9 +351,11 @@ verify_identity() {
 
 # Alpenglow needs a BLS key in the vote account (blsPubkeyCompressed), and burns
 # a validator admission ticket from it every epoch: the account must hold its
-# rent-exempt minimum plus VAT_LAMPORTS_PER_EPOCH (constants.sh) once Alpenglow
-# is active. Read from the public RPC and advisory, like the on-chain identity
-# check in phase 5 (R10-6): a problem warns, no answer is info.
+# rent-exempt minimum plus VAT_LAMPORTS_PER_EPOCH (constants.sh). Alpenglow is
+# active on mainnet-beta since epoch 1064 and DeePloy runs on mainnet-beta only
+# (MAINNET_GENESIS_HASH), so there is no branch for a cluster before it. Read from
+# the public RPC and advisory, like the on-chain identity check in phase 5 (R10-6):
+# a problem warns, no answer is info.
 verify_vote_account() {
     local vote acct lamports space rent need
     vote=$(state_get vote_account_pubkey "")
@@ -379,7 +381,7 @@ verify_vote_account() {
     if (( lamports >= need )); then
         vf_ok "vote account holds ${lamports} lamports: rent ${rent} + $(( (lamports - rent) / VAT_LAMPORTS_PER_EPOCH )) epoch(s) of VAT (${VAT_LAMPORTS_PER_EPOCH} each)"
     else
-        vf_warn "vote account holds ${lamports} lamports, below rent ${rent} + one epoch of VAT ${VAT_LAMPORTS_PER_EPOCH} = ${need}. The VAT minimum applies once Alpenglow is active; until then the rent alone is enough"
+        vf_warn "vote account holds ${lamports} lamports, below rent ${rent} + one epoch of VAT ${VAT_LAMPORTS_PER_EPOCH} = ${need}. Alpenglow is active on mainnet-beta, so the VAT minimum applies"
     fi
 }
 

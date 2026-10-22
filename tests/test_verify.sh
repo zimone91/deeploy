@@ -461,7 +461,7 @@ ACCT=$(vacct 1000000000 absent); reset; verify_vote_account >"$WORK/va" 2>&1
 check "BLS absent -> one warning"                "$_VF_WARN|$(grep -c 'has no BLS key' "$WORK/va")" "1|1"
 ACCT=$(vacct 500000000 b4Rf2kBLSkey); reset; verify_vote_account >"$WORK/va" 2>&1
 check "0.5 SOL -> one warning, below rent + VAT" "$_VF_WARN|$(grep -c "below rent ${RENT} + one epoch of VAT 800000000 = $((RENT + 800000000))" "$WORK/va")" "1|1"
-check "  and it says when the minimum applies"   "$(grep -c 'applies once Alpenglow is active; until then the rent alone is enough' "$WORK/va")" "1"
+check "  and it says why the minimum applies: Alpenglow is active, no 'until then'" "$(grep -c 'Alpenglow is active on mainnet-beta, so the VAT minimum applies' "$WORK/va")|$(grep -c 'until then the rent alone is enough' "$WORK/va")" "1|0"
 ACCT=$(vacct $((RENT + 800000000)) b4Rf2kBLSkey); reset; verify_vote_account >/dev/null 2>&1
 check "exactly rent + one epoch -> no warning"   "$_VF_WARN" "0"
 ACCT=""; reset; verify_vote_account >"$WORK/va" 2>&1
@@ -479,6 +479,11 @@ state_set vote_account_pubkey "$VACCT"; ACCT=$(vacct 1000000000 null)
 verify_run >"$WORK/run" 2>&1
 check "verify_run runs it"                       "$(grep -c 'has no BLS key' "$WORK/run")" "1"
 state_clear vote_account_pubkey
+# Alpenglow has been active on mainnet-beta since epoch 1064 and DeePloy runs there only, so the docs do not say
+# the minimum waits for it. tests/test_docs.sh checks anchors only: the sentence is checked here, with the warning it describes.
+OPJ=$(tr '\n' ' ' <"$ROOT/docs/OPERATING.md" | tr -s ' ')
+check "OPERATING: the ticket's minimum applies, Alpenglow being active since epoch 1064 — no 'until then'" \
+      "$(grep -cF "Alpenglow has been active on mainnet-beta since epoch 1064, so the ticket's minimum applies" <<<"$OPJ")|$(grep -rnF 'until then the rent alone is enough' "$ROOT/lib" "$ROOT/docs" "$ROOT/README.md" | grep -c .)" "1|0"
 
 echo ""
 echo "==================================="

@@ -6,9 +6,9 @@ Target: a fresh Ubuntu 24.04 x86-64 box (every run so far: 48 threads,
 **Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.2-jito"`,
 and a bare Enter at the install's tag prompt builds the same tag; a run without
 a terminal has to name one. It is also the **recommended** minimum: SFDP
-requires Agave 4.3.2 or newer from epoch 1063, and Jito advises 4.3.2 before
-Alpenglow. A tag below it gets a warning at the build, the upgrade and the
-render, and the run goes on. The code enforces a floor of **v4.2.0-jito**.
+requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning at
+the build, the upgrade and the render, and the run goes on. The code enforces a
+floor of **v4.2.0-jito**.
 Older clients are refused before the build: the generated `validator.sh` passes
 `--no-xdp` and `--poh-pinned-cpu-core`, neither of which exists before 4.2.0, so
 an older binary would go through a whole build (v4.3.2-jito took 724 s on the

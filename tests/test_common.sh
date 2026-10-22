@@ -551,6 +551,12 @@ RNOTE=$(deeploy_tag_recommendation_note v4.3.0-jito.1); RNRC=$?
 check "below -> rc 0 (a note, not a refusal)" "$RNRC" "0"
 check "below -> one line: tag, recommendation, reason" \
       "$(grep -c "^v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.3.2" <<<"$RNOTE")" "1"
+# Alpenglow is active on mainnet-beta (epoch 1064): the reason is SFDP's requirement, and no advice "before Alpenglow".
+check "below -> the whole note: SFDP's requirement, nothing about a time before Alpenglow" \
+      "$RNOTE" "v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.3.2 or newer from epoch 1063"
+IJ=$(tr '\n' ' ' <"$ROOT/docs/INSTALL.md" | tr -s ' ')
+check "INSTALL: the recommendation's reason is SFDP's requirement; no 'before Alpenglow' in lib, docs, README or the example conf" \
+      "$(grep -cF 'requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning' <<<"$IJ")|$(grep -rnF 'before Alpenglow' "$ROOT/lib" "$ROOT/docs" "$ROOT/README.md" "$ROOT/deeploy.conf.example" | grep -c .)" "1|0"
 for t in "${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}" v4.3.3-jito v4.4.0-beta.1-jito v5.0.0-jito; do
     TN=$(deeploy_tag_recommendation_note "$t"); TNRC=$?
     check "at or above: $t -> nothing, rc 0" "${TNRC}/${TN}" "0/"
