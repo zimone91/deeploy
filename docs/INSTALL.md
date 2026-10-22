@@ -77,14 +77,19 @@ identity, before the swap, the second one is expected.
 
 ## Metrics
 
-The validator's metrics go to mainnet-beta (`metrics.solana.com`) by default.
-SFDP's metric-reporting check reads one core metric, `optimistic_slot.slot`,
-from that database, so metrics sent anywhere else do not count for it. It is
-also the endpoint Anza's cluster docs give for Mainnet Beta
+The validator's metrics go to mainnet-beta (`metrics.solana.com`) by default. It
+is the endpoint Anza's cluster docs give for Mainnet Beta
 ([docs.anza.xyz/clusters/available](https://docs.anza.xyz/clusters/available)),
 and the one Jito's BAM validator guide recommends
 ([bam.dev/validators](https://bam.dev/validators), step 3, "Enabling Metrics
 Collection").
+SFDP's metric-reporting check used to read one core metric,
+`optimistic_slot.slot`, from that database. Under Alpenglow the validator
+no longer sends it: in jito-solana v4.3.2-jito the metric has one source, the
+optimistic-confirmation verifier, and the vote listener drops that verifier once
+Alpenglow is enabled. SFDP's API, read on 2026-10-22 for one validator, shows
+`optimistic_slot.slot` for epoch 1060 and the exemption
+`metric-reporting-ignored` for epochs 1062 and 1063.
 `METRICS_TARGET="bam"` in `deeploy.conf` sends them to the BAM community
 endpoint instead, and `export` carries that choice. `SOLANA_METRICS_CONFIG` in
 the environment overrides both.

@@ -115,8 +115,14 @@ DEEPLOY_PIN_JITO_TAG="v4.3.2-jito"
 DEEPLOY_PIN_JITO_COMMIT="013a4306f585cbd213ee5071550339af766f930c"
 
 # Public community metrics endpoints (NOT secrets). mainnet-beta is the default:
-# SFDP's metric-reporting check reads one core metric, optimistic_slot.slot, from
-# that database (metrics.solana.com). The BAM endpoint is an explicit choice,
+# it is the endpoint Anza's cluster docs and Jito's BAM guide give (docs/INSTALL.md,
+# Metrics). SFDP's metric-reporting check used to read one core metric,
+# optimistic_slot.slot, from that database (metrics.solana.com). Under Alpenglow the
+# validator no longer sends it (jito-solana v4.3.2-jito: core/src/
+# optimistic_confirmation_verifier.rs 80 is the datapoint's only source, and
+# core/src/cluster_info_vote_listener.rs 657-660 drops that verifier), and SFDP's API
+# lists the exemption metric-reporting-ignored for epochs 1062 and 1063 (read
+# 2026-10-22, one validator). The BAM endpoint is an explicit choice,
 # METRICS_TARGET=bam (lib/validatorcfg.sh).
 SOLANA_METRICS_BAM="host=http://bam-public-metrics.jito.wtf:8086,db=mainnet-bam-validators,u=mainnet-bam-validator,p=wambamdamn"
 SOLANA_METRICS_MAINNET_BETA="host=https://metrics.solana.com:8086,db=mainnet-beta,u=mainnet-beta_write,p=password"

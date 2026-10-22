@@ -251,7 +251,7 @@ check "LimitNOFILE 2000000"     "$(grep -c 'LimitNOFILE=2000000' <<<"$S")" "1"
 check "R10-10: LimitCORE=0 (no core dumps)"              "$(grep -c '^LimitCORE=0$' <<<"$S")" "1"
 check "R10-10: CoredumpFilter=elf-headers (no heap/stack)" "$(grep -c '^CoredumpFilter=elf-headers$' <<<"$S")" "1"
 check "ExecStartPost poh-pin"   "$(grep -c 'ExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service' <<<"$S")" "1"
-check "metrics = mainnet-beta (SFDP reads it)" "$(grep -c '^Environment="SOLANA_METRICS_CONFIG=host=https://metrics.solana.com:8086,db=mainnet-beta,' <<<"$S")" "1"
+check "metrics = mainnet-beta" "$(grep -c '^Environment="SOLANA_METRICS_CONFIG=host=https://metrics.solana.com:8086,db=mainnet-beta,' <<<"$S")" "1"
 check "metrics: not the BAM endpoint"          "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$S")" "0"
 check "RequiresMountsFor (two-nvme)" "$(grep -c 'RequiresMountsFor=/mnt/accounts /mnt/ledger' <<<"$S")" "1"
 check "ExecStart = validator.sh" "$(grep -c 'ExecStart=/root/solana/validator.sh' <<<"$S")" "1"
@@ -263,9 +263,11 @@ check "no RequiresMountsFor on root layout" "$(grep -c 'RequiresMountsFor' "$(_v
 state_set disk_layout two-nvme
 
 echo "== metrics: mainnet-beta unless BAM is chosen; the choice is recorded =="
-# SFDP's metric-reporting check reads optimistic_slot.slot from the mainnet-beta
-# database; a box reporting to the BAM endpoint has passed:false there (epochs
-# 1055-1061).
+# SFDP's metric-reporting check used to read optimistic_slot.slot from the
+# mainnet-beta database; a box reporting to the BAM endpoint had passed:false there
+# (epochs 1055-1061). Under Alpenglow the validator does not send that metric any
+# more (see the next block), so mainnet-beta stays the default on the strength of
+# Anza's cluster docs and Jito's BAM guide, which docs/INSTALL.md names.
 state_clear metrics_target
 SVC=$( ( unset METRICS_TARGET SOLANA_METRICS_CONFIG; MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1; _vcfg_render_solana_service ) )
 check "default -> metrics.solana.com"          "$(grep -c 'host=https://metrics.solana.com:8086,db=mainnet-beta,' <<<"$SVC")" "1"
@@ -289,6 +291,21 @@ SVC=$( ( unset METRICS_TARGET SOLANA_METRICS_CONFIG; state_clear metrics_target
 check "a second resolve follows its own target" "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$SVC")" "1"
 state_clear metrics_target
 MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1   # restore clean globals
+
+echo "== metrics: the docs do not claim that SFDP reads optimistic_slot today =="
+# Under Alpenglow the validator no longer sends optimistic_slot (jito-solana v4.3.2-jito: the datapoint has one
+# source, core/src/optimistic_confirmation_verifier.rs 80, and core/src/cluster_info_vote_listener.rs 657-660
+# drops that verifier); SFDP's API, read 2026-10-22, lists metric-reporting-ignored for epochs 1062 and 1063.
+# So the default stays mainnet-beta on Anza's and Jito's word, and the check on optimistic_slot is history.
+MET=$(awk '/^## Metrics$/ {on = 1; next} /^## / {on = 0} on' "$ROOT/docs/INSTALL.md")
+# shellcheck disable=SC2016    # the backticks are markdown
+check "INSTALL Metrics: the default host and its two sources stay" \
+      "$(grep -c 'mainnet-beta (`metrics.solana.com`) by default' <<<"$MET")|$(grep -c 'docs.anza.xyz/clusters/available' <<<"$MET")|$(grep -c 'bam.dev/validators' <<<"$MET")" "1|1|1"
+check "INSTALL Metrics: optimistic_slot is history, with what SFDP's API showed and when" \
+      "$(grep -c 'check used to read one core metric' <<<"$MET")|$(grep -c 'no longer sends it' <<<"$MET")|$(grep -c 'metric-reporting-ignored' <<<"$MET")|$(grep -c '2026-10-22' <<<"$MET")" "1|1|1|1"
+check "INSTALL Metrics: no claim that the destination decides SFDP's check" "$(grep -c 'do not count for it' <<<"$MET")|$(grep -c 'reads one core metric' <<<"$MET")" "0|0"
+check "no present-tense claim that SFDP reads optimistic_slot, in lib, docs, README or the example conf" \
+      "$(grep -rnF -e 'reads one core metric' -e "metric check reads it" -e 'do not count for it' "$ROOT/lib" "$ROOT/docs" "$ROOT/README.md" "$ROOT/deeploy.conf.example" | grep -c .)" "0"
 
 echo "== H1: solana.service installs as a REAL file under /etc, not on a data mount =="
 # systemd loads enabled units at early boot, before local-fs mounts; an on-mount

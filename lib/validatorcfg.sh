@@ -128,9 +128,12 @@ validatorcfg_resolve_config() {
     state_set commission_bps "$COMMISSION_BPS"
 
     # Metrics: mainnet-beta (metrics.solana.com) unless BAM is chosen. SFDP's
-    # metric-reporting check reads one core metric, optimistic_slot.slot, from
-    # that database; a box reporting to the BAM endpoint has passed:false there
-    # (SFDP API, epochs 1055-1061, read 2026-10-19; not enforced yet).
+    # metric-reporting check used to read one core metric, optimistic_slot.slot,
+    # from that database; a box reporting to the BAM endpoint has passed:false there
+    # (SFDP API, epochs 1055-1061, read 2026-10-19; not enforced yet). Under
+    # Alpenglow the validator no longer sends that metric, and the API lists
+    # metric-reporting-ignored for epochs 1062 and 1063 (read 2026-10-22; the source
+    # lines are in constants.sh).
     # METRICS_TARGET (conf or env) is the choice. It is recorded, so export
     # carries it and a re-render keeps it.
     METRICS_TARGET="${METRICS_TARGET:-$(state_get metrics_target mainnet-beta)}"
