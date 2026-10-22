@@ -207,7 +207,7 @@ check    "vote history copied to this ledger" "$(grep -cF "ssh <this-box> 'sudo 
 check    "no tower file, no --require-tower" "$(grep -c 'tower-1_9' <<<"$SUM")|$(grep -c -- '--require-tower' <<<"$SUM")" "0|0"
 check    "the voter goes in before the identity" \
          "$(awk '/authorized-voter add \/root\/solana\/mainnet-validator-keypair.json/ {v = NR} /set-identity \/root\/solana\/mainnet-validator-keypair.json/ {s = NR} END {print (v && s && v < s) ? "voter first" : "v=" v " s=" s}' <<<"$SUM")" "voter first"
-check    "cold bring-up states its condition" "$(grep -c 'only when the old validator is stopped (no process' <<<"$SUM")|$(grep -c "and the finalized slot is past the vote account's lastVote" <<<"$SUM")" "1|1"
+check    "cold bring-up states its condition" "$(grep -c 'only when the old validator is stopped (no process' <<<"$SUM")|$(grep -cF "the vote account's lastVote has stopped changing (two readings" <<<"$SUM")|$(grep -cF '30 s apart agree) and the finalized slot is past it' <<<"$SUM")|$(grep -cF "past the vote account's lastVote" <<<"$SUM")" "1|1|1|0"
 check    "--do-not-require-vote-history only on the cold line" "$(grep -c -- '--do-not-require-vote-history' <<<"$SUM")|$(grep -c 'step c with set-identity --do-not-require-vote-history. Never in a hot swap.' <<<"$SUM")" "1|1"
 check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$SUM")" "0"
 check    "R10-6: file mode also says a restart reverts the identity" "$(grep -c 'Any restart of solana (crash, reboot, upgrade) brings this node back on the sync' <<<"$SUM")" "1"

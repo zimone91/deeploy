@@ -204,9 +204,17 @@ keys_print_manual() {
 # --do-not-require-vote-history if you know what you're doing" (validator/src/
 # admin_rpc_service.rs 1148-1174). The authorized voter goes in before the
 # identity, so the identity is never staked while nothing can sign its votes. A
-# cold bring-up (the old validator stopped, no process at all; the cluster
-# finalized past the vote account's lastVote) has no vote history to move and
-# says so with --do-not-require-vote-history. A hot swap never passes that flag.
+# cold bring-up (the old validator stopped, no process at all; the vote account's
+# lastVote stopped changing, two readings 30 s apart agree, and the cluster
+# finalized past it) has no vote history to move and says so with
+# --do-not-require-vote-history. A hot swap never passes that flag. lastVote is not
+# the old node's last vote: under Alpenglow the vote account is written from the
+# reward and finalization certificates in the blocks (runtime/src/
+# block_component_processor/vote_reward.rs 260-286, 325-337, v4.3.2-jito), and the
+# block of slot S carries the reward certificate for slot S - NUM_SLOTS_FOR_REWARD,
+# 8 (votor-messages/src/reward_certificate.rs 20, core/src/block_creation_loop/
+# rewards/certs_builder.rs 39), so lastVote still moves after the old node has
+# stopped.
 #
 # The file keeps changing while the old node votes: its votor rewrites it after
 # every vote it casts, a .bin.new written and renamed over it, no fsync (jito-solana
@@ -299,7 +307,8 @@ keys_print_swap_steps() {      # <agave-validator command> <ledger> [<staked key
     info "        The file must change, and none of those three lines may follow the switch. If not, this node does"
     info "        not vote and the old one has stopped: nobody votes until it is fixed."
     info "     Cold bring-up instead, no vote history: only when the old validator is stopped (no process"
-    info "     at all, not just unstaked) and the finalized slot is past the vote account's lastVote —"
+    info "     at all, not just unstaked), the vote account's lastVote has stopped changing (two readings"
+    info "     30 s apart agree) and the finalized slot is past it —"
     info "     step c with set-identity --do-not-require-vote-history. Never in a hot swap."
 }
 

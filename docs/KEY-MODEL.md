@@ -65,9 +65,13 @@ from "I know what I'm doing on mainnet":
    its latest `set-identity:` line, which must be the switch to the staked key. A
    **cold bring-up** has
    no vote history to move: only when the old validator is stopped — no process at
-   all, not just unstaked — and the cluster's finalized slot is past the vote
-   account's `lastVote`, the same two commands run with `set-identity
-   --do-not-require-vote-history`. A hot swap never passes that flag.
+   all, not just unstaked — the vote account's `lastVote` has stopped changing
+   (two readings 30 s apart agree) and the cluster's finalized slot is past it,
+   the same two commands run with `set-identity --do-not-require-vote-history`.
+   Under Alpenglow `lastVote` is written from the reward and finalization
+   certificates in the blocks, and the reward certificate for a slot comes in the
+   block 8 slots later, so it still moves after the old node has stopped. A hot
+   swap never passes that flag.
 4. The node uses `--private-rpc` bound to `127.0.0.1`; RPC is never exposed.
 5. **No core dumps.** The validator's memory holds its identity key, so a crash
    must not write that memory to disk. `solana.service` sets `LimitCORE=0`

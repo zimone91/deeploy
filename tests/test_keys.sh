@@ -113,7 +113,7 @@ check    "vote history copied to this ledger" "$(grep -cF "ssh <this-box> 'sudo 
 check    "no tower file, no --require-tower" "$(grep -c 'tower-1_9' <<<"$MAN")|$(grep -c -- '--require-tower' <<<"$MAN")" "0|0"
 check    "the voter goes in before the identity" \
          "$(awk '/authorized-voter add \/root\/solana\/mainnet-validator-keypair.json/ {v = NR} /set-identity \/root\/solana\/mainnet-validator-keypair.json/ {s = NR} END {print (v && s && v < s) ? "voter first" : "v=" v " s=" s}' <<<"$MAN")" "voter first"
-check    "cold bring-up states its condition" "$(grep -c 'only when the old validator is stopped (no process' <<<"$MAN")|$(grep -c "and the finalized slot is past the vote account's lastVote" <<<"$MAN")" "1|1"
+check    "cold bring-up states its condition" "$(grep -c 'only when the old validator is stopped (no process' <<<"$MAN")|$(grep -cF "the vote account's lastVote has stopped changing (two readings" <<<"$MAN")|$(grep -cF '30 s apart agree) and the finalized slot is past it' <<<"$MAN")|$(grep -cF "past the vote account's lastVote" <<<"$MAN")" "1|1|1|0"
 check    "--do-not-require-vote-history only on the cold line" "$(grep -c -- '--do-not-require-vote-history' <<<"$MAN")|$(grep -c 'step c with set-identity --do-not-require-vote-history. Never in a hot swap.' <<<"$MAN")" "1|1"
 check    "no bare 'No tower transfer needed'" "$(grep -c 'No tower transfer needed' <<<"$MAN")" "0"
 # R10-6 (KEYMODEL-DZ-READS): in dz-connect the key signs twice, not "one message".
@@ -243,6 +243,16 @@ for form in file offbox; do
 done
 check "KEY-MODEL: the refusal is conditional on the vote account, and its text is quoted" \
       "$(grep -cF 'without the vote history while the vote account names that identity and has voted past the Alpenglow genesis' <<<"$KMJ")|$(grep -cF "Unable to load vote history file for identity <pubkey>: <error>. The vote account <vote account> has prior Alpenglow votes. Ensure the vote history file is present or (dangerous) use --do-not-require-vote-history if you know what you're doing" <<<"$KMJ")" "1|1"
+
+echo "== R10-9d: the cold bring-up waits for lastVote to settle — under Alpenglow it moves after the old node has stopped =="
+# The vote account is written from the reward and finalization certificates in the blocks
+# (runtime/src/block_component_processor/vote_reward.rs 260-286, 325-337), and the block of slot S carries the
+# reward certificate for slot S - 8 (core/src/block_creation_loop/rewards/certs_builder.rs 39,
+# votor-messages/src/reward_certificate.rs 20, v4.3.2-jito): lastVote still moves after the old node has
+# stopped. The printed cold line asks for a settled lastVote in both forms (checked above, with the line itself);
+# KEY-MODEL asks for it too, and says why.
+check "KEY-MODEL: the cold bring-up waits for lastVote to stop changing, and says why" \
+      "$(grep -cF "the vote account's \`lastVote\` has stopped changing (two readings 30 s apart agree) and the cluster's finalized slot is past it" <<<"$KMJ")|$(grep -cF 'the reward certificate for a slot comes in the block 8 slots later, so it still moves after the old node has stopped' <<<"$KMJ")|$(grep -cF "and the cluster's finalized slot is past the vote account's \`lastVote\`" <<<"$KMJ")" "1|1|0"
 
 echo "== R10-6: staked_key_mode — offbox: the pubkey only, no staked path consulted =="
 STAKED_OK=$(mkpub Staked); SHORT31="2$(printf '1%.0s' $(seq 42))"
