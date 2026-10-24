@@ -6,8 +6,8 @@
 # (vs the recorded isolated set), the Alpenglow block creation loop thread, the
 # mlx5 NIC's IRQs (off the isolated CPUs), governor/THP/KSM/NUMA, sysctl buffers,
 # the XDP UMEM's huge pages, disk layout, catchup, the BAM connection, leftover
-# PoH-pin units of an older DeePloy, and whether the node runs on the staked
-# identity.
+# PoH-pin units of an older DeePloy, the needrestart drop-in, and whether the
+# node runs on the staked identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
 # Requires: common.sh and constants.sh sourced.
@@ -341,6 +341,20 @@ verify_poh_leftovers() {
     info "  found: $(tr '\n' ' ' <<<"$left")"
 }
 
+# needrestart must never restart the validator (phase 1 writes the drop-in, see
+# base.sh). ok when the drop-in is there and carries the override line; a WARN
+# when needrestart is installed (its config directory exists) and it does not.
+# Silent where needrestart is not installed.
+verify_needrestart() {
+    local dir="${NEEDRESTART_DIR:-/etc/needrestart}" f line
+    f="$(deeploy_needrestart_conf)"; line="$(deeploy_needrestart_override)"
+    if [[ -f "$f" ]] && grep -qxF -- "$line" "$f"; then
+        vf_ok "needrestart will not restart solana.service ($f)"
+    elif [[ -d "$dir" ]]; then
+        vf_warn "needrestart is installed and $f does not carry the override for solana.service: a library update can restart the validator (re-run phase 1)"
+    fi
+}
+
 # The staked identity is set at runtime (set-identity), so any restart of solana
 # brings the node back on the sync identity, and it stops voting. Before the
 # swap that is the expected state; after it, it is the thing to catch. Needs the
@@ -418,6 +432,7 @@ verify_run() {
     verify_identity
     verify_vote_account
     verify_poh_leftovers
+    verify_needrestart
     echo ""
     info "Verification: ${_VF_WARN} warning(s), ${_VF_FAIL} failure(s)"
     if [[ "$_VF_FAIL" -gt 0 ]]; then vf_warn "Verification found ${_VF_FAIL} failure(s) — review above"; return 1; fi

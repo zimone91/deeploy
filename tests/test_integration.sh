@@ -31,6 +31,7 @@ export FSTAB_FILE="$WORK/etc/fstab" LEDGER_MOUNT="$WORK/mnt/ledger" ACCOUNTS_MOU
 export XFS_SYSCTL_FILE="$WORK/etc/22-agave-xfs.conf" XFS_MODLOAD_FILE="$WORK/etc/modules-load-xfs.conf"
 export VALIDATOR_SH="$WORK/root/solana/validator.sh" SOLANA_SERVICE="$WORK/root/solana/solana.service"
 export LOGROTATE_FILE="$WORK/logrotate"
+export NEEDRESTART_DIR="$WORK/etc/needrestart"      # a box that has needrestart: phase 1 writes its drop-in here
 export MLX5_IRQ_SCRIPT="$WORK/root/solana/mlx5-irq.sh" MLX5_IRQ_SERVICE="$WORK/mlx5.service"
 export SOLANA_INSTALL_DIR="$WORK/install" MOSTLY_THRESHOLD_ROOT="$WORK/mct" RESUME_SERVICE_FILE="$WORK/deeploy-resume.service"
 export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo" PROC_MDSTAT="$WORK/mdstat"
@@ -42,7 +43,7 @@ export FAIL2BAN_JAIL_DROPIN="$WORK/etc/fail2ban-deeploy-sshd.local"
 # disk phase must WARN and continue, not abort under set -Eeuo.
 mkdir -p "$WORK/swapdir/keep"; export SWAPFILE="$WORK/swapdir"
 # NB: do NOT pre-create $WORK/root/solana — phase 3 (disk) creates it as a symlink.
-mkdir -p "$WORK/etc/default" "$WORK/etc" "$WORK/root" "$WORK/bin" "$WORK/install/releases"
+mkdir -p "$WORK/etc/default" "$WORK/etc" "$WORK/root" "$WORK/bin" "$WORK/install/releases" "$NEEDRESTART_DIR"
 printf '#Port 22\nPermitRootLogin yes\n' >"$SSHD_CONFIG"
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"\n' >"$GRUB_FILE"
 printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$OS_RELEASE_FILE"
@@ -232,6 +233,7 @@ check "tuning: no PoH core recorded"                       "$(sget poh_core)" "<
 check "tuning: isolated_set = the XDP cores + siblings, 1-2,25-26" "$(sget isolated_set)" "1-2,25-26"
 check "tuning: xdp_cores = 1-2 (-> RETRANSMIT)"            "$(sget xdp_cores)" "1-2"
 check "tuning: reboot_required = 1"                        "$(sget reboot_required)" "1"
+check "base: the needrestart drop-in is written (phase 1)"  "$(grep -c '^\$nrconf{override_rc}{qr(^solana\\.service\$)} = 0;$' "$NEEDRESTART_DIR/conf.d/90-deeploy-solana.conf")" "1"
 check "disk->validatorcfg: ledger_path"                   "$(sget ledger_path)" "$WORK/root/solana/ledger"
 check "disk->validatorcfg: accounts_path (separate disk)" "$(sget accounts_path)" "$ACCOUNTS_MOUNT/solana/accounts"
 check "disk->validatorcfg: snapshots on LEDGER side"      "$(sget snapshots_path)" "$WORK/root/solana/snapshots"
@@ -309,12 +311,13 @@ echo "############ POST-REBOOT RESUME -> verify isolation -> phase 8 ###########
 POST_REBOOT=1 install_run >"$WORK/postreboot.out" 2>&1; POST_REBOOT=0
 check "post-reboot: isolation verified, reboot_done set" "$(state_has reboot_done && echo y || echo n)" "y"
 check "post-reboot: verify finds the block creation loop"  "$(grep -c 'Alpenglow block creation loop running' "$WORK/postreboot.out")" "1"
+check "post-reboot: verify finds the needrestart drop-in"  "$(grep -c 'needrestart will not restart solana.service' "$WORK/postreboot.out")" "1"
 check "post-reboot: no PoH pinning, no PoH warning anywhere in phase 8" "$(grep -ci 'poh' "$WORK/postreboot.out")" "0"
 check "post-reboot: phase 8 completed"                   "$(state_has phase-8 && echo y || echo n)" "y"
 check "post-reboot: resume service disabled"             "$(grep -c 'systemctl disable deeploy-resume.service' "$CALLS")" "1"
 
 echo ""
-echo "############ MIGRATION: an older install re-run through phases 2 and 6, on a running validator ############"
+echo "############ MIGRATION: an older install re-run through phases 1, 2 and 6, on a running validator ############"
 # A box installed while DeePloy still pinned PoH: its isolated set carries the PoH core 10 and its sibling 34, the four
 # PoH-pin files are there, validator.sh passes --poh-pinned-cpu-core and solana.service starts the pin unit. Each phase runs
 # in its own shell, so that an older DeePloy (the red run) ends in failed checks and not in a dead suite.
@@ -324,7 +327,11 @@ printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 amd_pstate=passive
 for f in set_poh_affinity.sh wait_and_pin_poh.sh solana-poh-pin.service solana-poh-pin.timer; do echo old >"$SOLD/$f"; done
 printf '#!/bin/bash\nexec agave-validator --poh-pinned-cpu-core "10"\n' >"$VALIDATOR_SH"
 printf '[Service]\nExecStart=%s\nExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service\n' "$VALIDATOR_SH" >"$SOLANA_SERVICE"
+rm -f "$NEEDRESTART_DIR/conf.d/90-deeploy-solana.conf"      # an older install has no needrestart drop-in
 : >"$CALLS"
+( ONLY_PHASE=1; install_run ) >"$WORK/mig1.out" 2>&1
+check "migration, phase 1: the needrestart drop-in appears" "$(grep -c '^\$nrconf{override_rc}{qr(^solana\\.service\$)} = 0;$' "$NEEDRESTART_DIR/conf.d/90-deeploy-solana.conf")|$(grep -c 'needrestart will not restart solana.service' "$WORK/mig1.out")" "1|1"
+check "migration, phase 1: no systemctl call names solana.service at all (allowlist: none)" "$(solana_unit_calls "$CALLS")" "<none>"
 ( ONLY_PHASE=2; install_run ) >"$WORK/mig2.out" 2>&1
 check "migration, phase 2: the GRUB line has the XDP set once and no PoH core or sibling" \
       "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26 ' "$GRUB_FILE")|$(grep -c '10,34' "$GRUB_FILE")|$(grep -o 'isolcpus=' "$GRUB_FILE" | wc -l | tr -d ' ')" "1|0|1"
@@ -342,11 +349,12 @@ check "migration, phase 6: the timer and the service are disabled and stopped, t
 check "migration, phase 6: the new validator.sh waits for the next planned restart, a staked node for its standby" "$(grep -c 'new validator.sh takes effect at the next planned restart' "$WORK/mig6.out")|$(grep -c 'a staked node: move it to the standby first' "$WORK/mig6.out")" "1|1"
 check "migration, phase 6: reset-failed for both PoH-pin units, once" \
       "$(grep -c '^systemctl reset-failed solana-poh-pin.service solana-poh-pin.timer$' "$CALLS")" "1"
-# phases 2 and 6 ask whether solana.service is running (phase 6) and do nothing else with it: an allowlist of whole calls.
-check "migration: the only systemctl call that names solana.service, in phases 2 and 6, is the is-active question (allowlist)" \
+# phases 1, 2 and 6 ask whether solana.service is running (phase 6) and do nothing else with it: an allowlist of whole calls.
+check "migration: the only systemctl call that names solana.service, in phases 1, 2 and 6, is the is-active question (allowlist)" \
       "$(solana_unit_calls "$CALLS" 'systemctl is-active --quiet solana.service')" "<none>"
 verify_run >"$WORK/migverify.out" 2>&1
 check "migration: verify afterwards has no leftover and no PoH warning, no failure" "$(grep -c 'leftover PoH-pin' "$WORK/migverify.out")|$(grep -ci 'poh' "$WORK/migverify.out")|$(grep -c 'Verification: .* 0 failure' "$WORK/migverify.out")" "0|0|1"
+check "migration: ... and finds the needrestart drop-in" "$(grep -c 'needrestart will not restart solana.service' "$WORK/migverify.out")" "1"
 
 echo ""
 echo "############ ZERO REAL SIDE EFFECTS ############"

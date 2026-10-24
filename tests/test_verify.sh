@@ -31,6 +31,8 @@ DRY_RUN=0 common_init
 state_set isolated_set "1-2,10,25-26,34"
 # Hermetic: no PoH-pin file of a real older install is looked for under /root or /etc.
 export SOLANA_SERVICE="$WORK/units/solana.service"; state_set solana_home "$WORK/home"
+# ... and none of the box's needrestart configuration (a directory that does not exist = not installed).
+export NEEDRESTART_DIR="$WORK/no-needrestart"
 # The real probe, kept under another name for its own test (the next block mocks it).
 eval "$(declare -f _vf_blk_creation_thread | sed '1s/^_vf_blk_creation_thread/_real_vf_blk_creation_thread/')"
 
@@ -121,6 +123,44 @@ check "verify_run runs the leftovers check and the thread check" "$(grep -c 'lef
 check "verify_run: nothing about a PoH thread's affinity or a timer being active (the leftovers lines aside)" "$(grep -v 'found:\|leftover PoH-pin unit' "$WORK/run" | grep -ci 'solPohTickProd\|poh-pin\|PoH thread\|PoH core')" "0"
 rm -f "$LH/set_poh_affinity.sh" "$LH/wait_and_pin_poh.sh" "$LU/solana-poh-pin.service" "$LU/solana-poh-pin.timer"
 check "the old checks are gone" "$(declare -F verify_poh_affinity verify_pohpin_timer _vf_poh_thread _vf_timer_active _vf_taskset 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+echo "== R9: needrestart must never restart the validator =="
+# verify_needrestart has its own default for the directory whose presence says that needrestart is installed. Where this suite runs there
+# may be no /etc/needrestart, and then no output tells that default from any other path; so it is read from the source.
+# shellcheck disable=SC2016  # the pattern is the source text, ${...} included
+check "default dir of verify_needrestart is /etc/needrestart (the source)" \
+      "$(grep -c 'local dir="${NEEDRESTART_DIR:-/etc/needrestart}"' "$ROOT/lib/verify.sh")" "1"
+NRD="$WORK/etc-needrestart"; NRF="$NRD/conf.d/90-deeploy-solana.conf"
+# shellcheck disable=SC2016  # Perl, not shell: $nrconf stays literal
+OVR='$nrconf{override_rc}{qr(^solana\.service$)} = 0;'
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "needrestart not installed: silent, no warning"      "$_VF_WARN|$(wc -c <"$WORK/nr" | tr -d ' ')" "0|0"
+export NEEDRESTART_DIR="$NRD"; mkdir -p "$NRD"
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "installed, no drop-in: WARN naming the file and the risk" "$_VF_WARN|$(grep -c "$NRF does not carry the override for solana.service" "$WORK/nr")|$(grep -c 'a library update can restart the validator' "$WORK/nr")" "1|1|1"
+mkdir -p "$NRD/conf.d"; printf '%s\n' '# Written by DeePloy.' "$OVR" >"$NRF"
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "the drop-in with the override line: ok, no warning" "$_VF_WARN|$(grep -c 'needrestart will not restart solana.service' "$WORK/nr")" "0|1"
+printf '%s\n' "# $OVR" >"$NRF"
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "the line only commented out: WARN"                  "$_VF_WARN" "1"
+# shellcheck disable=SC2016  # Perl, not shell: $nrconf stays literal
+printf '%s\n' '$nrconf{override_rc}{qr(^solana\.service$)} = 1;' >"$NRF"
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "the override set to restart (= 1): WARN"            "$_VF_WARN" "1"
+: >"$NRF"
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "an empty drop-in: WARN"                             "$_VF_WARN" "1"
+# shellcheck disable=SC2016  # Perl, not shell: $nrconf stays literal
+printf '%s\n' '# an operator line' "$OVR" '$nrconf{restart} = "l";' >"$NRF"
+reset; verify_needrestart >"$WORK/nr" 2>&1
+check "the line among others the operator added: ok"       "$_VF_WARN" "0"
+verify_run >"$WORK/run" 2>&1
+check "verify_run runs it" "$(grep -c 'needrestart will not restart solana.service' "$WORK/run")" "1"
+rm -f "$NRF"
+verify_run >"$WORK/run" 2>&1
+check "verify_run: the missing drop-in is a WARN in the run too" "$(grep -c 'does not carry the override for solana.service' "$WORK/run")" "1"
+export NEEDRESTART_DIR="$WORK/no-needrestart"
 
 echo "== R10-2: the governor of every cpufreq CPU, not cpu0 alone =="
 mkcpus performance ondemand 12

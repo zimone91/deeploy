@@ -299,6 +299,14 @@ deeploy_poh_pin_files() {
         "$unit_dir/solana-poh-pin.service" "$unit_dir/solana-poh-pin.timer"
 }
 
+# --- needrestart (shared by base.sh and verify.sh) ------------------------------
+# Phase 1 puts this drop-in in needrestart's conf.d so that a library update never
+# restarts the validator; verify looks for the same file and the same line.
+# NEEDRESTART_DIR is the tests' seam.
+deeploy_needrestart_conf() { printf '%s\n' "${NEEDRESTART_DIR:-/etc/needrestart}/conf.d/90-deeploy-solana.conf"; }
+# shellcheck disable=SC2016  # Perl, not shell: $nrconf stays literal
+deeploy_needrestart_override() { printf '%s\n' '$nrconf{override_rc}{qr(^solana\.service$)} = 0;'; }
+
 # --- identities (read-only; shared by upgrade.sh and verify.sh) ---------------
 # The staked identity is applied at runtime with set-identity, so argv
 # (/proc/<pid>/cmdline) always shows the sync identity and a keypair file proves

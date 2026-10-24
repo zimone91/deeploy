@@ -54,6 +54,75 @@ echo "== _sshd_configured_port =="
 check "commented Port -> empty" "$(_sshd_configured_port "$(fresh_sshd '#Port 22')")" ""
 check "active Port -> value"    "$(_sshd_configured_port "$(fresh_sshd 'Port 2222')")" "2222"
 
+echo "== R8: needrestart must never restart the validator =="
+# The spec's file, byte for byte (3 comment lines, then the override line).
+# shellcheck disable=SC2016  # Perl, not shell: $nrconf stays literal
+NR_EXPECT='# Written by DeePloy. needrestart must never restart the validator after a library update: on Ubuntu 24.04 the APT
+# hook runs needrestart in automatic mode. Restart solana.service yourself at a planned time; a staked node goes to
+# its standby first.
+$nrconf{override_rc}{qr(^solana\.service$)} = 0;'
+NR="$WORK/etc-needrestart"; NRF="$NR/conf.d/90-deeploy-solana.conf"
+# no needrestart (its config dir is absent): one info line, nothing written, no directory made
+: >"$CALLS"; NEEDRESTART_DIR="$WORK/no-needrestart" base_needrestart >"$WORK/nr0.out" 2>&1
+check "no needrestart: one info line saying so"            "$(grep -c 'needrestart is not installed' "$WORK/nr0.out")" "1"
+check "no needrestart: nothing created"                    "$([[ -e "$WORK/no-needrestart" ]] && echo made || echo absent)" "absent"
+# installed: the drop-in is written, 0644, with the spec's text; nothing else in the directory changes
+mkdir -p "$NR"; printf '# stock\n' >"$NR/needrestart.conf"
+: >"$CALLS"; NEEDRESTART_DIR="$NR" base_needrestart >"$WORK/nr1.out" 2>&1
+check "installed: the file is written, byte for byte the spec's" "$(cat "$NRF")" "$NR_EXPECT"
+# shellcheck disable=SC2012  # ls is fine here; portable perm read for the test
+check "installed: mode 0644"                               "$(ls -l "$NRF" | cut -c1-10)" "-rw-r--r--"
+check "installed: needrestart.conf itself is not touched"  "$(cat "$NR/needrestart.conf")" "# stock"
+check "installed: says it will not restart solana.service" "$(grep -c 'needrestart will not restart solana.service' "$WORK/nr1.out")" "1"
+check "installed: restarts, reloads and signals nothing (no systemctl call)" "$(grep -c 'systemctl' "$CALLS")" "0"
+nr_backups() { find "$DEEPLOY_BACKUP_DIR" -type f -name '90-deeploy-solana.conf' 2>/dev/null | wc -l | tr -d ' '; }
+NEEDRESTART_DIR="$NR" base_needrestart >/dev/null 2>&1
+check "re-run: byte-identical, and no backup of an unchanged file" "$(cat "$NRF")|$(nr_backups)" "$NR_EXPECT|0"
+printf '# an operator edit\n' >"$NRF"
+NEEDRESTART_DIR="$NR" base_needrestart >/dev/null 2>&1
+check "re-run over an edited file: the spec's text again, the edit backed up" \
+      "$(cat "$NRF")|$(nr_backups)|$(grep -rlF 'an operator edit' "$DEEPLOY_BACKUP_DIR" 2>/dev/null | wc -l | tr -d ' ')" "$NR_EXPECT|1|1"
+# dry-run: the plan, no file
+NR2="$WORK/etc-needrestart-dry"; mkdir -p "$NR2"
+DRY_RUN=1 NEEDRESTART_DIR="$NR2" base_needrestart >"$WORK/nr2.out" 2>&1; DRY_RUN=0
+check "dry-run: nothing written (no conf.d, no file)"      "$([[ -e "$NR2/conf.d" ]] && echo made || echo absent)" "absent"
+check "dry-run: says it would write the file, 0644"        "$(grep -c "would update $NR2/conf.d/90-deeploy-solana.conf" "$WORK/nr2.out")|$(grep -c "would chmod 0644 $NR2/conf.d/90-deeploy-solana.conf" "$WORK/nr2.out")" "1|1"
+# The defaults, which every other test here replaces with NEEDRESTART_DIR: the real needrestart directory.
+check "default: the drop-in path is /etc/needrestart/conf.d/90-deeploy-solana.conf" \
+      "$( ( unset NEEDRESTART_DIR; deeploy_needrestart_conf ) )" "/etc/needrestart/conf.d/90-deeploy-solana.conf"
+# base_needrestart has its own default for the directory it looks for. /etc/needrestart exists on some machines that run this suite and not
+# on others, so write_file is a stub (nothing is written either way) and the expectation follows the machine: where the directory exists the
+# stub must be asked for the default path and 0644, where it does not the "not installed" line must name the default directory.
+rm -f "$WORK/nd.write"
+( unset NEEDRESTART_DIR; write_file() { printf '%s %s\n' "$1" "$3" >"$WORK/nd.write"; }; base_needrestart >"$WORK/nd.out" 2>&1 )
+if [[ -d /etc/needrestart ]]; then
+    check "default dir (/etc/needrestart exists here): write_file is asked for /etc/needrestart/conf.d/..., 0644" \
+          "$(cat "$WORK/nd.write" 2>/dev/null)" "/etc/needrestart/conf.d/90-deeploy-solana.conf 0644"
+else
+    check "default dir (no /etc/needrestart here): the info line names /etc/needrestart" \
+          "$(grep -c 'needrestart is not installed (no /etc/needrestart)' "$WORK/nd.out")" "1"
+fi
+# what the line does, with needrestart's own lookup (the loop of /usr/sbin/needrestart, override_rc): only solana.service is
+# deferred; the entries of the stock config are still there after the drop-in is read.
+if command -v perl >/dev/null 2>&1; then
+    check "perl -c on the file: syntax OK"                 "$(perl -c "$NRF" 2>&1 | grep -c 'syntax OK')" "1"
+    NRPERL=$(perl -e '
+        our %nrconf; $nrconf{override_rc} = { qr(^dbus) => 0, qr(^openvpn) => 0 };     # as the stock needrestart.conf starts it
+        eval do { local(@ARGV, $/) = shift; <> }; die $@ if $@;
+        for my $rc (qw(solana.service dbus.service openvpn.service solana-poh-pin.service mysolana.service solana.service.bak solana@1.service)) {
+            my $restart = 1;
+            foreach my $re (keys %{$nrconf{override_rc}}) { next unless($rc =~ /$re/); $restart = $nrconf{override_rc}->{$re}; last; }
+            printf "%s=%s ", $rc, $restart ? "restart" : "deferred";
+        }' "$NRF")
+    check "needrestart's lookup: solana.service deferred, the stock entries kept, no other name caught" "$NRPERL" \
+          "solana.service=deferred dbus.service=deferred openvpn.service=deferred solana-poh-pin.service=restart mysolana.service=restart solana.service.bak=restart solana@1.service=restart "
+fi
+# phase 1 does it first, before the packages (the first apt run of the phase is covered too)
+ORDER=$( ( require_root() { :; }; _base_resolve_config() { echo resolve; }; base_needrestart() { echo needrestart; }
+           base_packages() { echo packages; }; base_ssh_port() { echo ssh_port; }; base_firewall() { echo firewall; }
+           base_run ) 2>&1 | tr '\n' ' ' )
+check "base_run: needrestart after the questions, before the packages" "$ORDER" "resolve needrestart packages ssh_port firewall "
+
 echo "== base_packages =="
 : >"$CALLS"; BASE_APT_UPGRADE=true base_packages >/dev/null 2>&1
 check "apt update"   "$(grep -c 'apt-get update' "$CALLS")"        "1"

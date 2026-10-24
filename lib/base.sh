@@ -2,7 +2,8 @@
 # ============================================================================
 # DeePloy — lib/base.sh   (Phase 1: base system)
 # Packages, SSH-port change (with verify-or-rollback so a bad change can never
-# lock the operator out), and the core validator firewall.
+# lock the operator out), the core validator firewall, and the needrestart
+# drop-in that keeps a library update from restarting the validator.
 #
 # Firewall scope: this module owns the core validator rules and, when DoubleZero
 # is enabled, calls doublezero.sh's dz_firewall (GRE/BGP/44880) so ALL firewall
@@ -153,6 +154,35 @@ _base_resolve_config() {
     # dz_enabled to state; every later phase reads it (no re-prompt). Guarded so
     # base.sh sources/tests standalone even if doublezero.sh isn't loaded.
     if declare -F dz_should_enable >/dev/null 2>&1; then dz_should_enable || true; fi
+}
+
+# --- needrestart: never restart the validator --------------------------------
+# On Ubuntu 24.04 the APT hook (/etc/apt/apt.conf.d/99needrestart) runs
+# needrestart in automatic mode: $nrconf{restart} is unset, and the Ubuntu default
+# for the hook is 'a' (needrestart.conf, /usr/sbin/needrestart 264-273). Every
+# service that maps an updated library is restarted, except those its
+# configuration defers, and the validator maps libc, libm, libstdc++ and
+# libgcc_s. An override_rc of 0 makes needrestart list the service as deferred
+# and leave it running. Written before the packages, so the first apt run of this
+# phase is covered too.
+_base_needrestart_conf() {
+    printf '%s\n' \
+        '# Written by DeePloy. needrestart must never restart the validator after a library update: on Ubuntu 24.04 the APT' \
+        '# hook runs needrestart in automatic mode. Restart solana.service yourself at a planned time; a staked node goes to' \
+        '# its standby first.'
+    deeploy_needrestart_override
+}
+
+base_needrestart() {
+    local dir="${NEEDRESTART_DIR:-/etc/needrestart}" f
+    step "needrestart: never restart the validator"
+    if [[ ! -d "$dir" ]]; then
+        info "needrestart is not installed (no ${dir}) — nothing to configure"
+        return 0
+    fi
+    f="$(deeploy_needrestart_conf)"
+    write_file "$f" "$(_base_needrestart_conf)"$'\n' 0644
+    ok "needrestart will not restart solana.service (${f}) — restart it at a planned time; a staked node goes to its standby first"
 }
 
 # --- packages ----------------------------------------------------------------
@@ -332,6 +362,7 @@ base_firewall() {
 base_run() {
     require_root
     _base_resolve_config
+    base_needrestart
     base_packages
     base_ssh_port
     base_firewall

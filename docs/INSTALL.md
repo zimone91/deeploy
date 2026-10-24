@@ -43,7 +43,7 @@ volume. `--yes`/`--post-reboot` never answer that question.
 | # | Phase | What it does |
 |---|---|---|
 | 0 | Preflight | root/OS/CPU/RAM/disk/NIC audit, mainnet genesis guard, closest-region scoring |
-| 1 | Base | packages, SSH-port change (verify-or-rollback), core ufw; SSH is rate-limited (`ufw limit`: an address with 6 or more new connections in 30 s is refused) |
+| 1 | Base | needrestart drop-in, packages, SSH-port change (verify-or-rollback), core ufw; SSH is rate-limited (`ufw limit`: an address with 6 or more new connections in 30 s is refused) |
 | 2 | Tuning | **dynamic isolation of the XDP cores → GRUB**, performance-tweaks, sysctl, NOFILE → reboot gate |
 | 3 | Disk | detect → confirm → blkdiscard + mkfs.xfs + mount + fstab + symlink |
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
@@ -84,6 +84,27 @@ timer and service and the two scripts it used, rewrites `validator.sh` without
 `--poh-pinned-cpu-core`, and never restarts `solana.service`: the new
 `validator.sh` takes effect at the next planned restart (a staked node: move it
 to the standby first).
+
+## Library updates and the validator
+
+On Ubuntu 24.04 the APT hook (`/etc/apt/apt.conf.d/99needrestart`) runs
+needrestart in automatic mode: `$nrconf{restart}` is unset, and the default for
+the hook is `a` (the comment in `needrestart.conf`; `/usr/sbin/needrestart`
+264-273, needrestart 3.6-7ubuntu4.5). A library update then restarts the
+services that map the old library, except those its configuration defers. The
+validator maps libc, libm, libstdc++ and libgcc_s, and on a test box one
+unattended upgrade restarted 13 services within a second.
+
+Where `/etc/needrestart` exists, phase 1 writes
+`/etc/needrestart/conf.d/90-deeploy-solana.conf`, the one line
+`$nrconf{override_rc}{qr(^solana\.service$)} = 0;` with a comment. needrestart
+then lists `solana.service` among the restarts it defers and leaves it running;
+the other entries of its configuration stay. Without needrestart phase 1 says so
+and writes nothing, and `verify` warns if needrestart is installed and the file
+is missing.
+
+The rule: restart `solana.service` at a planned time, after a library update
+too. A staked node goes through its standby first.
 
 ## MEV (BAM)
 

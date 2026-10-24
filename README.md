@@ -123,6 +123,12 @@ host tuning at every boot, and an mlx5 or bnxt_en NIC adds a tuning unit.
 Phase 2 also leaves exactly one `GOVERNOR="performance"` line in
 `/etc/default/cpufrequtils` and keeps the file's other lines.
 
+Where needrestart is installed, phase 1 writes
+`/etc/needrestart/conf.d/90-deeploy-solana.conf`, so that needrestart never
+restarts `solana.service` after a library update: on Ubuntu 24.04 the APT hook
+runs needrestart in automatic mode, and the validator maps libc. Restart the
+validator at a planned time; a staked node goes through its standby first.
+
 One unit runs DeePloy itself. `deeploy-resume.service` carries the install
 across its single reboot. The automatic resume disables it; a manual
 `install --resume` does not, so after one of those run
