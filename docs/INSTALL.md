@@ -9,9 +9,9 @@ a terminal has to name one. It is also the **recommended** minimum: SFDP
 requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning at
 the build, the upgrade and the render, and the run goes on. The code enforces a
 floor of **v4.2.0-jito**.
-Older clients are refused before the build: the generated `validator.sh` passes
-`--no-xdp` and `--poh-pinned-cpu-core`, neither of which exists before 4.2.0, so
-an older binary would go through a whole build (v4.3.2-jito took 724 s on the
+Older clients are refused before the build: where XDP is off, the generated
+`validator.sh` passes `--no-xdp`, which does not exist before 4.2.0, so an
+older binary would go through a whole build (v4.3.2-jito took 724 s on the
 hardware above) and then refuse to start. While the build
 is still ahead, the tag is checked before the disk phase erases anything: its
 form, the floor, and that it exists, both in the jito-solana repository and as
@@ -44,13 +44,46 @@ volume. `--yes`/`--post-reboot` never answer that question.
 |---|---|---|
 | 0 | Preflight | root/OS/CPU/RAM/disk/NIC audit, mainnet genesis guard, closest-region scoring |
 | 1 | Base | packages, SSH-port change (verify-or-rollback), core ufw; SSH is rate-limited (`ufw limit`: an address with 6 or more new connections in 30 s is refused) |
-| 2 | Tuning | **dynamic CPU isolation → GRUB**, performance-tweaks, sysctl, NOFILE → reboot gate |
+| 2 | Tuning | **dynamic isolation of the XDP cores → GRUB**, performance-tweaks, sysctl, NOFILE → reboot gate |
 | 3 | Disk | detect → confirm → blkdiscard + mkfs.xfs + mount + fstab + symlink |
 | 4 | Toolchain | rustup, anza CLI, build jito-solana @ tag (LTO, `target-cpu=native`), setcap |
 | 5 | Keys | generate the unstaked sync identity; ask where the staked key lives (`file` on the box, or `offbox`); print the hot swap |
-| 6 | Validator config | generate `validator.sh` (it reports OS stats with its metrics), `solana.service`, logrotate, PoH-pin, NIC setup |
+| 6 | Validator config | generate `validator.sh` (it reports OS stats with its metrics), `solana.service`, logrotate, NIC setup; remove the PoH-pin units of an older DeePloy |
 | 7 | DoubleZero | (optional, prompted) PREPARE only: packages, env→mainnet-beta, ufw (GRE, BGP, 44880) + old-server-disconnect reminder + pointer — ID-migration, passport, and connect are the separate post-swap `dz-connect` step |
-| 8 | Start | free-disk precheck → start → `catchup 0` → pin PoH → verify → summary |
+| 8 | Start | free-disk precheck → start → `catchup 0` → verify → summary |
+
+## CPU isolation
+
+Phase 2 isolates the XDP retransmit cores and their SMT siblings, and nothing
+else: the first `XDP_CORES_COUNT` physical cores from CPU 1 up, plus their
+siblings. `isolcpus`, `nohz_full`, `rcu_nocbs` and `irqaffinity` go to GRUB.
+After `update-grub` phase 2 reads the generated `grub.cfg` back and stops before
+the reboot if `isolcpus` or `nohz_full` is not in it; `rcu_nocbs` and
+`irqaffinity` are written but not read back. After the reboot the gate compares
+`/sys/devices/system/cpu/isolated` with the recorded set and does not start the
+validator on a mismatch. With `XDP_CORES_COUNT=0` (no XDP-capable NIC) nothing
+is isolated, and GRUB gets only `amd_pstate=passive` and
+`nvme_core.default_ps_max_latency_us=0`, which the read-back then checks; the
+gate has no set to compare.
+
+CPU 0 is never an XDP core: without `--poh-pinned-cpu-core`, jito-solana
+v4.3.2-jito counts CPU 0 as the PoH core (`poh/src/poh_service.rs` 43) and
+refuses `--xdp-cpu-cores` that include it (`validator/src/commands/run/execute.rs`
+1515-1532).
+
+There is no PoH core to set. After the Alpenglow migration, jito-solana
+v4.3.2-jito does not start PohService (`poh/src/poh_service.rs` 121-129), so
+there is no PoH thread to pin, and `POH_CORE` is no longer a setting: a
+`deeploy.conf` that still has it gets a warning and the line is ignored.
+
+An older DeePloy isolated a PoH core as well and pinned the PoH thread with
+`solana-poh-pin`. Re-running phase 2 replaces the old `isolcpus`, `nohz_full`,
+`rcu_nocbs` and `irqaffinity` with the new set; the change takes effect at the
+next planned reboot. Re-running phase 6 stops and removes the `solana-poh-pin`
+timer and service and the two scripts it used, rewrites `validator.sh` without
+`--poh-pinned-cpu-core`, and never restarts `solana.service`: the new
+`validator.sh` takes effect at the next planned restart (a staked node: move it
+to the standby first).
 
 ## MEV (BAM)
 

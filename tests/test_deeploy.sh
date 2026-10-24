@@ -150,16 +150,19 @@ echo "== I2: install --only 8 is isolation-gated — driven through the REAL sta
 _DEEPLOY_START_SOURCED="" source "$ROOT/lib/start.sh"     # restore the real start_run
 start_resolve_config() { :; }; start_precheck_disk() { :; }
 start_enable_service() { echo 'ENABLE' >>"$RAN"; }
-start_wait_catchup() { :; }; start_pin_poh() { :; }
+start_wait_catchup() { :; }
 verify_run() { :; }; start_print_summary() { :; }
-reset_state; state_set isolated_set "1-2,10,25-26,34"
-_install_read_isolated() { echo "10,34"; }                          # MISMATCH (GRUB didn't apply)
-_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,10,34"; }
+# An older start_run read SET_POH_SCRIPT, which the mocked start_resolve_config no longer sets; empty here so that this
+# suite, run against that older code, fails its checks instead of set -u ending the file.
+SET_POH_SCRIPT=""
+reset_state; state_set isolated_set "1-2,25-26"
+_install_read_isolated() { echo "25-26"; }                          # MISMATCH (GRUB didn't apply)
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,25-26"; }
 : >"$RAN"; ( ONLY_PHASE=8 install_run ) >/dev/null 2>&1; RC=$?
 check "I2: --only 8 mismatch -> aborts"                "$RC" "1"
 check "I2: --only 8 mismatch -> service NEVER enabled" "$(grep -c '^ENABLE$' "$RAN")" "0"
-_install_read_isolated() { echo "1-2,10,25-26,34"; }               # MATCH
-_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
+_install_read_isolated() { echo "1-2,25-26"; }               # MATCH
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,25-26"; }
 : >"$RAN"; ONLY_PHASE=8 install_run >/dev/null 2>&1; ONLY_PHASE=""
 check "I2: --only 8 match -> real start_run proceeds"  "$(grep -c '^ENABLE$' "$RAN")" "1"
 start_run() { echo 'start_run' >>"$RAN"; }   # restore the suite stub
@@ -189,7 +192,7 @@ check "no dz_enabled recorded: skipped"          "$(grep -c '^doublezero_run$' "
 
 echo "== REBOOT GATE (pre-reboot): installs oneshot, stops before phase 8 =="
 reset_state; DZ_ENABLED=false
-state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 : >"$RAN"; : >"$CALLS"
 install_run >/dev/null 2>&1
 check "phase 8 (start) NOT run before reboot" "$(grep -c '^start_run$' "$RAN")" "0"
@@ -271,18 +274,18 @@ echo "== old-server reminder before the reboot gate (dz_enabled only) =="
 # Pre-reboot branch calls dz_print_old_server_reminder when dz_enabled. Stub it
 # to observe; gated on state so DZ-off runs never see it.
 dz_print_old_server_reminder() { echo 'dz_old_server_reminder' >>"$RAN"; }
-reset_state; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"; state_set dz_enabled true
+reset_state; state_set reboot_required 1; state_set isolated_set "1-2,25-26"; state_set dz_enabled true
 : >"$RAN"; : >"$CALLS"; install_run >/dev/null 2>&1
 check "DZ on: old-server reminder before gate" "$(grep -c '^dz_old_server_reminder$' "$RAN")" "1"
-reset_state; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"; state_set dz_enabled false
+reset_state; state_set reboot_required 1; state_set isolated_set "1-2,25-26"; state_set dz_enabled false
 : >"$RAN"; install_run >/dev/null 2>&1
 check "DZ off: no old-server reminder"          "$(grep -c '^dz_old_server_reminder$' "$RAN")" "0"
 unset -f dz_print_old_server_reminder
 
 echo "== POST-REBOOT, isolation MATCHES: verify -> start -> self-disable =="
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
-_install_read_isolated() { echo "1-2,10,25-26,34"; }
-_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34"; }
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
+_install_read_isolated() { echo "1-2,25-26"; }
+_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26"; }
 : >"$RAN"; : >"$CALLS"
 POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
 check "post-reboot: start_run ran"            "$(grep -c '^start_run$' "$RAN")" "1"
@@ -294,7 +297,7 @@ echo "== POST-REBOOT DZ: gated on dz_CONNECTED (not dz_enabled) — verify/resto
 # prepared-but-not-connected (the normal pre-swap state) must NOT trigger resume.
 dz_resume() { echo 'dz_resume' >>"$RAN"; }            # observe the resume call
 # Connected pre-reboot -> resume verifies/restores, does NOT re-run the prepare flow.
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 state_set dz_enabled true; state_set dz_connected "$(date +%s 2>/dev/null || echo t)"
 : >"$RAN"; : >"$CALLS"
 POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
@@ -303,7 +306,7 @@ check "post-reboot dz_connected: doublezero_run NOT re-run" "$(grep -c '^doublez
 check "post-reboot dz_connected: still started"    "$(grep -c '^start_run$' "$RAN")" "1"
 # Prepared but NOT connected (dz_enabled=true, dz_connected unset) -> NO resume.
 dz_resume() { echo 'dz_resume' >>"$RAN"; }
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 state_set dz_enabled true     # prepared, but dz-connect hasn't run -> dz_connected unset
 : >"$RAN"
 POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
@@ -315,10 +318,10 @@ echo "== N1: resume survives a dz_resume that EXITS (fail inside), not just retu
 # the current shell — the resume service died BEFORE reboot_done/phase 8 and the
 # staked node stayed down, unattended, on every boot. The boundary now runs
 # dz_resume in a subshell, so BOTH failure shapes warn + continue to phase 8.
-_install_read_isolated() { echo "1-2,10,25-26,34"; }
-_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
+_install_read_isolated() { echo "1-2,25-26"; }
+_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,1-2,25-26"; }
 dz_resume() { echo 'dz_resume' >>"$RAN"; exit 1; }          # hard-exit shape (fail() inside)
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 state_set dz_enabled true; state_set dz_connected t
 : >"$RAN"; : >"$CALLS"
 N1OUT=$( ( set -Eeuo pipefail; POST_REBOOT=1 install_run ) 2>&1 ); N1RC=$?
@@ -330,7 +333,7 @@ check "N1 exit-shape: warns + reconnect commands (R10-11)" "$(grep -cF "reconnec
 check "R10-11: no advice to run dz-connect after the grant" "$(grep -c 'reconnect manually with: .*dz-connect' <<<"$N1OUT")" "0"
 # plain return-1 shape: identical outcome (the pre-existing guard, still covered)
 dz_resume() { echo 'dz_resume' >>"$RAN"; return 1; }
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 state_set dz_enabled true; state_set dz_connected t
 : >"$RAN"
 POST_REBOOT=1 install_run >/dev/null 2>&1
@@ -338,7 +341,7 @@ check "N1 return-shape: start_run still ran"               "$(grep -c '^start_ru
 check "N1 return-shape: reboot_done latched"               "$(state_has reboot_done && echo y || echo n)" "y"
 # happy path: dz_resume succeeds -> no warn, phase 8 runs (unchanged behavior)
 dz_resume() { echo 'dz_resume' >>"$RAN"; return 0; }
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 state_set dz_enabled true; state_set dz_connected t
 : >"$RAN"
 N1OK=$( POST_REBOOT=1 install_run 2>&1 )
@@ -347,26 +350,27 @@ check "N1 happy path: start_run ran"                       "$(grep -c '^start_ru
 unset -f dz_resume
 
 echo "== POST-REBOOT, isolation MISMATCH: FAIL + diagnostics, validator NOT started =="
-reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
-_install_read_isolated() { echo "10,34"; }   # GRUB didn't fully apply
-_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,10,34"; }
+reset_state; mark_07_done; state_set reboot_required 1; state_set isolated_set "1-2,25-26"
+_install_read_isolated() { echo "25-26"; }   # GRUB didn't fully apply
+_install_read_cmdline()  { echo "ro quiet isolcpus=domain,managed_irq,25-26"; }
 : >"$RAN"
 DIAG=$( ( POST_REBOOT=1 install_run ) 2>&1 ); RC=$?
 check "mismatch: install exits non-zero" "$RC" "1"
 check "mismatch: start_run NOT called"   "$(grep -c '^start_run$' "$RAN")" "0"
 check "mismatch: reboot_done NOT set"     "$(state_has reboot_done && echo y || echo n)" "n"
-check "diag: expected set shown"          "$(grep -c 'expected isolated set : 1-2,10,25-26,34' <<<"$DIAG")" "1"
-check "diag: actual set shown"            "$(grep -c 'actual   isolated set : 10,34' <<<"$DIAG")" "1"
+check "diag: expected set shown"          "$(grep -c 'expected isolated set : 1-2,25-26' <<<"$DIAG")" "1"
+check "diag: actual set shown"            "$(grep -c 'actual   isolated set : 25-26' <<<"$DIAG")" "1"
 check "diag: concrete fix (--only 2)"     "$(grep -c 'install --only 2' <<<"$DIAG")" "1"
+check "diag: the reason is the XDP cores, and says nothing of PoH" "$(grep -c 'Why: the XDP cores are reserved for the retransmit threads' <<<"$DIAG")|$(grep -ci 'poh' <<<"$DIAG")" "1|0"
 
 echo "== isolation mismatch: retry counter escalates, clears on match =="
-reset_state; state_set isolated_set "1-2,10,25-26,34"
-_install_read_isolated() { echo "10,34"; }
+reset_state; state_set isolated_set "1-2,25-26"
+_install_read_isolated() { echo "25-26"; }
 D=""; for _ in 1 2 3; do D=$( ( _install_verify_isolation ) 2>&1 || true ); done
 check "escalation on 3rd boot" "$(grep -c 'attempt #3' <<<"$D")" "1"
 check "mismatch count = 3"     "$(state_get isolation_mismatch_count)" "3"
-_install_read_isolated() { echo "1-2,10,25-26,34"; }
-_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
+_install_read_isolated() { echo "1-2,25-26"; }
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,25-26"; }
 _install_verify_isolation >/dev/null 2>&1
 check "counter cleared on match" "$(state_get isolation_mismatch_count 0)" "0"
 
@@ -389,16 +393,58 @@ echo "== I5: manual --resume after the reboot already happened -> verify + Phase
 # isolation, so the boundary detects that, verifies, and proceeds — it must NOT
 # re-prompt a second pointless reboot.
 reset_state; mark_07_done
-state_set reboot_required 1; state_set isolated_set "1-2,10,25-26,34"
+state_set reboot_required 1; state_set isolated_set "1-2,25-26"
 state_set reboot_pending "earlier-ts"            # a reboot WAS armed; the box rebooted
-_install_read_isolated() { echo "1-2,10,25-26,34"; }                            # isolation is live
-_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34"; }
+_install_read_isolated() { echo "1-2,25-26"; }                            # isolation is live
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26"; }
 : >"$RAN"; : >"$CALLS"
 POST_REBOOT=0 install_run >/dev/null 2>&1
 check "I5: proceeded to Phase 8 (start_run ran)" "$(grep -c '^start_run$' "$RAN")" "1"
 check "I5: reboot_done now latched"              "$(state_has reboot_done && echo y || echo n)" "y"
 check "I5: NO second reboot issued"              "$(grep -c 'systemctl reboot' "$CALLS")" "0"
 check_false "I5: did NOT (re)write a resume service" "[[ -f \"$RESUME_SERVICE_FILE\" ]]"
+
+echo "== R1: the GRUB parameters of a box with nothing isolated (_install_grub_params_live) =="
+_install_read_cmdline() { echo "ro quiet isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26"; }
+check_true  "a set: its isolcpus value is on the command line"     '_install_grub_params_live 1-2,25-26'
+check_false "a set: another value is not"                           '_install_grub_params_live 1-4,25-28'
+_install_read_cmdline() { echo "ro quiet amd_pstate=passive nvme_core.default_ps_max_latency_us=0"; }
+check_true  "no set: the two fixed parameters, no isolcpus"         '_install_grub_params_live ""'
+_install_read_cmdline() { echo "ro quiet amd_pstate=passive"; }
+check_false "no set: nvme_core missing"                              '_install_grub_params_live ""'
+_install_read_cmdline() { echo "ro quiet nvme_core.default_ps_max_latency_us=0"; }
+check_false "no set: amd_pstate missing"                             '_install_grub_params_live ""'
+_install_read_cmdline() { echo "ro quiet"; }
+check_false "no set: neither there yet"                              '_install_grub_params_live ""'
+_install_read_cmdline() { echo "ro quiet amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
+check_false "no set: an older install's isolation still on the line = not rebooted onto the new GRUB" '_install_grub_params_live ""'
+
+echo "== R1: the reboot gate accepts an empty isolated set (no XDP cores, nothing isolated) =="
+reset_state; DZ_ENABLED=false
+state_set reboot_required 1                       # isolated_set stays empty
+_install_read_isolated() { echo ""; }
+_install_read_cmdline()  { echo "ro quiet"; }     # not rebooted yet
+: >"$RAN"; : >"$CALLS"
+install_run >"$WORK/gate0.out" 2>&1
+check "empty set, pre-reboot: phase 8 NOT run, the box is asked to reboot" "$(grep -c '^start_run$' "$RAN")|$(grep -c 'systemctl reboot' "$CALLS")|$(grep -c 'enable deeploy-resume.service' "$CALLS")" "0|1|1"
+check "empty set, pre-reboot: the step names the GRUB parameters, not an isolation" "$(grep -c 'Reboot required to apply the GRUB kernel parameters' "$WORK/gate0.out")|$(grep -c 'Reboot required to apply CPU isolation' "$WORK/gate0.out")" "1|0"
+: >"$RAN"; : >"$CALLS"
+POST_REBOOT=1 install_run >"$WORK/gate1.out" 2>&1; GRC=$?; POST_REBOOT=0
+check "empty set, post-reboot: nothing to verify, phase 8 runs, reboot_done latched" "$GRC|$(grep -c 'No isolated set recorded' "$WORK/gate1.out")|$(grep -c '^start_run$' "$RAN")|$(state_has reboot_done && echo y || echo n)" "0|1|1|y"
+# a manual --resume after the reboot already happened: the booted line carries the two parameters, no isolcpus
+reset_state; mark_07_done; state_set reboot_required 1; state_set reboot_pending "earlier-ts"
+_install_read_cmdline()  { echo "ro quiet amd_pstate=passive nvme_core.default_ps_max_latency_us=0"; }
+: >"$RAN"; : >"$CALLS"
+POST_REBOOT=0 install_run >"$WORK/gate2.out" 2>&1
+check "empty set, manual --resume after the reboot: phase 8 runs, no second reboot" "$(grep -c '^start_run$' "$RAN")|$(grep -c 'systemctl reboot' "$CALLS")|$(grep -c 'Reboot for the GRUB kernel parameters already applied' "$WORK/gate2.out")" "1|0|1"
+# ... but not while the older install's isolation is still the booted one
+reset_state; mark_07_done; state_set reboot_required 1; state_set reboot_pending "earlier-ts"
+_install_read_cmdline()  { echo "ro quiet amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,10,25-26,34"; }
+: >"$RAN"; : >"$CALLS"
+POST_REBOOT=0 install_run >"$WORK/gate3.out" 2>&1
+check "empty set, the older isolation still booted: asks for the reboot, phase 8 not run" "$(grep -c '^start_run$' "$RAN")|$(grep -c 'systemctl reboot' "$CALLS")" "0|1"
+_install_read_isolated() { echo "1-2,25-26"; }
+_install_read_cmdline()  { echo "isolcpus=domain,managed_irq,1-2,25-26"; }
 
 echo "== R1: a degraded (non-zero) start_run does NOT mark phase 8 done =="
 # start_run returns non-zero when the node never synced (catchup failed). Under

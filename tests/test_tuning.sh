@@ -27,6 +27,9 @@ check_true() { if eval "$2"; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; e
 check_false(){ if eval "$2"; then FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; else PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; fi; }
 
 DRY_RUN=0 common_init
+# POH_CORE was a setting of an older tuning.sh and nothing reads it now. Defined (empty) so that this suite, run against
+# that older code, fails its checks instead of set -u ending the file at the first tuning_grub.
+POH_CORE=""
 
 # Parameterized AMD topology: physical core c (c < total/2) -> "c,c+total/2".
 MOCK_TOTAL=48
@@ -52,95 +55,188 @@ update-grub(){
         >"$GCFG"
 }
 
-iso() { MOCK_TOTAL=$1 _isolation_compute "$1" "$2" "$3"; }   # sets _ISO_SET / _ISO_IRQ
+iso() { MOCK_TOTAL=$1 _isolation_compute "$1" "$2"; }   # <total> <xdp count>; sets _ISO_SET / _ISO_IRQ / _ISO_XDP
 
 echo "== list helpers =="
 check "_expand_list ranges" "$(_expand_list '1-2,10,25-26' | tr '\n' ' ')" "1 2 10 25 26 "
 check "_compress_ranges"    "$(printf '%s\n' 0 1 3 4 5 7 | _compress_ranges)" "0-1,3-5,7"
 
-echo "== isolation math vs the memo's hand-built variants =="
-iso 48 2 0;  check "POH2/48  set"  "$_ISO_SET" "2,26";              check "POH2/48  irq"  "$_ISO_IRQ" "0-1,3-25,27-47"
-iso 48 10 0; check "POH10/48 set"  "$_ISO_SET" "10,34";             check "POH10/48 irq"  "$_ISO_IRQ" "0-9,11-33,35-47"
-iso 32 2 0;  check "POH2/32  set"  "$_ISO_SET" "2,18";              check "POH2/32  irq"  "$_ISO_IRQ" "0-1,3-17,19-31"
-iso 32 10 0; check "POH10/32 set"  "$_ISO_SET" "10,26";             check "POH10/32 irq"  "$_ISO_IRQ" "0-9,11-25,27-31"
-iso 64 2 0;  check "POH2/64  set"  "$_ISO_SET" "2,34";              check "POH2/64  irq"  "$_ISO_IRQ" "0-1,3-33,35-63"
-iso 192 2 0; check "POH2/192 set"  "$_ISO_SET" "2,98";              check "POH2/192 irq"  "$_ISO_IRQ" "0-1,3-97,99-191"
+echo "== isolation math: the XDP cores and their SMT siblings, from CPU 1 up =="
+iso 48 1;  check "1 xdp/48  set" "$_ISO_SET" "1,25";      check "1 xdp/48  irq" "$_ISO_IRQ" "0,2-24,26-47";    check "1 xdp/48  xdp" "$_ISO_XDP" "1"
+iso 48 2;  check "2 xdp/48  set" "$_ISO_SET" "1-2,25-26";  check "2 xdp/48  irq" "$_ISO_IRQ" "0,3-24,27-47";    check "2 xdp/48  xdp" "$_ISO_XDP" "1-2"
+iso 48 4;  check "4 xdp/48  set" "$_ISO_SET" "1-4,25-28";  check "4 xdp/48  irq" "$_ISO_IRQ" "0,5-24,29-47";    check "4 xdp/48  xdp" "$_ISO_XDP" "1-4"
+iso 32 2;  check "2 xdp/32  set" "$_ISO_SET" "1-2,17-18";  check "2 xdp/32  irq" "$_ISO_IRQ" "0,3-16,19-31";    check "2 xdp/32  xdp" "$_ISO_XDP" "1-2"
+iso 64 2;  check "2 xdp/64  set" "$_ISO_SET" "1-2,33-34";  check "2 xdp/64  irq" "$_ISO_IRQ" "0,3-32,35-63";    check "2 xdp/64  xdp" "$_ISO_XDP" "1-2"
+iso 192 2; check "2 xdp/192 set" "$_ISO_SET" "1-2,97-98";  check "2 xdp/192 irq" "$_ISO_IRQ" "0,3-96,99-191";   check "2 xdp/192 xdp" "$_ISO_XDP" "1-2"
+# CPU 0 stays out: without --poh-pinned-cpu-core the client counts it as the PoH
+# core and refuses XDP cores that include it (execute.rs 1515-1532). Its SMT
+# sibling is no physical-core primary, so it is no XDP core either.
+cpu_in() { _expand_list "$2" | grep -qx "$1"; }       # <cpu> <list>
+for t in 8 32 48 64 192; do
+    iso "$t" 3
+    check_false "CPU 0 is never isolated ($t CPUs, 3 xdp)"                 "cpu_in 0 \"\$_ISO_SET\""
+    check_false "CPU 0's SMT sibling is never an XDP core ($t CPUs)"       "cpu_in $((t / 2)) \"\$_ISO_XDP\""
+    check_false "CPU 0's SMT sibling is not isolated either ($t CPUs)"     "cpu_in $((t / 2)) \"\$_ISO_SET\""
+done
+echo "== isolation math: no XDP cores, nothing isolated =="
+iso 48 0; check "0 xdp/48: set"  "$_ISO_SET" "";  check "0 xdp/48: irq" "$_ISO_IRQ" "";  check "0 xdp/48: xdp" "$_ISO_XDP" ""
+iso 48 ""; check "xdp count empty: nothing isolated" "$_ISO_SET|$_ISO_IRQ|$_ISO_XDP" "||"
+# Stale values of an earlier call must not survive a call that isolates nothing.
+iso 48 2; iso 48 0
+check "a call with no XDP cores clears the earlier answer" "$_ISO_SET|$_ISO_IRQ|$_ISO_XDP" "||"
+iso 2 4;  check "a box whose only core is CPU 0 has nothing to reserve" "$_ISO_SET|$_ISO_IRQ|$_ISO_XDP" "||"
+iso 8 10; check "more XDP cores asked than the box has: every core but core 0" "$_ISO_SET|$_ISO_IRQ|$_ISO_XDP" "1-3,5-7|0,4|1-3"
 
-echo "== isolation math with reserved XDP cores (memo LAST_clear variants) =="
-iso 48 10 2; check "POH10+2xdp set" "$_ISO_SET" "1-2,10,25-26,34"; check "POH10+2xdp irq" "$_ISO_IRQ" "0,3-9,11-24,27-33,35-47"
-iso 48 10 4; check "POH10+4xdp set" "$_ISO_SET" "1-4,10,25-28,34"; check "POH10+4xdp irq" "$_ISO_IRQ" "0,5-9,11-24,29-33,35-47"
+echo "== no PoH core in phase 2 =="
+check_false "_default_poh_core is gone" 'declare -F _default_poh_core >/dev/null'
+check_false "_valid_cpu is gone"        'declare -F _valid_cpu >/dev/null'
+check       "TUNING_DEFAULT_POH_CORE is gone" "${TUNING_DEFAULT_POH_CORE-<unset>}" "<unset>"
 
-echo "== _default_poh_core / _valid_cpu =="
-MOCK_TOTAL=48; check "default PoH core = 10 (prod)"        "$(_default_poh_core 48)" "10"
-MOCK_TOTAL=8;  check "small box falls back to 3rd primary" "$(_default_poh_core 8)"  "2"
-MOCK_TOTAL=48
-check_true  "valid cpu 2/48"  "_valid_cpu 2 48"
-check_false "cpu 48/48 invalid" "_valid_cpu 48 48"
-check_false "cpu abc invalid"   "_valid_cpu abc 48"
-
-echo "== DEFAULT layout: PoH=10 + XDP=2 (retransmit supported) -> 1-2,10,25-26,34 =="
+echo "== DEFAULT layout: XDP=2 (retransmit supported) -> 1-2,25-26, and no PoH question =="
+rm -f "$WORK/asked" "$WORK/resolved"
 state_set retransmit_supported 1
-unset POH_CORE XDP_CORES_COUNT; MOCK_TOTAL=48
-tuning_resolve_config >/dev/null 2>&1
-check "default POH_CORE=10"       "$POH_CORE" "10"
-check "default XDP_CORES_COUNT=2" "$XDP_CORES_COUNT" "2"
-_isolation_compute "$TUNE_TOTAL" "$POH_CORE" "$XDP_CORES_COUNT"
-check "default isolated set"  "$_ISO_SET" "1-2,10,25-26,34"
-check "default irqaffinity"   "$_ISO_IRQ" "0,3-9,11-24,27-33,35-47"
+( ask() { printf '%s\n' "$1" >>"$WORK/asked"; REPLY=$2; }
+  unset POH_CORE XDP_CORES_COUNT; MOCK_TOTAL=48
+  tuning_resolve_config >/dev/null 2>&1
+  printf '%s|%s\n' "$XDP_CORES_COUNT" "${POH_CORE:-<unset>}" >"$WORK/resolved" )
+check "default XDP_CORES_COUNT=2, POH_CORE not set"   "$(cat "$WORK/resolved")" "2|<unset>"
+check "the XDP question is asked"                       "$(grep -c 'XDP retransmit' "$WORK/asked")" "1"
+check "no question names the PoH core"                 "$(grep -ci 'poh' "$WORK/asked")" "0"
+check "no poh_core recorded in state"                  "$(state_get poh_core '<none>')" "<none>"
+check "state records xdp_cores_count=2"                "$(state_get xdp_cores_count)" "2"
+# A POH_CORE left in the environment (an older conf or habit) is not a setting: not
+# validated, not recorded, and no reason to stop.
+( export POH_CORE=999; tuning_resolve_config ) >/dev/null 2>&1
+check "an invalid POH_CORE in the environment does not stop phase 2" "$?" "0"
+check "and it is not recorded either"                  "$(state_get poh_core '<none>')" "<none>"
+unset XDP_CORES_COUNT; TUNE_TOTAL=48; MOCK_TOTAL=48
+_isolation_compute "$TUNE_TOTAL" 2
+check "default isolated set"  "$_ISO_SET" "1-2,25-26"
+check "default irqaffinity"   "$_ISO_IRQ" "0,3-24,27-47"
 check "default xdp_cores"     "$_ISO_XDP" "1-2"
-# Without retransmit support, no XDP cores reserved -> simple 10,34.
+# Without retransmit support no XDP cores are reserved, and then nothing is isolated.
 state_set retransmit_supported 0
-unset POH_CORE XDP_CORES_COUNT
-tuning_resolve_config >/dev/null 2>&1
-check "unsupported NIC: XDP=0" "$XDP_CORES_COUNT" "0"
-_isolation_compute "$TUNE_TOTAL" "$POH_CORE" "$XDP_CORES_COUNT"
-check "unsupported isolated set" "$_ISO_SET" "10,34"
+( unset POH_CORE XDP_CORES_COUNT; MOCK_TOTAL=48
+  tuning_resolve_config >/dev/null 2>&1
+  printf '%s\n' "$XDP_CORES_COUNT" >"$WORK/resolved" )
+check "unsupported NIC: XDP=0" "$(cat "$WORK/resolved")" "0"
+_isolation_compute 48 0
+check "unsupported NIC: nothing isolated" "$_ISO_SET|$_ISO_IRQ|$_ISO_XDP" "||"
 
 echo "== _grub_strip_managed preserves base, drops managed =="
-STRIP=$(_grub_strip_managed "quiet vendor ds=vendor console=tty0 amd_pstate=passive isolcpus=domain,managed_irq,2,26 nohz_full=2,26 rcu_nocbs=2,26 irqaffinity=0-1,3-25,27-47 nvme_core.default_ps_max_latency_us=0")
+STRIP=$(_grub_strip_managed "quiet vendor ds=vendor console=tty0 amd_pstate=passive isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34 rcu_nocbs=1-2,10,25-26,34 irqaffinity=0,3-9,11-24,27-33,35-47 nvme_core.default_ps_max_latency_us=0")
 check "strip keeps base only" "$STRIP" "quiet vendor ds=vendor console=tty0"
 
 echo "== tuning_grub: compose, preserve base, idempotent, state =="
 G="$WORK/grub"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=ttyS0,115200n8 console=tty0"' 'GRUB_TIMEOUT=5' >"$G"
-MOCK_TOTAL=48; TUNE_TOTAL=48; POH_CORE=2; XDP_CORES_COUNT=0; GRUB_FILE="$G"
+MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=2; GRUB_FILE="$G"
 tuning_grub >/dev/null 2>&1
-EXPECT='GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=ttyS0,115200n8 console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,2,26 nohz_full=2,26 rcu_nocbs=2,26 irqaffinity=0-1,3-25,27-47"'
+EXPECT='GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=ttyS0,115200n8 console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26 rcu_nocbs=1-2,25-26 irqaffinity=0,3-24,27-47"'
 check "grub line composed (base preserved + isolation appended)" "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$G")" "$EXPECT"
 check "unrelated grub lines untouched" "$(grep -c '^GRUB_TIMEOUT=5' "$G")" "1"
 BEFORE=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$G")
 tuning_grub >/dev/null 2>&1   # re-run
 check "grub idempotent (strip+readd = same)" "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$G")" "$BEFORE"
 check "reboot_required recorded" "$(state_get reboot_required)" "1"
-check "isolated_set recorded"    "$(state_get isolated_set)" "2,26"
-check "irqaffinity recorded"     "$(state_get irqaffinity)" "0-1,3-25,27-47"
+check "isolated_set recorded"    "$(state_get isolated_set)" "1-2,25-26"
+check "irqaffinity recorded"     "$(state_get irqaffinity)" "0,3-24,27-47"
+check "xdp_cores recorded"       "$(state_get xdp_cores)" "1-2"
 
 echo "== I1: tuning_grub CLEARS the stale reboot_done/reboot_pending latch on re-arm =="
 # A sanctioned re-tune re-arms reboot_required; the stale completion latch must be
 # cleared so the reboot boundary forces a fresh reboot instead of proceeding to
 # Phase 8 against the OLD, still-live kernel isolation.
 state_set reboot_done "stale-ts"; state_set reboot_pending "stale-ts"
-POH_CORE=2 tuning_grub >/dev/null 2>&1
+tuning_grub >/dev/null 2>&1
 check "I1: reboot_required re-armed"     "$(state_get reboot_required)" "1"
 check "I1: stale reboot_done CLEARED"    "$(state_has reboot_done && echo y || echo n)" "n"
 check "I1: stale reboot_pending CLEARED" "$(state_has reboot_pending && echo y || echo n)" "n"
 
-echo "== POH change 2 -> 10 re-run: exactly one isolcpus, new value, no concat =="
+echo "== XDP cores change 2 -> 4 re-run: exactly one isolcpus, new value, no concat =="
 GC="$WORK/grubchg"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"' >"$GC"
-MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=0; GRUB_FILE="$GC"
-POH_CORE=2;  tuning_grub >/dev/null 2>&1
-POH_CORE=10; tuning_grub >/dev/null 2>&1
+MOCK_TOTAL=48; TUNE_TOTAL=48; GRUB_FILE="$GC"
+XDP_CORES_COUNT=2; tuning_grub >/dev/null 2>&1
+XDP_CORES_COUNT=4; tuning_grub >/dev/null 2>&1
 GLINE=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GC")
 check "exactly one isolcpus= token"     "$(grep -o 'isolcpus=' <<<"$GLINE" | wc -l | tr -d ' ')"   "1"
 check "exactly one irqaffinity= token"  "$(grep -o 'irqaffinity=' <<<"$GLINE" | wc -l | tr -d ' ')" "1"
-check "isolcpus has NEW value 10,34"    "$(grep -c 'isolcpus=domain,managed_irq,10,34' "$GC")"      "1"
-check "old value 2,26 fully gone"       "$(grep -c '2,26' "$GC")"                                   "0"
+check "isolcpus has NEW value 1-4,25-28" "$(grep -c 'isolcpus=domain,managed_irq,1-4,25-28' "$GC")"  "1"
+check "old value 1-2,25-26 fully gone"  "$(grep -c '1-2,25-26' "$GC")"                              "0"
+
+echo "== R1: over an older install the old isolation, PoH core and sibling included, is replaced =="
+# What an older DeePloy left on a 48-CPU box: PoH core 10 (sibling 34) + XDP 1-2.
+GO="$WORK/grub_old"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34 rcu_nocbs=1-2,10,25-26,34 irqaffinity=0,3-9,11-24,27-33,35-47"' 'GRUB_TIMEOUT=5' >"$GO"
+MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=2; GRUB_FILE="$GO"
+state_set reboot_done "2026-10-20T00:00:00Z"
+tuning_grub >"$WORK/old.out" 2>&1
+check "old install: exit 0" "$?" "0"
+OLDL=$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GO")
+check "old install: the line is the base + the NEW parameters only" "$OLDL" \
+    'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor ds=vendor console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26 rcu_nocbs=1-2,25-26 irqaffinity=0,3-24,27-47"'
+check "old install: the PoH core and its sibling are gone (10,34)" "$(grep -c '10,34' "$GO")" "0"
+check "old install: one isolcpus, one nohz_full, one rcu_nocbs, one irqaffinity" \
+    "$(grep -o 'isolcpus=' <<<"$OLDL" | wc -l | tr -d ' ')$(grep -o 'nohz_full=' <<<"$OLDL" | wc -l | tr -d ' ')$(grep -o 'rcu_nocbs=' <<<"$OLDL" | wc -l | tr -d ' ')$(grep -o 'irqaffinity=' <<<"$OLDL" | wc -l | tr -d ' ')" "1111"
+check "old install: unrelated lines kept" "$(grep -c '^GRUB_TIMEOUT=5' "$GO")" "1"
+check "old install: the generated cfg has the new set and not the old one" \
+    "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26 ' "$GCFG")|$(grep -c '10,34' "$GCFG")" "1|0"
+check "old install: the step names the XDP cores and no PoH core"   "$(grep -c 'CPU isolation (XDP cores=2, total CPUs=48)' "$WORK/old.out")|$(grep -ci 'poh' "$WORK/old.out")" "1|0"
+check "old install: says the change takes effect at the next planned reboot" "$(grep -c 'next planned reboot' "$WORK/old.out")" "1"
+check "old install: and that a staked node goes through its standby first"   "$(grep -c 'a staked node: move it to the standby first' "$WORK/old.out")" "1"
+check "old install: reboot re-armed, the stale latch cleared" \
+    "$(state_get reboot_required)|$(state_has reboot_done && echo y || echo n)" "1|n"
+# A run that has not been through the reboot gate (a fresh install) has no planned reboot to speak of.
+state_clear reboot_done
+tuning_grub >"$WORK/fresh.out" 2>&1
+check "no reboot gate behind it yet: no 'next planned reboot' line" "$(grep -c 'next planned reboot' "$WORK/fresh.out")" "0"
+
+echo "== R1: no XDP cores -> nothing isolated, GRUB keeps its two fixed parameters =="
+GN="$WORK/grub_noxdp"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"' 'GRUB_TIMEOUT=5' >"$GN"
+MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=0; GRUB_FILE="$GN"; GRUBD_CLOBBER=""
+state_clear reboot_required; state_set isolated_set "stale"; state_set irqaffinity "stale"; state_set xdp_cores "stale"
+tuning_grub >"$WORK/noxdp.out" 2>&1
+check "no XDP cores: exit 0" "$?" "0"
+check "no XDP cores: the line is the base + the two fixed parameters" "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GN")" \
+    'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0"'
+check "no XDP cores: no isolcpus, nohz_full, rcu_nocbs or irqaffinity in /etc/default/grub" "$(grep -cE 'isolcpus|nohz_full|rcu_nocbs|irqaffinity' "$GN")" "0"
+check "no XDP cores: none in the generated cfg either" "$(grep -cE 'isolcpus|nohz_full|rcu_nocbs|irqaffinity' "$GCFG")" "0"
+check "no XDP cores: the read-back says it checked the fixed parameters" "$(grep -c 'amd_pstate and nvme_core survived grub-mkconfig' "$WORK/noxdp.out")" "1"
+check "no XDP cores: the output says nothing is isolated" "$(grep -c 'nothing is isolated' "$WORK/noxdp.out")" "1"
+check "no XDP cores: the step names the XDP cores and no PoH core" "$(grep -c 'CPU isolation (XDP cores=0, total CPUs=48)' "$WORK/noxdp.out")|$(grep -ci 'poh' "$WORK/noxdp.out")" "1|0"
+check "no XDP cores: isolated_set, irqaffinity, xdp_cores are empty (stale values replaced)" \
+    "$(state_get isolated_set)|$(state_get irqaffinity)|$(state_get xdp_cores)" "||"
+check "no XDP cores: the reboot is armed all the same (the parameters need it)" "$(state_get reboot_required)" "1"
+BEFORE_N=$(cat "$GN")
+tuning_grub >/dev/null 2>&1
+check "no XDP cores: a re-run changes nothing" "$(cat "$GN")" "$BEFORE_N"
+# The same box after an older install: the old set is stripped and nothing replaces it.
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,10,34 nohz_full=10,34 rcu_nocbs=10,34 irqaffinity=0-9,11-33,35-47"' >"$GN"
+tuning_grub >/dev/null 2>&1
+check "no XDP cores over an older install: the old PoH-only set is stripped" \
+    "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GN")" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet amd_pstate=passive nvme_core.default_ps_max_latency_us=0"'
+# The read-back still guards the box: a drop-in that replaces the line loses the fixed parameters.
+GRUBD_CLOBBER="console=tty1 console=ttyS0,115200n8"
+state_clear reboot_required
+( tuning_grub ) >"$WORK/noxdp-clobber.out" 2>&1
+check "no XDP cores: a clobbering drop-in -> REFUSES" "$?" "1"
+check "no XDP cores: and the refusal names the missing parameters" "$(grep -c 'does not carry amd_pstate=passive and nvme_core.default_ps_max_latency_us=0' "$WORK/noxdp-clobber.out")" "1"
+check "no XDP cores: no reboot armed after the refusal" "$(state_get reboot_required)" ""
+# ... each of the two fixed parameters is checked, not just one of them
+for GRUBD_CLOBBER in "quiet amd_pstate=passive" "quiet nvme_core.default_ps_max_latency_us=0"; do
+    state_clear reboot_required
+    ( tuning_grub ) >/dev/null 2>&1
+    check "no XDP cores: the line kept only '${GRUBD_CLOBBER#quiet }' -> REFUSES" "$?" "1"
+done
+GRUBD_CLOBBER=""
+( DRY_RUN=1 tuning_grub ) >"$WORK/noxdp-dry.out" 2>&1
+check "no XDP cores: dry-run says what it would verify" "$(grep -c 'would read the generated grub.cfg back and verify amd_pstate=passive' "$WORK/noxdp-dry.out")" "1"
 
 echo "== N13: GRUB read/write symmetry — both quote styles, duplicates collapse =="
 # single-quoted provider file: base params must survive the rewrite (the old
 # double-quote-only read returned empty -> console=ttyS0 was silently dropped).
 GS="$WORK/grub_squote"
 printf '%s\n' "GRUB_CMDLINE_LINUX_DEFAULT='quiet console=ttyS0,115200n8'" >"$GS"
-MOCK_TOTAL=48; TUNE_TOTAL=48; POH_CORE=2; XDP_CORES_COUNT=0; GRUB_FILE="$GS"
+MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=2; GRUB_FILE="$GS"
 tuning_grub >/dev/null 2>&1
 check "single-quoted: provider params preserved + merged" "$(grep -c 'quiet console=ttyS0,115200n8 amd_pstate=passive' "$GS")" "1"
 check "single-quoted: exactly one cmdline line"           "$(grep -c '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GS")" "1"
@@ -270,12 +366,12 @@ echo "== G1: the generated grub.cfg is the source of truth, not what we wrote ==
 # DeePloy just wrote, update-grub still exits 0, and the box reboots with no
 # isolation. Only reading the output catches that.
 GG="$WORK/grub_g1"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' 'GRUB_TIMEOUT=5' >"$GG"
-MOCK_TOTAL=48; TUNE_TOTAL=48; POH_CORE=2; XDP_CORES_COUNT=0; GRUB_FILE="$GG"; GRUBD_CLOBBER=""
+MOCK_TOTAL=48; TUNE_TOTAL=48; XDP_CORES_COUNT=2; GRUB_FILE="$GG"; GRUBD_CLOBBER=""
 state_clear reboot_required; state_clear isolated_set
 tuning_grub >/dev/null 2>&1
 check "G1: clean box -> tuning_grub succeeds"      "$?" "0"
 check "G1: and the generated cfg carries isolcpus" \
-      "$(grep -c 'isolcpus=domain,managed_irq,2,26' "$GCFG")" "1"
+      "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26' "$GCFG")" "1"
 check "G1: reboot armed"                           "$(state_get reboot_required)" "1"
 OUTG1=$(tuning_grub 2>&1 || true)
 check "G1: and it says where it verified"          "$(grep -c 'survived grub-mkconfig' <<<"$OUTG1")" "1"
@@ -285,7 +381,7 @@ GRUBD_CLOBBER="console=tty1 console=ttyS0,115200n8"
 state_clear reboot_required
 ( tuning_grub ) >/dev/null 2>&1
 check "G1: drop-in clobbers the cmdline -> REFUSES" "$?" "1"
-check "G1: and the input file still looks right"    "$(grep -c 'isolcpus=domain,managed_irq,2,26' "$GG")" "1"
+check "G1: and the input file still looks right"    "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26' "$GG")" "1"
 
 # The refusal must name the drop-in on THIS box, found at that moment — not a
 # filename the repo remembers. Fixture is deliberately not 50-cloudimg-settings:
@@ -310,7 +406,7 @@ unset GRUB_D_DIR
 check "G1: NO reboot armed after the refusal"       "$(state_get reboot_required)" ""
 
 # Partial application is not application: isolcpus present, nohz_full gone.
-GRUBD_CLOBBER="quiet isolcpus=domain,managed_irq,2,26"
+GRUBD_CLOBBER="quiet isolcpus=domain,managed_irq,1-2,25-26"
 ( tuning_grub ) >/dev/null 2>&1
 check "G1: isolcpus without nohz_full -> REFUSES"   "$?" "1"
 OUTG3=$( ( tuning_grub ) 2>&1 || true )

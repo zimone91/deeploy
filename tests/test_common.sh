@@ -104,7 +104,7 @@ check "atomic: failed rename leaves the OLD value" "$(state_get atomkey)" "v2"
 check "atomic: no temp litter left behind"  "$(find "$DEEPLOY_STATE_DIR/state.d" -name '.atomkey.*' | wc -l | tr -d ' ')" "0"
 
 echo "== non-interactive prompts use defaults =="
-ask "PoH core" "2";                         check "ask default"        "$REPLY" "2"
+ask "XDP cores" "2";                        check "ask default"        "$REPLY" "2"
 ask_choice "MEV mode" "bam" bam relayer none; check "ask_choice default" "$REPLY" "bam"
 confirm "proceed?" "Y";                      check "confirm default Y"  "$?" "0"
 require_yes "wipe disk?" && rc=0 || rc=1;    check "require_yes refuses non-interactive" "$rc" "1"
@@ -202,11 +202,22 @@ state_clear shkeep; state_clear shgone; clear_phase 6
 
 echo "== ensure_block replaces by marker when content changes (A->B) =="
 BK2="$WORK/grub.block"
-ensure_block "$BK2" "poh" "isolcpus=domain,managed_irq,2,26"
-ensure_block "$BK2" "poh" "isolcpus=domain,managed_irq,10,34"   # content changed
-check "exactly one begin marker (no second block)" "$(grep -c '>>> deeploy:poh >>>' "$BK2")" "1"
-check "new content present" "$(grep -c '2,26' "$BK2")" "0"
-check "old content gone"    "$(grep -c '10,34' "$BK2")" "1"
+ensure_block "$BK2" "iso" "isolcpus=domain,managed_irq,1-2,25-26"
+ensure_block "$BK2" "iso" "isolcpus=domain,managed_irq,1-4,25-28"   # content changed
+check "exactly one begin marker (no second block)" "$(grep -c '>>> deeploy:iso >>>' "$BK2")" "1"
+check "new content present" "$(grep -c '1-4,25-28' "$BK2")" "1"
+check "old content gone"    "$(grep -c '1-2,25-26' "$BK2")" "0"
+
+echo "== deeploy_poh_pin_files: the four files an older install wrote for PoH pinning =="
+state_clear solana_home
+check "defaults: the scripts in /root/solana, the units beside /etc/systemd/system/solana.service" \
+      "$( unset SOLANA_SERVICE; deeploy_poh_pin_files | tr '\n' ' ' )" \
+      "/root/solana/set_poh_affinity.sh /root/solana/wait_and_pin_poh.sh /etc/systemd/system/solana-poh-pin.service /etc/systemd/system/solana-poh-pin.timer "
+state_set solana_home /srv/sol
+check "solana_home from state, units beside SOLANA_SERVICE" \
+      "$( SOLANA_SERVICE=/x/units/solana.service deeploy_poh_pin_files | tr '\n' ' ' )" \
+      "/srv/sol/set_poh_affinity.sh /srv/sol/wait_and_pin_poh.sh /x/units/solana-poh-pin.service /x/units/solana-poh-pin.timer "
+state_clear solana_home
 
 echo "== backup captures ORIGINAL before overwrite =="
 OF="$WORK/orig.conf"

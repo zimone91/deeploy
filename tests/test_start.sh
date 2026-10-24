@@ -187,11 +187,10 @@ check "it POLLED 3x (did NOT abort on the 1st failure)"       "$(grep -c '^http:
 check "each failed read is a status line"                     "$(grep -c "catchup: no slot from the node's RPC at http://127.0.0.1:8899 (elapsed" <<<"$e_out")" "2"
 check "it reported caught up at the end"                      "$(grep -c 'catchup: caught up (us:100 them:100)$' <<<"$e_out")" "1"
 
-echo "== H4: phase-8 PoH pin failure WARNS, does not abort the run (timer retries) =="
-printf '#!/bin/bash\nexit 3\n' >"$WORK/failpin.sh"; chmod +x "$WORK/failpin.sh"
-OUT=$( set -Eeuo pipefail; SET_POH_SCRIPT="$WORK/failpin.sh" start_pin_poh 2>&1 ); RC=$?
-check    "pin failure does not abort phase 8 (rc 0)" "$RC" "0"
-check_ge "pin failure surfaced as a warning"         "$(grep -ci 'did not succeed' <<<"$OUT")" "1"
+echo "== R4: phase 8 pins nothing — no PoH thread to pin under Alpenglow =="
+check_false "start_pin_poh is gone"                    'declare -F start_pin_poh >/dev/null'
+check       "start_resolve_config sets no SET_POH_SCRIPT" "${SET_POH_SCRIPT:-<unset>}" "<unset>"
+check       "start.sh no longer mentions the PoH pin"  "$(grep -ci 'pin_poh\|SET_POH_SCRIPT\|set_poh_affinity' "$ROOT/lib/start.sh")" "0"
 
 echo "== final summary: hot swap with the vote history (PATH form), no stdin, failover pointer =="
 SUM=$(start_print_summary 2>&1)
@@ -265,12 +264,12 @@ check "dry-run: a non-zero catchup rc is not 'incomplete'" "$(grep -c 'DEPLOYMEN
 echo "== R1: start_run returns non-zero on failed catchup (phase 8 not a clean success) =="
 _install_verify_isolation() { return 0; }   # pass the gate
 start_resolve_config() { :; }; start_precheck_disk() { :; }; start_enable_service() { :; }
-start_pin_poh() { :; }; verify_run() { :; }
+verify_run() { :; }
 start_wait_catchup() { return 1; }          # catchup failed / timed out
 OUT=$( ( start_run ) 2>&1 ); RC=$?
 check "R1: failed catchup -> start_run non-zero"       "$RC" "1"
 check "R1: failed catchup -> NOT 'synced (catchup 0)'" "$(grep -c 'synced (catchup 0)' <<<"$OUT")" "0"
-unset -f _install_verify_isolation start_resolve_config start_precheck_disk start_enable_service start_pin_poh verify_run start_wait_catchup
+unset -f _install_verify_isolation start_resolve_config start_precheck_disk start_enable_service verify_run start_wait_catchup
 # re-source to restore the real start_* functions the gate test below drives
 _DEEPLOY_START_SOURCED="" source "$ROOT/lib/start.sh"
 
@@ -281,13 +280,25 @@ echo "== I1/I2: start_run is isolation-gated — every route to start fails clos
 _install_verify_isolation() { return "${ISO_RC:-0}"; }
 start_resolve_config() { :; }; start_precheck_disk() { :; }
 start_enable_service() { echo "ENABLE" >>"$CALLS"; }
-start_wait_catchup() { :; }; start_pin_poh() { :; }; verify_run() { :; }; start_print_summary() { :; }
+start_wait_catchup() { :; }; verify_run() { :; }; start_print_summary() { :; }
 : >"$CALLS"; ISO_RC=1; ( start_run ) >/dev/null 2>&1; RC=$?
 check "gate: mismatch -> start_run aborts"        "$RC" "1"
 check "gate: mismatch -> service NEVER enabled"   "$(grep -c ENABLE "$CALLS")" "0"
 : >"$CALLS"; ISO_RC=0; start_run >/dev/null 2>&1
 check "gate: match -> service enabled (proceeds)" "$(grep -c ENABLE "$CALLS")" "1"
 unset -f _install_verify_isolation
+
+echo "== R4: phase 8 runs enable -> catchup -> verify -> summary, with no pin step between =="
+SEQ="$WORK/seq"
+start_resolve_config() { echo resolve >>"$SEQ"; }; start_precheck_disk() { echo precheck >>"$SEQ"; }
+start_enable_service() { echo enable >>"$SEQ"; }; start_wait_catchup() { echo catchup >>"$SEQ"; }
+verify_run() { echo verify >>"$SEQ"; }; start_print_summary() { echo summary >>"$SEQ"; }
+bash() { echo "bash $*" >>"$SEQ"; }       # a pin script would be run with bash
+SET_POH_SCRIPT="$WORK/pin-canary.sh"; : >"$SET_POH_SCRIPT"   # an older start would find this and run it
+: >"$SEQ"; start_run >/dev/null 2>&1
+check "the steps of phase 8, in order, and nothing else" "$(tr '\n' ' ' <"$SEQ")" "resolve precheck enable catchup verify summary "
+unset -f start_resolve_config start_precheck_disk start_enable_service start_wait_catchup verify_run start_print_summary bash
+unset SET_POH_SCRIPT
 
 echo ""
 echo "==================================="

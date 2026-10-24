@@ -41,8 +41,8 @@ VOTE="Vote1111111111111111111111111111111111111111"
 seed_state() {
     rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
     state_set ssh_port 2222
-    state_set poh_core 10;                state_set xdp_cores_count 2; state_set xdp_cores 1-2
-    state_set isolated_set "1-2,10,25-26,34"
+    state_set xdp_cores_count 2;          state_set xdp_cores 1-2
+    state_set isolated_set "1-2,25-26"
     state_set nic_driver mlx5_core;       state_set retransmit_supported 1; state_set retransmit_zero_copy 1
     state_set disk_layout two-nvme;       state_set ledger_disk /dev/nvme0n1; state_set accounts_disk /dev/nvme1n1
     state_set data_layout two-nvme        # this box's own record: never exported (R10-7b)
@@ -61,10 +61,12 @@ seed_state() {
 
 echo "== export: content, no key material, chmod 600 =="
 seed_state
+state_set poh_core 10                 # an older install's state still has it
 config_export >/dev/null 2>&1
 check_true "conf written"           "[[ -f \"$CONFIG_FILE\" ]]"
 check "SSH_PORT"                    "$(grep -c 'SSH_PORT=\"2222\"' "$CONFIG_FILE")" "1"
-check "POH_CORE"                    "$(grep -c 'POH_CORE=\"10\"' "$CONFIG_FILE")" "1"
+check "POH_CORE is no longer exported (an older install's state still has poh_core)" "$(grep -c 'POH_CORE' "$CONFIG_FILE")" "0"
+check "the XDP cores and the isolated set are"   "$(grep -c 'XDP_CORES_COUNT=\"2\"' "$CONFIG_FILE")|$(grep -c 'XDP_CORES=\"1-2\"' "$CONFIG_FILE")|$(grep -c 'ISOLATED_SET=\"1-2,25-26\"' "$CONFIG_FILE")" "1|1|1"
 check "JITO_TAG"                    "$(grep -c 'JITO_TAG=\"v4.0.0-jito\"' "$CONFIG_FILE")" "1"
 check "STAKED_KEYPAIR is a PATH"    "$(grep -c 'STAKED_KEYPAIR=\"/root/solana/mainnet-validator-keypair.json\"' "$CONFIG_FILE")" "1"
 # sync_identity (state) exports under the file-based conf key UNSTAKED_KEYPAIR; no FAKE_IDENTITY key anymore.
@@ -95,7 +97,8 @@ sed 's/^VOTE_ACCOUNT_PUBKEY=.*/VOTE_ACCOUNT_PUBKEY="bad!key"/' "$CONFIG_FILE" >"
 echo "== import: validate -> load into state =="
 rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
 RESCORE=0 config_import >/dev/null 2>&1
-check "imported poh_core"   "$(state_get poh_core)" "10"
+check "nothing recorded as poh_core"  "$(state_get poh_core '<none>')" "<none>"
+check "imported xdp_cores_count"       "$(state_get xdp_cores_count)" "2"
 check "imported vote"       "$(state_get vote_account_pubkey)" "$VOTE"
 check "imported staked path" "$(state_get staked_keypair)" "/root/solana/mainnet-validator-keypair.json"
 check "imported sync_identity (round-trips via UNSTAKED_KEYPAIR)" "$(state_get sync_identity)" "/root/solana/unstaked-identity.json"
@@ -194,7 +197,7 @@ type_accept() {   # <desc> <conf line> <KEY> <expected-global>
 }
 type_accept "portrange"  'DYNAMIC_PORT_RANGE="8900-9000"'   DYNAMIC_PORT_RANGE  "8900-9000"
 type_accept "ip"         'RPC_BIND_ADDRESS="127.0.0.1"'     RPC_BIND_ADDRESS    "127.0.0.1"
-type_accept "cores"      'XDP_CORES="1-2,10,25-26,34"'      XDP_CORES           "1-2,10,25-26,34"
+type_accept "cores"      'XDP_CORES="1-2,25-26"'            XDP_CORES           "1-2,25-26"
 type_accept "hostport"   'SHRED_RECEIVER_ADDRESS="1.2.3.4:1002"' SHRED_RECEIVER_ADDRESS "1.2.3.4:1002"
 type_accept "url"        'BAM_URL="https://a.b.jito.wtf"'   BAM_URL             "https://a.b.jito.wtf"
 type_accept "bool"       'DZ_ENABLED="true"'                DZ_ENABLED          "true"
@@ -214,8 +217,8 @@ echo "== N12: a malformed config applies NOTHING (atomic parse-then-commit) =="
 # The old parser set each valid global AS IT PARSED, then returned 1 — so the
 # caller's "ignoring malformed config" message was false. Probe keys on BOTH
 # sides of the bad line: neither may be applied.
-unset SSH_PORT POH_CORE 2>/dev/null || true
-printf '%s\n' 'SSH_PORT="2222"' 'BAM_URL="http://x y"' 'POH_CORE="10"' >"$WORK/n12.conf"
+unset SSH_PORT RPC_THREADS 2>/dev/null || true
+printf '%s\n' 'SSH_PORT="2222"' 'BAM_URL="http://x y"' 'RPC_THREADS="12"' >"$WORK/n12.conf"
 # Run in the CURRENT shell (adversarial-review fix): a $() capture is a
 # subshell, so printf -v assignments could never reach these probes and the
 # test passed even against the old apply-as-you-parse code. Output is captured
@@ -223,14 +226,46 @@ printf '%s\n' 'SSH_PORT="2222"' 'BAM_URL="http://x y"' 'POH_CORE="10"' >"$WORK/n
 _config_parse_safe "$WORK/n12.conf" >/dev/null 2>&1; N12RC=$?
 check "N12: malformed file -> rc1"                        "$N12RC" "1"
 check "N12: key BEFORE the bad line NOT applied"          "${SSH_PORT:-<unset>}" "<unset>"
-check "N12: key AFTER the bad line NOT applied"           "${POH_CORE:-<unset>}" "<unset>"
+check "N12: key AFTER the bad line NOT applied"           "${RPC_THREADS:-<unset>}" "<unset>"
 N12OUT=$(_config_parse_safe "$WORK/n12.conf" 2>&1 || true)
 check "N12: warn says nothing applied (message now true)" "$(grep -c 'nothing applied' <<<"$N12OUT")" "1"
 # a clean file behaves exactly as before: rc0, globals set
-printf '%s\n' 'SSH_PORT="2222"' 'POH_CORE="10"' >"$WORK/n12ok.conf"
+printf '%s\n' 'SSH_PORT="2222"' 'RPC_THREADS="12"' >"$WORK/n12ok.conf"
 _config_parse_safe "$WORK/n12ok.conf" >/dev/null 2>&1; N12OKRC=$?
 check "N12: clean file -> rc0"                            "$N12OKRC" "0"
-check "N12: clean file applies both keys"                 "${SSH_PORT:-x}/${POH_CORE:-x}" "2222/10"
+check "N12: clean file applies both keys"                 "${SSH_PORT:-x}/${RPC_THREADS:-x}" "2222/12"
+unset SSH_PORT RPC_THREADS 2>/dev/null || true
+
+echo "== R2: an older conf that still sets POH_CORE warns once and goes on =="
+# POH_CORE was a setting of an older DeePloy and is none now: the line is ignored
+# (never applied, never recorded), and a value that used to be refused is no reason to stop.
+unset POH_CORE 2>/dev/null || true
+for v in 10 abc 99999999999999999999 ""; do
+    printf '%s\n' 'SSH_PORT="2222"' "POH_CORE=\"$v\"" >"$WORK/poh.conf"
+    _config_parse_safe "$WORK/poh.conf" >"$WORK/poh.out" 2>&1; PRC=$?
+    check "POH_CORE=\"$v\": parse succeeds, one warning, no global" "$PRC|$(grep -c 'POH_CORE is ignored' "$WORK/poh.out")|${POH_CORE:-<unset>}" "0|1|<unset>"
+done
+printf '%s\n' 'SSH_PORT="2222"' 'POH_CORE="10"' 'POH_CORE="12"' >"$WORK/poh2.conf"
+_config_parse_safe "$WORK/poh2.conf" >"$WORK/poh.out" 2>&1
+check "a conf that sets it twice: still one warning" "$(grep -c 'POH_CORE is ignored' "$WORK/poh.out")" "1"
+printf '%s\n' 'SSH_PORT="2222"' 'RPC_THREADS="12"' >"$WORK/nopoh.conf"
+_config_parse_safe "$WORK/nopoh.conf" >"$WORK/poh.out" 2>&1
+check "a conf without it: no such warning" "$(grep -c 'POH_CORE' "$WORK/poh.out")" "0"
+printf '%s\n' 'SSH_PORT="2222"' 'POH_CORE="10"' >"$WORK/poh.conf"
+_config_parse_safe "$WORK/poh.conf" >"$WORK/poh.out" 2>&1
+check "the warning gives the reason: Alpenglow and PohService, naming the pinned tag" \
+      "$(grep -c "under Alpenglow jito-solana ${DEEPLOY_PIN_JITO_TAG} does not start PohService" "$WORK/poh.out")" "1"
+check "and does not say 'the client' (it names the build it measured)" "$(grep -c 'the client' "$WORK/poh.out")" "0"
+check "the other keys of that conf are applied" "${SSH_PORT:-x}" "2222"
+unset SSH_PORT
+# through config_import (the path of `import` and of `install --config`): the rest imports, poh_core is not recorded
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; seed_state; config_export >/dev/null 2>&1
+printf 'POH_CORE="10"\n' >>"$CONFIG_FILE"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"
+RESCORE=0 config_import >"$WORK/oldimp.out" 2>&1; IRC=$?
+check "an old exported conf imports (rc 0), with one warning" "$IRC|$(grep -c 'POH_CORE is ignored' "$WORK/oldimp.out")" "0|1"
+check "  nothing recorded as poh_core, the rest imported"    "$(state_get poh_core '<none>')|$(state_get xdp_cores)|$(state_get vote_account_pubkey)" "<none>|1-2|$VOTE"
+rm -rf "${DEEPLOY_STATE_DIR:?}/state.d"; mkdir -p "$DEEPLOY_STATE_DIR/state.d"; seed_state; config_export >/dev/null 2>&1   # the clean conf again
 
 echo "== P2: empty value SKIPPED (preserves default), export omits empties =="
 DZ_ENV="mainnet-beta"                                   # a default already in the global

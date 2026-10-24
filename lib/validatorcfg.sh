@@ -3,14 +3,15 @@
 # DeePloy — lib/validatorcfg.sh   (Phase 6: validator config)
 # Generates the runtime artifacts from state/config:
 #   validator.sh (labeled arg-arrays), solana.service (XDP caps, Nice,
-#   OOMScoreAdjust, ExecStartPost->poh-pin), logrotate, set_poh_affinity.sh,
-#   wait_and_pin_poh.sh, and the solana-poh-pin service+timer.
+#   OOMScoreAdjust) and logrotate.
 #
-# POH_CORE flows in from state (single source of truth -> both the
-# --poh-pinned-cpu-core arg AND set_poh_affinity.sh). RETRANSMIT ALWAYS states
-# the XDP decision (flags, or --no-xdp) — 4.2 made XDP opt-out. JITO is
-# BAM by default (commission-bps tied to mode); the DZ multicast shred is
-# appended as a 2nd --shred-receiver-address when enabled.
+# Nothing here configures PoH: under Alpenglow the pinned client does not start
+# PohService (see _isolation_compute in tuning.sh), so there is no PoH flag, pin
+# script or timer. An older install's PoH-pin files are removed on a re-run
+# (validatorcfg_remove_poh_pin). RETRANSMIT ALWAYS states the XDP decision
+# (flags, or --no-xdp) — 4.2 made XDP opt-out. JITO is BAM by default
+# (commission-bps tied to mode); the DZ multicast shred is appended as a 2nd
+# --shred-receiver-address when enabled.
 #
 # Requires: common.sh + constants.sh sourced. Output paths are overridable for
 # tests; everything goes through write_file (dry-run safe, backed up).
@@ -32,7 +33,6 @@ validatorcfg_resolve_config() {
     SOLANA_HOME="$(state_get solana_home /root/solana)"
     SYNC_IDENTITY="$(state_get sync_identity "$SOLANA_HOME/unstaked-identity.json")"
     VOTE_ACCOUNT_PUBKEY="$(state_get vote_account_pubkey "${VOTE_ACCOUNT_PUBKEY:-}")"
-    POH_CORE="$(state_get poh_core "${POH_CORE:-2}")"
     LEDGER_PATH="$(state_get ledger_path "$SOLANA_HOME/ledger")"
     ACCOUNTS_PATH="$(state_get accounts_path /mnt/accounts/solana/accounts)"
     SNAPSHOTS_PATH="$(state_get snapshots_path "$SOLANA_HOME/snapshots")"
@@ -52,7 +52,7 @@ validatorcfg_resolve_config() {
         warn "no recorded jito-solana build tag — assuming >= ${DEEPLOY_MIN_JITO_TAG}; validator.sh is rendered with flags that require it"
     else
         _vcfg_why="$(deeploy_tag_floor_problem "$_vcfg_tag")" \
-            || fail "refusing to render validator.sh for '${_vcfg_tag}': ${_vcfg_why}. The rendered flags (--no-xdp, --poh-pinned-cpu-core) first exist in ${DEEPLOY_MIN_JITO_TAG}, so this binary would reject them and the validator would not start. Upgrade the client first — '${DEEPLOY_CMD} upgrade' to ${DEEPLOY_MIN_JITO_TAG} or newer — then regenerate."
+            || fail "refusing to render validator.sh for '${_vcfg_tag}': ${_vcfg_why}. The rendered validator.sh passes --no-xdp where XDP is off, and --no-xdp first exists in ${DEEPLOY_MIN_JITO_TAG}, so this binary would reject it and the validator would not start. Upgrade the client first — '${DEEPLOY_CMD} upgrade' to ${DEEPLOY_MIN_JITO_TAG} or newer — then regenerate."
         _vcfg_note="$(deeploy_tag_recommendation_note "$_vcfg_tag")"
         [[ -z "$_vcfg_note" ]] || warn "${_vcfg_note}. Rendering for it anyway."
     fi
@@ -161,11 +161,7 @@ validatorcfg_resolve_config() {
     # local-fs mounts, so an on-mount unit is unreadable then and silently dropped
     # from the boot transaction — the validator would not auto-start (H1).
     SOLANA_SERVICE="${SOLANA_SERVICE:-/etc/systemd/system/solana.service}"
-    SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
-    WAIT_PIN_SCRIPT="${WAIT_PIN_SCRIPT:-$SOLANA_HOME/wait_and_pin_poh.sh}"
     LOGROTATE_FILE="${LOGROTATE_FILE:-/etc/logrotate.d/solana}"
-    POH_PIN_SERVICE="${POH_PIN_SERVICE:-/etc/systemd/system/solana-poh-pin.service}"
-    POH_PIN_TIMER="${POH_PIN_TIMER:-/etc/systemd/system/solana-poh-pin.timer}"
 
     [[ -n "$VOTE_ACCOUNT_PUBKEY" ]] || fail "vote_account_pubkey not set (run Phase 5 keys first)"
 }
@@ -187,7 +183,6 @@ _vcfg_assert_render_safe() {
     _cfg_validate_type int      "$RPC_THREADS"                      || bad+=" RPC_THREADS"
     _cfg_validate_type portrange "$DYNAMIC_PORT_RANGE"              || bad+=" DYNAMIC_PORT_RANGE"
     _cfg_validate_type int      "$REPLAY_THREADS"                   || bad+=" REPLAY_THREADS"
-    _cfg_validate_type int      "$POH_CORE"                         || bad+=" POH_CORE"
     _cfg_validate_type path     "$SOLANA_HOME"                      || bad+=" SOLANA_HOME"
     _cfg_validate_type path     "$LEDGER_PATH"                      || bad+=" LEDGER_PATH"
     _cfg_validate_type path     "$ACCOUNTS_PATH"                    || bad+=" ACCOUNTS_PATH"
@@ -274,7 +269,7 @@ _vcfg_render_validator_sh() {
     # No REPORTING block: the validator reports its OS stats (network, memory,
     # CPU, disk) with the rest of its metrics. The four
     # --no-os-*-stats-reporting flags that block carried turned them off.
-    local blocks=(CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT)
+    local blocks=(CONSENSUS GOSSIP RPC REPLAY RETRANSMIT)
     blocks+=(LEDGER SNAPSHOTS LOG JITO)
     exec_lines="exec agave-validator"
     for b in "${blocks[@]}"; do exec_lines+=" \\"$'\n'"  \"\${${b}[@]}\""; done
@@ -314,9 +309,6 @@ REPLAY=(
   --unified-scheduler-handler-threads "${REPLAY_THREADS}"
 )
 
-POH=(
-  --poh-pinned-cpu-core "${POH_CORE}"
-)
 ${retransmit_section}
 LEDGER=(
   --ledger "${LEDGER_PATH}"
@@ -397,7 +389,6 @@ Environment="SOLANA_METRICS_CONFIG=${SOLANA_METRICS_CONFIG_RESOLVED}"
 Environment="PATH=/bin:/usr/bin:${SOLANA_INSTALL_DIR}/active_release/bin"
 
 ExecStart=${VALIDATOR_SH}
-ExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service
 
 [Install]
 WantedBy=multi-user.target
@@ -418,142 +409,63 @@ ${SOLANA_HOME}/solana.log {
 EOF
 }
 
-# --- set_poh_affinity.sh (placeholder-substituted; no heredoc escaping) ------
-_vcfg_render_set_poh_affinity() {
-    local body
-    body=$(cat <<'EOF'
-#!/bin/bash
-# Pin the PoH tick-producer thread to the isolated core. Generated by DeePloy.
-agave_pid=$(pgrep -f "^agave-validator --identity")
-if [ -z "$agave_pid" ]; then logger "set_affinity: agave_validator_404"; exit 1; fi
-thread_pid=$(ps -T -p "$agave_pid" -o spid,comm | grep 'solPohTickProd' | awk '{print $1}')
-if [ -z "$thread_pid" ]; then logger "set_affinity: solPohTickProd_404"; exit 1; fi
-current_affinity=$(taskset -cp "$thread_pid" 2>&1 | awk '{print $NF}')
-if [ "$current_affinity" == "__POH_CORE__" ]; then
-    logger "set_affinity: solPohTickProd_already_set"; exit 0
-else
-    taskset -cp __POH_CORE__ "$thread_pid"; rc=$?
-    if [ "$rc" -eq 0 ]; then
-        logger "set_affinity: set_done"
-    else
-        logger "set_affinity: taskset_failed (exit $rc)"; exit "$rc"
-    fi
-fi
-EOF
-)
-    printf '%s\n' "${body//__POH_CORE__/$POH_CORE}"
-}
-
-# --- wait_and_pin_poh.sh -----------------------------------------------------
-# The catchup read is deeploy_catchup_status's (common.sh), standalone: two
-# getSlot calls of at most 5 s, the cluster's first, so every poll logs a line;
-# caught up within CAUGHT_UP_MAX_BEHIND slots (constants.sh), the same window.
-_vcfg_render_wait_and_pin() {
-    local body
-    body=$(cat <<'EOF'
-#!/bin/bash
-# Wait for the validator to catch up, then pin PoH. Generated by DeePloy.
-set -uo pipefail
-PIN_SCRIPT="__PIN_SCRIPT__"
-NODE_RPC="http://127.0.0.1:__RPC_PORT__"
-CLUSTER_RPC="__CLUSTER_RPC__"
-CAUGHT_UP_MAX_BEHIND=__CAUGHT_UP_MAX_BEHIND__
-MAX_WAIT_SECONDS=3600
-CHECK_INTERVAL=15
-log() { logger -t wait_and_pin_poh "$1"; echo "[$(date -Is)] $1"; }
-slot() {    # <url>: the slot at "confirmed", or nothing
-    curl -sS -m 5 -H 'Content-Type: application/json' \
-        -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"confirmed"}]}' "$1" 2>/dev/null \
-        | sed -nE 's/.*"result"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p'
-}
-log "Waiting for validator to catch up to cluster..."
-start_ts=$(date +%s)
-while true; do
-    now_ts=$(date +%s); elapsed=$((now_ts - start_ts))
-    if (( elapsed > MAX_WAIT_SECONDS )); then log "FATAL: timeout after ${MAX_WAIT_SECONDS}s"; exit 1; fi
-    if ! systemctl is-active --quiet solana; then log "solana.service not active, exiting"; exit 1; fi
-    them=$(slot "$CLUSTER_RPC"); us=$(slot "$NODE_RPC")
-    if [ -z "$us" ]; then status="no slot from the node's RPC at $NODE_RPC"
-    elif [ -z "$them" ]; then status="no slot from the cluster RPC at $CLUSTER_RPC (us:$us)"
-    elif (( them - us <= CAUGHT_UP_MAX_BEHIND )); then log "Caught up (us:$us them:$them)"; break
-    else status="$((them - us)) slots behind (us:$us them:$them)"; fi
-    log "Not caught up yet (elapsed ${elapsed}s): $status"
-    sleep "$CHECK_INTERVAL"
-done
-log "Pinning PoH thread..."
-bash "$PIN_SCRIPT"; pin_rc=$?
-log "PoH pin completed (exit $pin_rc)"
-exit "$pin_rc"
-EOF
-)
-    body="${body//__PIN_SCRIPT__/$SET_POH_SCRIPT}"
-    body="${body//__RPC_PORT__/$RPC_PORT}"
-    body="${body//__CLUSTER_RPC__/$DEFAULT_PUBLIC_RPC}"
-    body="${body//__CAUGHT_UP_MAX_BEHIND__/$CAUGHT_UP_MAX_BEHIND}"
-    printf '%s\n' "$body"
-}
-
-_vcfg_render_poh_pin_service() {
-    cat <<EOF
-[Unit]
-Description=Pin Solana PoH thread to isolated CPU core (after catchup)
-After=solana.service
-# Requisite, not Requires: if solana.service is not already active, FAIL this
-# oneshot instead of pulling the validator up (post-boot timer / manual stop). I3
-Requisite=solana.service
-
-[Service]
-Type=oneshot
-ExecStart=${WAIT_PIN_SCRIPT}
-TimeoutStartSec=3700
-EOF
-}
-
-_vcfg_render_poh_pin_timer() {
-    cat <<'EOF'
-[Unit]
-Description=Schedule PoH pin after validator startup
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1h
-Unit=solana-poh-pin.service
-
-[Install]
-WantedBy=timers.target
-EOF
+# --- an older install's PoH pinning ------------------------------------------
+# An older DeePloy wrote set_poh_affinity.sh, wait_and_pin_poh.sh and the
+# solana-poh-pin service + timer, and solana.service started the pin service
+# after every start. Under Alpenglow the pinned client has no PoH thread to pin
+# (see _isolation_compute in tuning.sh): the script exited 1 with
+# solPohTickProd_404 every hour and left the service failed. So a re-run removes
+# all four (deeploy_poh_pin_files, common.sh): stop and disable the timer and the
+# service, delete the files, one line per file, daemon-reload. It touches nothing
+# of solana.service and restarts nothing: the running validator keeps its argv
+# until its next planned restart.
+validatorcfg_remove_poh_pin() {
+    local f; local -a found=()
+    while IFS= read -r f; do
+        if [[ -e "$f" ]]; then found+=("$f"); fi
+    done < <(deeploy_poh_pin_files)
+    (( ${#found[@]} )) || return 0
+    step "Removing the PoH-pin units and scripts of an older DeePloy"
+    run systemctl disable --now solana-poh-pin.timer 2>/dev/null || true
+    run systemctl stop solana-poh-pin.service 2>/dev/null || true
+    run systemctl disable solana-poh-pin.service 2>/dev/null || true
+    for f in "${found[@]}"; do
+        run rm -f -- "$f"
+        is_dry_run || info "removed $f"
+    done
+    run systemctl daemon-reload
+    run systemctl reset-failed solana-poh-pin.service solana-poh-pin.timer 2>/dev/null || true
 }
 
 # --- generate ----------------------------------------------------------------
 validatorcfg_generate() {
-    step "Generating validator.sh + solana.service + poh-pin + logrotate"
+    step "Generating validator.sh + solana.service + logrotate"
     # Render validator.sh into a variable first so the X1 fail-closed gate (a
     # non-zero return from _vcfg_render_validator_sh) ABORTS here — a command
     # substitution's failure does not propagate to the enclosing write_file, so
     # without this an unvalidated value would silently produce an empty script.
-    local _vsh
+    local _vsh changed=0
     _vsh="$(_vcfg_render_validator_sh)" || fail "validator.sh render aborted — an untrusted value failed type validation; refusing to write an executable validator script"
+    # A validator.sh that differs from the one on disk reaches a RUNNING validator
+    # only at its next start: say so below. Phase 6 never restarts solana.
+    if [[ -e "$VALIDATOR_SH" ]] && ! cmp -s <(printf '%s' "$_vsh") "$VALIDATOR_SH"; then changed=1; fi
     write_file "$VALIDATOR_SH"    "$_vsh"                                0755
     write_file "$SOLANA_SERVICE"  "$(_vcfg_render_solana_service)"
-    write_file "$SET_POH_SCRIPT"  "$(_vcfg_render_set_poh_affinity)"    0755
-    write_file "$WAIT_PIN_SCRIPT" "$(_vcfg_render_wait_and_pin)"        0755
     write_file "$LOGROTATE_FILE"  "$(_vcfg_render_logrotate)"
-    write_file "$POH_PIN_SERVICE" "$(_vcfg_render_poh_pin_service)"
-    write_file "$POH_PIN_TIMER"   "$(_vcfg_render_poh_pin_timer)"
+    validatorcfg_remove_poh_pin
 
     # solana.service is written DIRECTLY to /etc/systemd/system as a real file
     # (see SOLANA_SERVICE) — no on-mount symlink, so it is readable at early boot
-    # before the data mounts come up (H1). Enablement (idempotent); skipped under
-    # --dry-run via run().
+    # before the data mounts come up (H1). Skipped under --dry-run via run().
     run systemctl daemon-reload
-    run systemctl enable solana-poh-pin.timer
 
-    # bash -n the generated runtime scripts.
+    # bash -n the generated runtime script.
     if ! is_dry_run; then
         bash -n "$VALIDATOR_SH"    || fail "Generated validator.sh has a syntax error"
-        bash -n "$SET_POH_SCRIPT"  || fail "Generated set_poh_affinity.sh has a syntax error"
-        bash -n "$WAIT_PIN_SCRIPT" || fail "Generated wait_and_pin_poh.sh has a syntax error"
         ok "Generated scripts pass bash -n"
+    fi
+    if (( changed )) && ! is_dry_run && systemctl is-active --quiet solana.service 2>/dev/null; then
+        info "solana.service is running and keeps the arguments it started with. The new validator.sh takes effect at the next planned restart — a staked node: move it to the standby first."
     fi
 }
 

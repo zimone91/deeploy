@@ -26,7 +26,6 @@ _config_keys() {
 @ Network and SSH
 SSH_PORT ssh_port
 @ CPU tuning
-POH_CORE poh_core
 XDP_CORES_COUNT xdp_cores_count
 XDP_CORES xdp_cores
 ISOLATED_SET isolated_set
@@ -92,7 +91,6 @@ MAP
 _config_key_types() {
     cat <<'TYPES'
 SSH_PORT port
-POH_CORE int
 XDP_CORES_COUNT int
 XDP_CORES cores
 ISOLATED_SET cores
@@ -205,10 +203,12 @@ _cfg_validate_type() {
 # stops at whitespace/#), so $(...), backticks, ;, spaces and newlines can never
 # be executed — they only ever fail their type regex. Returns 1 (naming the
 # offending keys) if any whitelisted value is type-invalid; 0 otherwise.
+# POH_CORE, a setting of an older DeePloy, is no longer one: a conf that still
+# sets it gets one warning, whatever the value, and the run goes on.
 _config_parse_safe() {
     local file=$1
     [[ -f "$file" ]] || { warn "config not found: $file"; return 1; }
-    local line key val t errs="" i
+    local line key val t errs="" i poh_warned=0
     # N12: parsed pairs are STAGED here and committed to globals only after the
     # WHOLE file validates. Previously each valid key was applied as it parsed,
     # so a file that failed halfway had already mutated globals while the
@@ -227,6 +227,10 @@ _config_parse_safe() {
         if   [[ "$line" =~ $qre ]]; then key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
         elif [[ "$line" =~ $ure ]]; then key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
         else continue
+        fi
+        if [[ "$key" == POH_CORE ]]; then
+            (( poh_warned )) || warn "config: POH_CORE is ignored: under Alpenglow jito-solana ${DEEPLOY_PIN_JITO_TAG} does not start PohService, so there is no PoH thread to pin"
+            poh_warned=1; continue
         fi
         t="$(_config_key_type "$key")"
         [[ -z "$t"   ]] && { debug "config: ignoring non-whitelisted key $key"; continue; }

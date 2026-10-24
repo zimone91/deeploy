@@ -82,7 +82,7 @@ _toolchain_tag_resolve() {
     # clients, so an old tag builds fine and then refuses to start.
     local why note
     why="$(deeploy_tag_floor_problem "$JITO_TAG")" \
-        || fail "refusing to build '${JITO_TAG}': ${why}. DeePloy generates a validator.sh that passes --no-xdp and --poh-pinned-cpu-core, and both first exist in ${DEEPLOY_MIN_JITO_TAG} — an older client rejects the argv and never starts, after the entire build. Set JITO_TAG to ${DEEPLOY_MIN_JITO_TAG} or newer."
+        || fail "refusing to build '${JITO_TAG}': ${why}. DeePloy generates a validator.sh that passes --no-xdp where XDP is off, and --no-xdp first exists in ${DEEPLOY_MIN_JITO_TAG} — an older client rejects the argv and never starts, after the entire build. Set JITO_TAG to ${DEEPLOY_MIN_JITO_TAG} or newer."
     note="$(deeploy_tag_recommendation_note "$JITO_TAG")"
     [[ -z "$note" ]] || warn "${note}. Building it anyway."
 }

@@ -55,6 +55,8 @@ TCOUT=$( ( JITO_TAG=v4.1.2-jito toolchain_resolve_config ) 2>&1 ); TCRC=$?
 check "4.1.2 (last pre-floor) -> fails"        "$TCRC" "1"
 check "message refuses by name"                "$(grep -c 'refusing to build' <<<"$TCOUT")" "1"
 check "message names the floor"                "$(grep -c "$DEEPLOY_MIN_JITO_TAG" <<<"$TCOUT")" "1"
+check "message names the flag validator.sh carries, none it no longer does" \
+      "$(grep -c 'passes --no-xdp where XDP is off, and --no-xdp first exists in' <<<"$TCOUT")|$(grep -c 'poh-pinned-cpu-core' <<<"$TCOUT")" "1|0"
 # garbage is refused by the shape check before the floor; the floor's own
 # reason is covered in test_common
 TCG=$( ( JITO_TAG=latest toolchain_resolve_config ) 2>&1 ); TCGRC=$?

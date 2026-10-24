@@ -79,7 +79,8 @@ check "R10-3b: rc9 layout: CPU0 not in the pool (it keeps comp0, XDP queue 0): n
     "$(grep -c -- '-> cpu0$' "$WORK/irq.log")|$(aff 254)" "0|0"
 check "R10-3: rc9 layout: 6 writes, nothing else (async0 judged by its effective CPU); port 1 untouched; rc 0" \
     "$(grep -c ' -> cpu' "$WORK/irq.log")|$(aff 253) $(aff 256) $(aff 257)|$(grep -c '^rc=0$' "$WORK/irq.log")" "6|0-47 0-47 0|1"
-# Another layout: 32 CPUs, PoH 6, one XDP core (1); both ports up, the default
+# Another layout: 32 CPUs, one XDP core (1) and, isolated by an older install,
+# the PoH core 6 with its sibling 22 (17 is core 1's); both ports up, the default
 # route on the second, whose lines come AFTER the first port's.
 mkroot 0-31 "1,6,17,22"; state_set xdp_cores 1
 for i in $(seq 0 15); do irq $((100 + i)) "mlx5_comp$i@pci:0000:41:00.0" "$i"; done

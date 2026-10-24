@@ -3,10 +3,11 @@
 # DeePloy — lib/verify.sh   (post-install verification; also `deeploy verify`)
 # Read-only diagnostic ported from the operator's verification block. Checks
 # that the tuning actually took: process limits, priority/OOM, CPU isolation
-# (vs the recorded isolated set), PoH thread affinity (vs POH_CORE), the mlx5
-# NIC's IRQs (off the isolated CPUs), governor/THP/KSM/NUMA, sysctl buffers,
-# the XDP UMEM's huge pages, disk layout, catchup, the BAM connection, the
-# poh-pin timer, and whether the node runs on the staked identity.
+# (vs the recorded isolated set), the Alpenglow block creation loop thread, the
+# mlx5 NIC's IRQs (off the isolated CPUs), governor/THP/KSM/NUMA, sysctl buffers,
+# the XDP UMEM's huge pages, disk layout, catchup, the BAM connection, leftover
+# PoH-pin units of an older DeePloy, and whether the node runs on the staked
+# identity.
 #
 # Never mutates anything. Probes are wrapped so tests can inject fixtures.
 # Requires: common.sh and constants.sh sourced.
@@ -24,17 +25,16 @@ _vf_expect() { if [[ "$2" == "$3" ]]; then vf_ok "$1 = $3"; else vf_warn "$1 = $
 
 # --- mockable probes ---------------------------------------------------------
 # Each probe ends with `|| true`: under set -e+pipefail a probe whose command
-# legitimately returns non-zero (pgrep no match, systemctl is-active when
-# inactive, cat of a /sys file absent on this kernel, catchup mid-sync, taskset
-# on an empty tid) must NOT errexit the caller — every check tolerates empty
-# output by design (`[[ -z ... ]]` / `_vf_expect`).
+# legitimately returns non-zero (pgrep no match, cat of a /sys file absent on
+# this kernel, catchup mid-sync, ps of a pid that has exited) must NOT errexit
+# the caller — every check tolerates empty output by design (`[[ -z ... ]]` /
+# `_vf_expect`).
 _vf_pid()          { pgrep -f '^agave-validator --identity' 2>/dev/null | head -1 || true; }
 _vf_proc_limits()  { cat "/proc/$1/limits" 2>/dev/null || true; }
 _vf_coredump_filter() { cat "/proc/$1/coredump_filter" 2>/dev/null || true; }
 _vf_oom_score()    { cat "/proc/$1/oom_score_adj" 2>/dev/null || true; }
 _vf_proc_nice()    { ps -o ni= -p "$1" 2>/dev/null | tr -d ' ' || true; }
-_vf_poh_thread()   { ps -T -p "$1" -o spid,comm 2>/dev/null | awk '/solPohTickProd/{print $1; exit}' || true; }
-_vf_taskset()      { taskset -cp "$1" 2>/dev/null | awk '{print $NF}' || true; }
+_vf_blk_creation_thread() { ps -T -p "$1" -o spid,comm 2>/dev/null | awk '/solBlkCreatLoop/{print $1; exit}' || true; }
 _vf_isolated()     { cat /sys/devices/system/cpu/isolated 2>/dev/null || true; }
 _vf_governors() {               # stdout: "cpuN <governor>" per cpufreq CPU; VF_CPU_SYSFS = tests' fake sysfs
     local f c
@@ -96,7 +96,12 @@ _vf_bam_lines() {
         -e 'Validator is not on the leader schedule' \
         "$(state_get solana_home /root/solana)/solana.log" 2>/dev/null || true
 }
-_vf_timer_active() { systemctl is-active solana-poh-pin.timer 2>/dev/null || true; }
+_vf_poh_leftovers() {           # the PoH-pin files and units of an older DeePloy that are still there, one per line
+    local f
+    while IFS= read -r f; do
+        if [[ -e "$f" ]]; then printf '%s\n' "$f"; fi
+    done < <(deeploy_poh_pin_files)
+}
 _vf_identity()     { deeploy_live_identity; }     # getIdentity, local RPC (common.sh)
 _vf_sync_pubkey()  { deeploy_sync_pubkey; }
 # The vote account as the public RPC parses it (getAccountInfo, jsonParsed), and
@@ -147,14 +152,15 @@ verify_isolation() {
     else vf_fail "isolated CPUs = '${actual:-<none>}' but expected '$want' (GRUB not applied / wrong reboot?)"; fi
 }
 
-verify_poh_affinity() {
+# After the Alpenglow migration jito-solana 013a4306 does not start PohService
+# (poh/src/poh_service.rs 121-129: the thread returns before it does any work),
+# and the block creation loop runs in the thread solBlkCreatLoop
+# (core/src/block_creation_loop.rs 107-108). That thread has no CPU pin, so its
+# being there is the whole check.
+verify_block_creation_loop() {
     [[ -n "${VF_PID:-}" ]] || return 0
-    local poh tid aff; poh=$(state_get poh_core "")
-    tid=$(_vf_poh_thread "$VF_PID")
-    [[ -n "$tid" ]] || { vf_warn "solPohTickProd thread not found yet (catchup may be ongoing)"; return 0; }
-    aff=$(_vf_taskset "$tid")
-    if [[ -n "$poh" && "$aff" == "$poh" ]]; then vf_ok "PoH thread pinned to core $poh"
-    else vf_warn "PoH thread affinity = ${aff:-?} (expected $poh)"; fi
+    if [[ -n "$(_vf_blk_creation_thread "$VF_PID")" ]]; then vf_ok "Alpenglow block creation loop running"
+    else vf_warn "Alpenglow block creation loop: no solBlkCreatLoop thread in pid ${VF_PID} (the validator may still be starting)"; fi
 }
 
 _vf_cpus() {                    # "1-2,10" -> " 1 2 10 "
@@ -167,8 +173,8 @@ _vf_cpus() {                    # "1-2,10" -> " 1 2 10 "
 }
 
 # Every mlx5 IRQ of the default-route NIC, not the queues a map names: comp34
-# sat on the PoH core's SMT sibling, outside the old hardcoded map. An
-# isolated CPU keeps none, an XDP core included. (R10-3, R10-3b)
+# sat on an isolated SMT sibling, outside the old hardcoded map. An isolated
+# CPU keeps none, an XDP core included. (R10-3, R10-3b)
 verify_nic_irqs() {
     [[ "$(state_get nic_driver "")" == mlx5_core ]] || return 0
     local nic bus iso list irq name eff c bad="" total=0
@@ -325,9 +331,14 @@ verify_bam() {
     esac
 }
 
-verify_pohpin_timer() {
-    if [[ "$(_vf_timer_active)" == "active" ]]; then vf_ok "solana-poh-pin.timer active"
-    else vf_warn "solana-poh-pin.timer NOT active"; fi
+# An older DeePloy pinned the PoH thread with two scripts, a service and a timer.
+# Nothing uses them under Alpenglow, and the timer fails every hour; phase 6
+# removes them. Silent when none is left.
+verify_poh_leftovers() {
+    local left; left=$(_vf_poh_leftovers)
+    [[ -n "$left" ]] || return 0
+    vf_warn "leftover PoH-pin unit from an older DeePloy: re-run phase 6 to remove it"
+    info "  found: $(tr '\n' ' ' <<<"$left")"
 }
 
 # The staked identity is set at runtime (set-identity), so any restart of solana
@@ -397,7 +408,7 @@ verify_run() {
     verify_limits
     verify_priority
     verify_isolation
-    verify_poh_affinity
+    verify_block_creation_loop
     verify_nic_irqs
     verify_perf_tweaks
     verify_sysctl
@@ -406,7 +417,7 @@ verify_run() {
     verify_bam
     verify_identity
     verify_vote_account
-    verify_pohpin_timer
+    verify_poh_leftovers
     echo ""
     info "Verification: ${_VF_WARN} warning(s), ${_VF_FAIL} failure(s)"
     if [[ "$_VF_FAIL" -gt 0 ]]; then vf_warn "Verification found ${_VF_FAIL} failure(s) — review above"; return 1; fi

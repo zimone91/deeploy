@@ -45,13 +45,14 @@ check "tag defaults to CURRENT, not latest" "$UPGRADE_TAG" "v4.2.0-jito"
 
 echo "== version floor: refuse to upgrade BELOW the minimum client =="
 # An upgrade DOWN to a pre-4.2 client rebuilds fine and then fails to start
-# against the validator.sh already on the box (--no-xdp / --poh-pinned-cpu-core).
+# against the validator.sh already on the box (--no-xdp, where XDP is off).
 state_set jito_tag v4.2.1-jito
 ask() { REPLY="v4.0.0-jito"; }
 UPOUT=$( ( upgrade_check_releases ) 2>&1 ); UPRC=$?
 check "below-floor tag -> upgrade aborts"     "$UPRC" "1"
 check "message refuses by name"               "$(grep -c 'refusing to upgrade' <<<"$UPOUT")" "1"
-check "message names the floor + the flags"    "$(grep -c "only exist from ${DEEPLOY_MIN_JITO_TAG} on" <<<"$UPOUT")" "1"
+check "message names the floor + the flag"     "$(grep -c "passes --no-xdp where XDP is off, and --no-xdp first exists in ${DEEPLOY_MIN_JITO_TAG}" <<<"$UPOUT")" "1"
+check "message names no flag the validator.sh no longer carries" "$(grep -c 'poh-pinned-cpu-core' <<<"$UPOUT")" "0"
 ask() { REPLY="v4.1.2-jito"; }                # last pre-floor release: also refused
 ( upgrade_check_releases ) >/dev/null 2>&1
 check "4.1.2 -> refused too"                  "$?" "1"

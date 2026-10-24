@@ -5,9 +5,10 @@
 # live topology (replacing the memo's 8 hand-built GRUB variants), write GRUB,
 # performance-tweaks.service, sysctl, and NOFILE limits, then flag the reboot.
 #
-# POH_CORE is the single source of truth: it drives isolcpus/nohz_full/
-# rcu_nocbs/irqaffinity here, and is recorded to state for validatorcfg
-# (--poh-pinned-cpu-core) and set_poh_affinity.sh — no drift.
+# XDP_CORES_COUNT is the single source of truth: it drives isolcpus/nohz_full/
+# rcu_nocbs/irqaffinity here, and the XDP cores are recorded to state for
+# validatorcfg (--xdp-cpu-cores) — no drift. There is no PoH core to set: see
+# _isolation_compute.
 #
 # Requires: common.sh sourced. Topology is read via _cpu_total/_cpu_siblings,
 # which tests override to inject a synthetic CPU layout; file paths are
@@ -54,42 +55,51 @@ _compress_ranges() {
     '
 }
 
-_array_has() { local n=$1; shift; local e; for e in "$@"; do [[ "$e" == "$n" ]] && return 0; done; return 1; }
-
 # --- the core computation ----------------------------------------------------
-# _isolation_compute <total> <poh_core> <xdp_count>  -> sets _ISO_SET, _ISO_IRQ
-#   isolated = PoH core's sibling set  (+ for each extra XDP core: the lowest
-#   physical-core primaries, excluding core 0 and the PoH core, with siblings)
-#   _ISO_SET = compressed isolated;  _ISO_IRQ = compressed (all CPUs - isolated)
+# _isolation_compute <total> <xdp_count>  -> sets _ISO_SET, _ISO_IRQ, _ISO_XDP
+#   isolated = the XDP cores: the lowest physical-core primaries from CPU 1 up,
+#   each with its SMT siblings.  _ISO_SET = compressed isolated;  _ISO_IRQ =
+#   compressed (all CPUs - isolated);  _ISO_XDP = compressed XDP primaries.
+#   No XDP cores means nothing is isolated: all three are empty.
+#
+#   There is no PoH core. Under Alpenglow the pinned client (jito-solana
+#   013a4306 = v4.3.2-jito) logs "Post Alpenglow migration, not starting
+#   PohService" and returns (poh/src/poh_service.rs 121-129), so the CPU pin
+#   after it (155-165) is never reached. What is left of --poh-pinned-cpu-core
+#   is the check that --xdp-cpu-cores does not include the PoH core
+#   (validator/src/commands/run/execute.rs 1515-1532). Without the flag that
+#   core is CPU 0 on Linux (DEFAULT_PINNED_CPU_CORE = Some(0), poh_service.rs
+#   43), so CPU 0 is never an XDP core: the loop starts at CPU 1, and CPU 0's
+#   own SMT sibling is no physical-core primary.
 _isolation_compute() {
-    local total=$1 poh=$2 xdp=${3:-0} c primary x count=0
+    local total=$1 xdp=${2:-0} c primary x count=0
     local -a isolated=() xdp_primaries=()
-    while read -r x; do isolated+=("$x"); done < <(_expand_list "$(_cpu_siblings "$poh")")
-    if (( xdp > 0 )); then
-        for ((c=1; c<total; c++)); do
-            primary=$(_cpu_primary "$c")
-            [[ "$c" == "$primary" ]] || continue                 # only physical-core primaries
-            _array_has "$c" "${isolated[@]}" && continue          # skip the PoH core itself
-            xdp_primaries+=("$c")                                 # the retransmit cpu-cores
-            while read -r x; do isolated+=("$x"); done < <(_expand_list "$(_cpu_siblings "$c")")
-            count=$((count + 1)); (( count >= xdp )) && break
-        done
-    fi
+    _ISO_SET=""; _ISO_IRQ=""; _ISO_XDP=""
+    (( xdp > 0 )) || return 0
+    for ((c=1; c<total; c++)); do
+        primary=$(_cpu_primary "$c")
+        [[ "$c" == "$primary" ]] || continue                     # only physical-core primaries
+        xdp_primaries+=("$c")                                     # the retransmit cpu-cores
+        while read -r x; do isolated+=("$x"); done < <(_expand_list "$(_cpu_siblings "$c")")
+        count=$((count + 1)); (( count >= xdp )) && break
+    done
+    (( ${#isolated[@]} > 0 )) || return 0                         # a one-CPU box has no core to reserve
     local sorted; sorted=$(printf '%s\n' "${isolated[@]}" | sort -nu)
     _ISO_SET=$(printf '%s\n' "$sorted" | _compress_ranges)
     local i
     _ISO_IRQ=$(for ((i=0; i<total; i++)); do grep -qxF "$i" <<<"$sorted" || echo "$i"; done | _compress_ranges)
-    if (( ${#xdp_primaries[@]} > 0 )); then
-        _ISO_XDP=$(printf '%s\n' "${xdp_primaries[@]}" | sort -nu | _compress_ranges)
-    else
-        _ISO_XDP=""
-    fi
+    _ISO_XDP=$(printf '%s\n' "${xdp_primaries[@]}" | sort -nu | _compress_ranges)
 }
 
-# The kernel params DeePloy appends (PoH/XDP isolation + the fixed perf flags).
+# The kernel params DeePloy appends: the fixed perf flags, and the XDP-core
+# isolation when there is one (_ISO_SET empty = no isolcpus, nohz_full,
+# rcu_nocbs or irqaffinity at all).
 _isolation_grub_params() {
-    printf 'amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,%s nohz_full=%s rcu_nocbs=%s irqaffinity=%s' \
-        "$_ISO_SET" "$_ISO_SET" "$_ISO_SET" "$_ISO_IRQ"
+    local p='amd_pstate=passive nvme_core.default_ps_max_latency_us=0'
+    if [[ -n "$_ISO_SET" ]]; then
+        p+=" isolcpus=domain,managed_irq,${_ISO_SET} nohz_full=${_ISO_SET} rcu_nocbs=${_ISO_SET} irqaffinity=${_ISO_IRQ}"
+    fi
+    printf '%s' "$p"
 }
 
 # --- read-back: what grub-mkconfig ACTUALLY baked in -------------------------
@@ -144,13 +154,26 @@ _grub_clobber_hint() {
     fi
 }
 
-_grub_assert_applied() {                          # <isolcpus-set> <nohz-set>
-    local want_iso=$1 want_nohz=$2 cfg
+_grub_assert_applied() {                          # <isolcpus-set> <nohz-set>; both empty = nothing isolated
+    local want_iso=${1:-} want_nohz=${2:-} cfg
     if is_dry_run; then
-        info "${C_DIM}[dry-run]${C_NC} would read the generated grub.cfg back and verify isolcpus=${want_iso}"
+        if [[ -n "$want_iso" ]]; then
+            info "${C_DIM}[dry-run]${C_NC} would read the generated grub.cfg back and verify isolcpus=${want_iso}"
+        else
+            info "${C_DIM}[dry-run]${C_NC} would read the generated grub.cfg back and verify amd_pstate=passive and nvme_core.default_ps_max_latency_us=0 (no isolation)"
+        fi
         return 0                                  # nothing was written, so there is nothing to read
     fi
     cfg=$(_grub_generated_cfg) || fail "Refusing: update-grub ran but no generated grub.cfg could be found (looked in /boot/grub, /boot/grub2 and the ESP). The path depends on BIOS vs EFI, so this is an unanswered question, not an inapplicable check — and the next step is a reboot onto whatever the bootloader actually has."
+    if [[ -z "$want_iso" ]]; then
+        # No XDP cores, so no isolation to read back; the managed perf parameters
+        # are what update-grub must still have baked in.
+        if ! { grep -q 'amd_pstate=passive' "$cfg" && grep -q 'nvme_core.default_ps_max_latency_us=0' "$cfg"; }; then
+            fail "Refusing: ${cfg} does not carry amd_pstate=passive and nvme_core.default_ps_max_latency_us=0 after update-grub. $(_grub_clobber_hint) Not rebooting on a cmdline without the parameters DeePloy wrote."
+        fi
+        ok "Verified in ${cfg}: amd_pstate and nvme_core survived grub-mkconfig (no isolation: no XDP cores)"
+        return 0
+    fi
     grep -q "isolcpus=domain,managed_irq,${want_iso}" "$cfg" \
         || fail "Refusing: ${cfg} does not carry isolcpus=domain,managed_irq,${want_iso} after update-grub. $(_grub_clobber_hint) Not rebooting on a cmdline that lacks the isolation."
     grep -q "nohz_full=${want_nohz}" "$cfg" \
@@ -204,34 +227,8 @@ _grub_strip_managed() {
 }
 
 # --- config resolution -------------------------------------------------------
-_valid_cpu() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 0 && $1 < $2 )); }
-
-# Default PoH core: the production default is core 10 (when it's a valid
-# physical-core primary on this box). Falls back to the 3rd physical-core
-# primary (reserve cores 0,1 for OS/IRQ), then lower, on smaller boxes.
-TUNING_DEFAULT_POH_CORE="${TUNING_DEFAULT_POH_CORE:-10}"
-_default_poh_core() {
-    local total=$1 c primary; local -a prim=()
-    if (( total > TUNING_DEFAULT_POH_CORE )) && [[ "$(_cpu_primary "$TUNING_DEFAULT_POH_CORE")" == "$TUNING_DEFAULT_POH_CORE" ]]; then
-        echo "$TUNING_DEFAULT_POH_CORE"; return
-    fi
-    for ((c=0; c<total; c++)); do
-        primary=$(_cpu_primary "$c")
-        [[ "$c" == "$primary" ]] && prim+=("$c")
-    done
-    if   (( ${#prim[@]} >= 3 )); then echo "${prim[2]}"
-    elif (( ${#prim[@]} >= 2 )); then echo "${prim[1]}"
-    else echo 1; fi
-}
-
 tuning_resolve_config() {
     TUNE_TOTAL=$(_cpu_total)
-    if [[ -z "${POH_CORE:-}" ]]; then
-        ask "PoH pinned core (isolated; the single source of truth for pinning)" "$(_default_poh_core "$TUNE_TOTAL")"
-        POH_CORE="$REPLY"
-    fi
-    _valid_cpu "$POH_CORE" "$TUNE_TOTAL" || fail "POH_CORE '$POH_CORE' is not a valid CPU (0..$((TUNE_TOTAL - 1)))"
-    [[ "$POH_CORE" == "0" ]] && warn "POH_CORE=0 is the housekeeping core — strongly discouraged"
     if [[ -z "${XDP_CORES_COUNT:-}" ]]; then
         if [[ "$(state_get retransmit_supported 0)" == "1" ]]; then
             ask "Cores to reserve for XDP retransmit (prod default 2 -> cores 1-2)" "2"
@@ -241,36 +238,42 @@ tuning_resolve_config() {
         fi
     fi
     [[ "$XDP_CORES_COUNT" =~ ^[0-9]+$ ]] || fail "XDP_CORES_COUNT must be a number"
-    state_set poh_core "$POH_CORE"
     state_set xdp_cores_count "$XDP_CORES_COUNT"
 }
 
 tuning_grub() {
-    local grub="${GRUB_FILE:-/etc/default/grub}" cur stripped params new
-    _isolation_compute "$TUNE_TOTAL" "$POH_CORE" "$XDP_CORES_COUNT"
+    local grub="${GRUB_FILE:-/etc/default/grub}" cur stripped params new been_through_reboot=0
+    _isolation_compute "$TUNE_TOTAL" "$XDP_CORES_COUNT"
     params=$(_isolation_grub_params)
     cur=$(_grub_current_cmdline "$grub")
-    stripped=$(_grub_strip_managed "$cur")
+    stripped=$(_grub_strip_managed "$cur")   # an older install's isolcpus/nohz_full/rcu_nocbs/irqaffinity go here
     new="${stripped:+$stripped }$params"
-    step "CPU isolation (POH_CORE=$POH_CORE, XDP cores=$XDP_CORES_COUNT, total CPUs=$TUNE_TOTAL)"
-    info "isolcpus/nohz_full/rcu_nocbs: $_ISO_SET"
-    info "irqaffinity:                  $_ISO_IRQ"
+    step "CPU isolation (XDP cores=$XDP_CORES_COUNT, total CPUs=$TUNE_TOTAL)"
+    if [[ -n "$_ISO_SET" ]]; then
+        info "isolcpus/nohz_full/rcu_nocbs: $_ISO_SET (the XDP cores and their SMT siblings)"
+        info "irqaffinity:                  $_ISO_IRQ"
+    else
+        info "no XDP cores are reserved, so nothing is isolated: no isolcpus, nohz_full, rcu_nocbs or irqaffinity"
+    fi
     info "GRUB_CMDLINE_LINUX_DEFAULT=\"$new\""
+    state_has reboot_done && been_through_reboot=1
     backup_file "$grub"
     _grub_write_cmdline "$grub" "GRUB_CMDLINE_LINUX_DEFAULT=\"$new\""   # exactly ONE line (N13)
     run update-grub
     _grub_assert_applied "$_ISO_SET" "$_ISO_SET"  # before any state is armed: a
                                                   # refusal here must leave no reboot pending
-    state_set isolated_set "$_ISO_SET"
+    state_set isolated_set "$_ISO_SET"            # empty when nothing is isolated; phase 8 then skips its check
     state_set irqaffinity  "$_ISO_IRQ"
     state_set xdp_cores    "$_ISO_XDP"
     state_set reboot_required 1
     # Re-arming a reboot INVALIDATES any prior completion latch: a sanctioned
-    # re-tune (new POH/XDP) must force a fresh reboot, not let the boundary proceed
+    # re-tune (new XDP cores) must force a fresh reboot, not let the boundary proceed
     # to Phase 8 on a stale reboot_done against the OLD, still-live isolation (I1).
     state_clear reboot_done
     state_clear reboot_pending
-    ok "GRUB updated — reboot required to apply CPU isolation"
+    ok "GRUB updated — reboot required to apply the kernel parameters"
+    (( been_through_reboot )) && info "This box has been through the reboot gate: the new GRUB parameters take effect at its next planned reboot (a staked node: move it to the standby first)."
+    return 0
 }
 
 # --- performance tweaks (governor/THP/KSM/NUMA) ------------------------------
@@ -462,5 +465,5 @@ tuning_run() {
     tuning_perf
     tuning_sysctl
     tuning_limits
-    warn "CPU isolation (GRUB) and DefaultLimitNOFILE take effect after the reboot gate."
+    warn "The GRUB parameters (CPU isolation, where XDP cores are reserved) and DefaultLimitNOFILE take effect after the reboot gate."
 }

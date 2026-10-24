@@ -39,8 +39,7 @@ VAT_LAMPORTS_PER_EPOCH=800000000
 # 268.8 ms per slot measured on mainnet on 2026-10-05 it is about 7, a lag of
 # up to about 6, so 4 is the stricter. In 26 "has caught up" lines catchup
 # printed for a mainnet node on 2026-10-05 and -06, that node was at most 3
-# slots behind. Used by the catchup status (common.sh) and the rendered
-# wait_and_pin_poh.sh.
+# slots behind. Used by the catchup status (common.sh).
 CAUGHT_UP_MAX_BEHIND=4
 
 # The five mainnet entrypoints from the install guide (host:port). Used as
@@ -91,11 +90,11 @@ JITO_MERKLE_ROOT_AUTHORITY="8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt"
 ALT_PROGRAM_KEY="AddressLookupTab1e1111111111111111111111111"
 
 # Oldest jito-solana tag DeePloy can build and render for. Not a taste call: the
-# generated validator.sh uses --no-xdp and --poh-pinned-cpu-core, and BOTH first
-# exist in 4.2.0 (the XDP flags landed in 4.1.0, --no-xdp and the PoH rename in
-# 4.2.0). On anything older the validator rejects the argv and never starts —
-# after the whole build. One constant, three checks (build, upgrade,
-# render) so the floor cannot drift between them.
+# generated validator.sh carries --no-xdp where XDP is off, and --no-xdp first
+# exists in 4.2.0, where XDP became opt-out (the XDP flags landed in 4.1.0). On
+# anything older the validator rejects the argv and never starts — after the
+# whole build. One constant, three checks (build, upgrade, render) so the floor
+# cannot drift between them.
 DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
 
 # Recommended jito-solana tag. The floor above refuses; this only warns, at the

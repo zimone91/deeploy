@@ -42,7 +42,6 @@ seed() {
     state_set solana_home /root/solana
     state_set sync_identity /root/solana/unstaked-identity.json
     state_set vote_account_pubkey Vote1111111111111111111111111111111111111111
-    state_set poh_core 10
     state_set ledger_path /root/solana/ledger
     state_set accounts_path /mnt/accounts/solana/accounts
     state_set snapshots_path /root/solana/snapshots
@@ -64,7 +63,9 @@ check "5 entrypoints"          "$(grep -c -- '--entrypoint "entrypoint' <<<"$V")
 check "4 known-validators"     "$(grep -c -- '--known-validator' <<<"$V")" "4"
 check "no blank before ) after known" "$(awk '/--known-validator "CakcnaRD/{getline; print}' <<<"$V")" ")"
 check "private-rpc + bind 127" "$(grep -c -- '--rpc-bind-address "127.0.0.1"' <<<"$V")" "1"
-check "poh pinned core = 10"   "$(grep -c -- '--poh-pinned-cpu-core "10"' <<<"$V")" "1"
+check "no --poh-pinned-cpu-core: there is no PoH thread to pin" "$(grep -c -- 'poh-pinned-cpu-core' <<<"$V")" "0"
+check "no POH block, defined or run"           "$(grep -c 'POH' <<<"$V")" "0"
+check "--no-poh-speed-test stays (a speed-test flag, not a pin)" "$(grep -c -- '--no-poh-speed-test' <<<"$V")" "1"
 check "unified-scheduler 14"   "$(grep -c -- '--unified-scheduler-handler-threads "14"' <<<"$V")" "1"
 check "ledger path"            "$(grep -c -- '--ledger "/root/solana/ledger"' <<<"$V")" "1"
 check "accounts on accounts disk" "$(grep -c -- '--accounts "/mnt/accounts/solana/accounts"' <<<"$V")" "1"
@@ -109,13 +110,13 @@ echo "== OS stats: the validator reports them with its metrics =="
 check "no --no-os-*-stats-reporting flag"  "$(grep -c -- '--no-os-' <<<"$V")" "0"
 check "no REPORTING block, defined or run" "$(grep -c 'REPORTING' <<<"$V")" "0"
 # control: every other block is still defined and run, in the same order
-for b in CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT LEDGER SNAPSHOTS LOG JITO; do
+for b in CONSENSUS GOSSIP RPC REPLAY RETRANSMIT LEDGER SNAPSHOTS LOG JITO; do
     check "block $b defined and run" "$(grep -c "^${b}=(" <<<"$V")|$(grep -cF "\"\${${b}[@]}\"" <<<"$V")" "1|1"
 done
 # SC2016: the literal ${NAME[@]} of the generated script is what is matched.
 # shellcheck disable=SC2016
 check "blocks run in order" "$(grep -o '\${[A-Z]*\[@\]}' <<<"$V" | sed 's/^\${\([A-Z]*\)\[@\]}$/\1/' | tr '\n' ' ')" \
-      "CONSENSUS GOSSIP RPC REPLAY POH RETRANSMIT LEDGER SNAPSHOTS LOG JITO "
+      "CONSENSUS GOSSIP RPC REPLAY RETRANSMIT LEDGER SNAPSHOTS LOG JITO "
 
 echo "== RETRANSMIT: mlx5 = cpu-cores + zero-copy, in order =="
 state_set retransmit_supported 1; state_set retransmit_zero_copy 1; state_set xdp_cores 1-2
@@ -250,7 +251,8 @@ check "OOMScoreAdjust=-1000"    "$(grep -c 'OOMScoreAdjust=-1000' <<<"$S")" "1"
 check "LimitNOFILE 2000000"     "$(grep -c 'LimitNOFILE=2000000' <<<"$S")" "1"
 check "R10-10: LimitCORE=0 (no core dumps)"              "$(grep -c '^LimitCORE=0$' <<<"$S")" "1"
 check "R10-10: CoredumpFilter=elf-headers (no heap/stack)" "$(grep -c '^CoredumpFilter=elf-headers$' <<<"$S")" "1"
-check "ExecStartPost poh-pin"   "$(grep -c 'ExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service' <<<"$S")" "1"
+check "no ExecStartPost for the poh-pin service"  "$(grep -c 'poh-pin' <<<"$S")" "0"
+check "no ExecStartPost at all"                    "$(grep -c 'ExecStartPost' <<<"$S")" "0"
 check "metrics = mainnet-beta" "$(grep -c '^Environment="SOLANA_METRICS_CONFIG=host=https://metrics.solana.com:8086,db=mainnet-beta,' <<<"$S")" "1"
 check "metrics: not the BAM endpoint"          "$(grep -c 'bam-public-metrics.jito.wtf' <<<"$S")" "0"
 check "RequiresMountsFor (two-nvme)" "$(grep -c 'RequiresMountsFor=/mnt/accounts /mnt/ledger' <<<"$S")" "1"
@@ -319,12 +321,6 @@ check "H1: unit path is /etc/systemd/system (root fs)"  "$(cat "$WORK/svpath")" 
 check "H1: unit NOT under SOLANA_HOME (the ledger mount)" "$(grep -c '/root/solana/solana.service' "$WORK/svpath")" "0"
 validatorcfg_resolve_config
 
-echo "== I3: poh-pin service uses Requisite= (never pulls solana.service UP) =="
-PS=$(_vcfg_render_poh_pin_service)
-check "I3: Requisite=solana.service"             "$(grep -c '^Requisite=solana.service' <<<"$PS")" "1"
-check "I3: NOT Requires= (would start solana)"   "$(grep -c '^Requires=solana.service' <<<"$PS")" "0"
-check "I3: After=solana.service kept (ordering)" "$(grep -c '^After=solana.service' <<<"$PS")" "1"
-
 echo "== validator.sh paths read from STATE (not hardcoded /mnt) =="
 state_set ledger_path /custom/led; state_set accounts_path /custom/acc; state_set snapshots_path /custom/snap
 validatorcfg_resolve_config; V=$(_vcfg_render_validator_sh)
@@ -364,146 +360,36 @@ V=$(_vcfg_render_validator_sh); rc=$?
 check "X1: valid state renders OK again (rc 0)"                "$rc" "0"
 check "X1: ledger is quoted in the good render"               "$(grep -c -- '--ledger "/root/solana/ledger"' <<<"$V")" "1"
 
-echo "== poh scripts + timer + logrotate =="
-P=$(_vcfg_render_set_poh_affinity)
-check "set_poh: taskset core 10"   "$(grep -c 'taskset -cp 10 ' <<<"$P")" "1"
-check "set_poh: exit 0 if already" "$(grep -c 'already_set"; exit 0' <<<"$P")" "1"
-check "set_poh: no placeholder left" "$(grep -c '__POH_CORE__' <<<"$P")" "0"
-W=$(_vcfg_render_wait_and_pin)
-check "wait: no 'solana catchup' (R10-4)"     "$(grep -cE 'catchup|SOLANA_BIN' <<<"$W")" "0"
-check "wait: the node's RPC on RPC_PORT"      "$(grep -c '^NODE_RPC="http://127.0.0.1:8899"$' <<<"$W")" "1"
-check "wait: the cluster RPC substituted"     "$(grep -c "^CLUSTER_RPC=\"$DEFAULT_PUBLIC_RPC\"\$" <<<"$W")" "1"
-check "wait: the caught-up window substituted" "$(grep -c "^CAUGHT_UP_MAX_BEHIND=${CAUGHT_UP_MAX_BEHIND}\$" <<<"$W")" "1"
-check "wait: timeout 3600 s, a poll per 15 s" "$(grep -c '^MAX_WAIT_SECONDS=3600$' <<<"$W")|$(grep -c '^CHECK_INTERVAL=15$' <<<"$W")" "1|1"
-check "wait: no placeholder left"             "$(grep -cE '__[A-Z_]+__' <<<"$W")" "0"
-# H4: a failed pin must NOT report success.
-check "H4: set_poh captures taskset exit"        "$(grep -c 'rc=\$?' <<<"$P")" "1"
-check "H4: set_poh has a taskset-failure branch"  "$(grep -c 'taskset_failed' <<<"$P")" "1"
-check "H4: wait_and_pin captures pin exit"        "$(grep -c 'pin_rc=\$?' <<<"$W")" "1"
-check "H4: wait_and_pin no hardcoded final exit 0" "$(grep -cE '^exit 0$' <<<"$W")" "0"
-T=$(_vcfg_render_poh_pin_timer)
-check "timer OnBootSec=1min"    "$(grep -c 'OnBootSec=1min' <<<"$T")" "1"
-check "timer OnUnitActiveSec=1h" "$(grep -c 'OnUnitActiveSec=1h' <<<"$T")" "1"
+echo "== logrotate =="
 L=$(_vcfg_render_logrotate)
 check "logrotate USR1 solana"   "$(grep -c 'systemctl kill -s USR1 solana.service' <<<"$L")" "1"
 
-echo "== R10-4: wait_and_pin_poh.sh, run — a status line every poll, 'solana' silent =="
-# The rendered script with stubs first on PATH. curl answers getSlot from $US
-# (the node, 127.0.0.1) and $THEM (the cluster): DOWN = no answer (curl's exit
-# and message for a refused connection), ERR = a JSON-RPC error, SP<n> = <n>
-# with spaces in the JSON; each call's arguments go to $SLOTS. date gives a
-# fixed clock, 1000 for +%s; with $JUMP set, every +%s after the first gives
-# 1000 + $JUMP. sleep returns at once, and the pin script logs to $WORK/pinned.
-# Through a pipe, 'solana catchup' prints nothing while the node is behind (its
-# spinner is not drawn off a terminal); the solana stub does the same until it
-# is killed, and appends its PID to $STUBS.
-SB="$WORK/stubbin"; STUBS="$WORK/stubs"; mkdir -p "$SB" "$WORK/inst/active_release/bin"; : >"$STUBS"
-cat >"$SB/curl" <<'EOF'
-#!/bin/bash
-url=${!#}; echo "$*" >>"$SLOTS"
-case "$url" in http://127.0.0.1:*) a=$US ;; *) a=$THEM ;; esac
-case "$a" in
-    DOWN) echo "curl: (7) Failed to connect to ${url#*//} after 0 ms: Couldn't connect to server" >&2; exit 7 ;;
-    ERR)  echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"},"id":1}' ;;
-    SP*)  printf '{"jsonrpc": "2.0", "result" : %s, "id": 1}\n' "${a#SP}" ;;
-    *)    printf '{"jsonrpc":"2.0","result":%s,"id":1}\n' "$a" ;;
-esac
-EOF
-cat >"$SB/date" <<'EOF'
-#!/bin/bash
-if [ "$1" != +%s ]; then echo T
-elif [ -n "${JUMP:-}" ] && [ -e "$JUMPF" ]; then echo $((1000 + JUMP))
-else [ -z "${JUMP:-}" ] || : >"$JUMPF"; echo 1000; fi
-EOF
-printf '#!/bin/bash\nexit 0\n' >"$SB/systemctl"; printf '#!/bin/bash\nexit 0\n' >"$SB/logger"; printf '#!/bin/bash\nexit 0\n' >"$SB/sleep"
-printf '#!/bin/bash\necho $$ >>"%s"\nexec /bin/sleep 120\n' "$STUBS" >"$WORK/inst/active_release/bin/solana"
-printf '#!/bin/bash\necho pinned >>"%s"\nexit 3\n' "$WORK/pinned" >"$WORK/pin.sh"
-chmod +x "$SB"/* "$WORK/inst/active_release/bin/solana" "$WORK/pin.sh"
-RPC_PORT=8901 SOLANA_INSTALL_DIR="$WORK/inst" SET_POH_SCRIPT="$WORK/pin.sh" _vcfg_render_wait_and_pin >"$WORK/wait.sh"
-# exec: the background job is the script itself, so killing it stops the loop.
-JUMP=""
-run_wait() { PATH="$SB:$PATH" SLOTS="$WORK/slots" US=$US THEM=$THEM JUMP=$JUMP JUMPF="$WORK/jumped" exec bash "$WORK/wait.sh"; }
-# within <secs> <ERE> <cmd...>: runs <cmd> in the background and prints the
-# first line of its output matching <ERE> as soon as there is one, or nothing
-# after <secs>; then kills <cmd> and every stub still waiting. The whole output
-# stays in $WORK/within.out.
-within() {
-    local secs=$1 re=$2 out="$WORK/within.out" pid i; shift 2
-    "$@" >"$out" 2>&1 &
-    pid=$!
-    for (( i = 0; i < secs * 10; i++ )); do
-        grep -qE "$re" "$out" && break
-        command sleep 0.1
-    done
-    { kill -KILL "$pid"; wait "$pid"; xargs kill -KILL <"$STUBS"; } 2>/dev/null
-    : >"$STUBS"
-    grep -m1 -E "$re" "$out"
-}
-# ends_within <secs> <cmd...>: runs <cmd> in the background; prints "rc <n>" if
-# it ends within <secs>, else "running" (and kills it and every stub). The
-# output stays in $WORK/within.out.
-ends_within() {
-    local secs=$1 pid i; shift
-    "$@" >"$WORK/within.out" 2>&1 &
-    pid=$!
-    for (( i = 0; i < secs * 10; i++ )); do
-        kill -0 "$pid" 2>/dev/null || break
-        command sleep 0.1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-        { kill -KILL "$pid"; wait "$pid"; xargs kill -KILL <"$STUBS"; } 2>/dev/null; : >"$STUBS"
-        echo running
-    else wait "$pid"; echo "rc $?"; fi
-}
-US=10 THEM=95
-check "behind -> a status line within 5 s"      "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): 85 slots behind (us:10 them:95)"
-US=96 THEM=100
-check "4 behind -> caught up (the CLI's window)" "$(within 5 'Caught up' run_wait)" "[T] Caught up (us:96 them:100)"
-US=95 THEM=100
-check "5 behind -> '5 slots behind'"            "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): 5 slots behind (us:95 them:100)"
-US=SP10 THEM=SP95
-check "spaces in the JSON are read"             "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): 85 slots behind (us:10 them:95)"
-US=DOWN THEM=95
-check "the node's RPC silent -> says so (RPC_PORT)" "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the node's RPC at http://127.0.0.1:8901"
-check "the node's RPC silent -> no curl message" "$(grep -c '^curl:' "$WORK/within.out")" "0"
-US=ERR THEM=95
-check "a JSON-RPC error is no slot"             "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the node's RPC at http://127.0.0.1:8901"
-US=10 THEM=DOWN
-check "the cluster RPC silent -> says so"       "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the cluster RPC at $DEFAULT_PUBLIC_RPC (us:10)"
-US=DOWN THEM=DOWN
-check "both silent -> the node's RPC is named"  "$(within 5 'Not caught up' run_wait)" "[T] Not caught up yet (elapsed 0s): no slot from the node's RPC at http://127.0.0.1:8901"
-US=100 THEM=100; : >"$WORK/slots"
-check "caught up -> pins, logs the pin's exit"  "$(within 5 'PoH pin completed' run_wait)" "[T] PoH pin completed (exit 3)"
-check "caught up -> logged with both slots"     "$(grep -c '^\[T\] Caught up (us:100 them:100)$' "$WORK/within.out")" "1"
-check "the cluster's slot is read first"        "$(sed 's/.* //' "$WORK/slots" | tr '\n' ' ')" "$DEFAULT_PUBLIC_RPC http://127.0.0.1:8901 "
-check "each read is capped at 5 s"              "$(grep -c -- ' -m 5 ' "$WORK/slots")" "2"
-check "each read is getSlot at confirmed"       "$(grep -cF '"method":"getSlot","params":[{"commitment":"confirmed"}]' "$WORK/slots")" "2"
-check "each read sends Content-Type: application/json" "$(grep -cF 'Content-Type: application/json' "$WORK/slots")" "2"
-US=101 THEM=100
-check "ahead -> caught up"                      "$(within 5 'Caught up' run_wait)" "[T] Caught up (us:101 them:100)"
-US=10 THEM=95 JUMP=3601; : >"$WORK/pinned"; rm -f "$WORK/jumped"
-check "past 3600 s -> FATAL, exit 1, no pin"    "$(ends_within 5 run_wait)|$(grep -c '^\[T\] FATAL: timeout after 3600s$' "$WORK/within.out")|$(wc -l <"$WORK/pinned" | tr -d ' ')" "rc 1|1|0"
-JUMP=""
+echo "== R3: nothing renders PoH pinning any more =="
+for fn in _vcfg_render_set_poh_affinity _vcfg_render_wait_and_pin _vcfg_render_poh_pin_service _vcfg_render_poh_pin_timer; do
+    check_true "$fn is gone" "! declare -F $fn >/dev/null"
+done
 
 echo "== full generate writes files + bash -n =="
 # SC2031: the earlier N16 subshell-local VALIDATOR_SH override is intentional.
 # shellcheck disable=SC2031
-export VALIDATOR_SH="$WORK/validator.sh" SOLANA_SERVICE="$WORK/solana.service" \
-    SET_POH_SCRIPT="$WORK/set_poh.sh" WAIT_PIN_SCRIPT="$WORK/wait_pin.sh" \
-    LOGROTATE_FILE="$WORK/logrotate" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"
+export VALIDATOR_SH="$WORK/validator.sh" SOLANA_SERVICE="$WORK/solana.service" LOGROTATE_FILE="$WORK/logrotate"
+# Where an older validatorcfg.sh was told to put its PoH scripts and units. Nothing reads these now; they keep that older
+# code, run against this suite, from writing under /root and /etc, so that it fails its checks instead of ending the file.
+export SET_POH_SCRIPT="$WORK/set_poh.sh" WAIT_PIN_SCRIPT="$WORK/wait_pin.sh" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"
 validatorcfg_resolve_config
 : >"$WORK/lncalls"; ln() { echo "ln $*" >>"$WORK/lncalls"; }   # record any symlink attempt
 validatorcfg_generate >/dev/null 2>&1
 check "H1: generate creates NO on-mount symlink (unit is a real /etc file)" "$(grep -c 'ln -sfn' "$WORK/lncalls")" "0"
 ln() { :; }
 check_true "validator.sh written + valid bash" "[[ -f \"$WORK/validator.sh\" ]] && bash -n \"$WORK/validator.sh\""
-check_true "set_poh written + valid bash"      "bash -n \"$WORK/set_poh.sh\""
-check_true "wait_pin written + valid bash"     "bash -n \"$WORK/wait_pin.sh\""
 check_true "validator.sh is executable"        "[[ -x \"$WORK/validator.sh\" ]]"
+check_true "solana.service and logrotate written" "[[ -f \"$WORK/solana.service\" && -f \"$WORK/logrotate\" ]]"
+check "generate wrote no PoH script or unit (where an older one put them)" "$([[ -e "$WORK/set_poh.sh" || -e "$WORK/wait_pin.sh" || -e "$WORK/poh.service" || -e "$WORK/poh.timer" ]] && echo written || echo none)" "none"
 # X1 (production path): generate must ABORT — and write no executable — when an
 # untrusted value fails the render gate (a command-substitution failure does not
 # propagate, so validatorcfg_generate captures-then-fails explicitly).
 rm -f "$WORK/nope.sh" "$WORK/pwned"
+# shellcheck disable=SC2030
 ( VALIDATOR_SH="$WORK/nope.sh"
   state_set ledger_path '/x")</dev/null;touch '"$WORK"'/pwned #'
   validatorcfg_resolve_config
@@ -512,6 +398,92 @@ check_true "X1: validatorcfg_generate ABORTS on hostile state" "[[ \"$rc\" != \"
 check_true "X1: generate wrote NO validator.sh"                "[[ ! -e \"$WORK/nope.sh\" ]]"
 check_true "X1: generate executed nothing"                     "[[ ! -e \"$WORK/pwned\" ]]"
 seed; validatorcfg_resolve_config   # restore clean state
+
+echo "== R3: phase 6 over an older install removes its PoH pinning and restarts nothing =="
+SYSCALLS="$WORK/systemctl-calls"
+systemctl() {                        # records every call; SOLANA_ACTIVE_RC answers is-active
+    echo "systemctl $*" >>"$SYSCALLS"
+    [[ "$1" != is-active ]] || return "${SOLANA_ACTIVE_RC:-1}"
+    return 0
+}
+# The recorded systemctl calls that name the validator's own unit (solana or solana.service; solana-poh-pin.* are other units), minus the
+# whole lines the caller allows. An allowlist and not a list of verbs: a call nobody thought of (disable --now, --no-block restart, mask)
+# is listed too. <none> when there is nothing else. (The first allowed line is a sentinel: an empty allowlist file is no pattern at all.)
+solana_unit_calls() {                # <calls file> [allowed line]...
+    local calls=$1 allow="$WORK/solana-allow" out; shift
+    printf '%s\n' '(allowlist)' "$@" >"$allow"
+    out=$(grep -E '^systemctl( .*)? solana(\.service)?( |$)' "$calls" | grep -vxFf "$allow" || true)
+    rm -f "$allow"; printf '%s' "${out:-<none>}"
+}
+OH="$WORK/oldhome"; OU="$WORK/oldunits"
+poh_files() { printf '%s\n' "$OH/set_poh_affinity.sh" "$OH/wait_and_pin_poh.sh" "$OU/solana-poh-pin.service" "$OU/solana-poh-pin.timer"; }
+poh_left() { local f n=""; while IFS= read -r f; do [[ -e "$f" ]] && n+="${f##*/} "; done < <(poh_files); printf '%s' "${n:-<none>}"; }
+old_install() {                      # what an older DeePloy left: the four files, a validator.sh with the flag, a unit with ExecStartPost
+    local f; rm -rf "$OH" "$OU"; mkdir -p "$OH" "$OU"
+    printf '#!/bin/bash\nexec agave-validator --poh-pinned-cpu-core "10"\n' >"$OH/validator.sh"
+    printf '[Service]\nExecStart=%s/validator.sh\nExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service\n' "$OH" >"$OU/solana.service"
+    while IFS= read -r f; do echo old >"$f"; done < <(poh_files)
+}
+# SC2030/SC2031: the fixture's paths are set in the subshell on purpose, the suite's own are not to change.
+# shellcheck disable=SC2030,SC2031
+phase6() {                           # resolve + generate against the fixture, in its own shell; output to $1
+    ( export VALIDATOR_SH="$OH/validator.sh" SOLANA_SERVICE="$OU/solana.service" LOGROTATE_FILE="$WORK/logrotate-old"
+      state_set solana_home "$OH"
+      validatorcfg_resolve_config && validatorcfg_generate ) >"$1" 2>&1
+}
+old_install; : >"$SYSCALLS"
+SOLANA_ACTIVE_RC=0 phase6 "$WORK/p6a.out"
+check "older install: the four files are removed"              "$(poh_left)" "<none>"
+check "older install: one 'removed' line per file, four in all" \
+      "$(grep -c "removed $OH/set_poh_affinity.sh" "$WORK/p6a.out")$(grep -c "removed $OH/wait_and_pin_poh.sh" "$WORK/p6a.out")$(grep -c "removed $OU/solana-poh-pin.service" "$WORK/p6a.out")$(grep -c "removed $OU/solana-poh-pin.timer" "$WORK/p6a.out")|$(grep -c ' removed ' "$WORK/p6a.out")" "1111|4"
+check "older install: timer disabled and stopped first"      "$(grep -m1 'poh-pin' "$SYSCALLS")" "systemctl disable --now solana-poh-pin.timer"
+check "older install: the service stopped and disabled"       "$(grep -c '^systemctl stop solana-poh-pin.service$' "$SYSCALLS")|$(grep -c '^systemctl disable solana-poh-pin.service$' "$SYSCALLS")" "1|1"
+check "older install: daemon-reload after the timer is disabled" \
+      "$(awk '/disable --now solana-poh-pin.timer/ {t = NR} /^systemctl daemon-reload$/ && t && !r {r = NR} END {print (t && r && r > t) ? "after" : "t=" t " r=" r}' "$SYSCALLS")" "after"
+check "older install: validator.sh rewritten without the flag" "$(grep -c -- 'poh-pinned-cpu-core' "$OH/validator.sh")" "0"
+check "older install: solana.service rewritten without ExecStartPost" "$(grep -c 'ExecStartPost' "$OU/solana.service")" "0"
+check "older install: control — the answer to is-active was asked" "$(grep -c '^systemctl is-active --quiet solana.service$' "$SYSCALLS")" "1"
+# Phase 6 asks whether solana.service is running and does nothing else with it (the PoH-pin units are other units).
+check "older install: the only systemctl call that names solana.service is the is-active question (allowlist)" \
+      "$(solana_unit_calls "$SYSCALLS" 'systemctl is-active --quiet solana.service')" "<none>"
+check "older install: reset-failed for both PoH-pin units, once" \
+      "$(grep -c '^systemctl reset-failed solana-poh-pin.service solana-poh-pin.timer$' "$SYSCALLS")" "1"
+check "older install: says the new validator.sh takes effect at the next planned restart" "$(grep -c 'new validator.sh takes effect at the next planned restart' "$WORK/p6a.out")" "1"
+check "older install: and that a staked node goes to the standby first" "$(grep -c 'a staked node: move it to the standby first' "$WORK/p6a.out")" "1"
+# A second run: nothing left to remove, nothing changed, nothing to say.
+: >"$SYSCALLS"; SOLANA_ACTIVE_RC=0 phase6 "$WORK/p6b.out"
+check "re-run: no PoH-pin call, no 'removed' line"           "$(grep -c 'poh-pin' "$SYSCALLS")|$(grep -c ' removed ' "$WORK/p6b.out")" "0|0"
+check "re-run: validator.sh unchanged, so no restart notice" "$(grep -c 'takes effect at the next planned restart' "$WORK/p6b.out")" "0"
+# A stopped validator picks the new file up at its next start anyway: no notice.
+old_install; : >"$SYSCALLS"
+SOLANA_ACTIVE_RC=3 phase6 "$WORK/p6c.out"
+check "solana not running: files removed, no restart notice" "$(poh_left)|$(grep -c 'takes effect at the next planned restart' "$WORK/p6c.out")" "<none>|0"
+# Only part of it left (units but no scripts, and the other way round): still one line per file.
+old_install; rm -f "$OH/set_poh_affinity.sh" "$OH/wait_and_pin_poh.sh"; : >"$SYSCALLS"
+SOLANA_ACTIVE_RC=0 phase6 "$WORK/p6d.out"
+check "only the units left: both removed, two lines"         "$(poh_left)|$(grep -c ' removed ' "$WORK/p6d.out")" "<none>|2"
+old_install; rm -f "$OU/solana-poh-pin.service" "$OU/solana-poh-pin.timer"; : >"$SYSCALLS"
+SOLANA_ACTIVE_RC=0 phase6 "$WORK/p6e.out"
+check "only the scripts left: both removed, two lines"       "$(poh_left)|$(grep -c ' removed ' "$WORK/p6e.out")" "<none>|2"
+# A dry run removes nothing and says nothing was removed.
+old_install; : >"$SYSCALLS"
+# shellcheck disable=SC2030,SC2031
+( DRY_RUN=1; SOLANA_ACTIVE_RC=0; export VALIDATOR_SH="$OH/validator.sh" SOLANA_SERVICE="$OU/solana.service" LOGROTATE_FILE="$WORK/logrotate-old"
+  state_set solana_home "$OH"; validatorcfg_resolve_config && validatorcfg_generate ) >"$WORK/p6f.out" 2>&1
+check "dry-run: the four files are still there"              "$(poh_left)" "set_poh_affinity.sh wait_and_pin_poh.sh solana-poh-pin.service solana-poh-pin.timer "
+check "dry-run: no 'removed' line, no systemctl call"        "$(grep -c ' removed ' "$WORK/p6f.out")|$(grep -c . "$SYSCALLS")" "0|0"
+check "dry-run: and the old validator.sh is untouched"       "$(grep -c 'poh-pinned-cpu-core' "$OH/validator.sh")" "1"
+check "dry-run: a running solana, but nothing was written, so no restart notice" "$(grep -c 'takes effect at the next planned restart' "$WORK/p6f.out")" "0"
+# The phase-6 files run systemctl on the validator's unit in two lines only: the is-active question, and the logrotate template's
+# `systemctl kill -s USR1` (a signal in a rendered file, which phase 6 does not run). An allowlist of whole lines.
+STATIC_SOL=$(grep -hE 'systemctl' "$ROOT/lib/validatorcfg.sh" "$ROOT/lib/nic.sh" \
+    | grep -E '(^|[^A-Za-z0-9_-])solana(\.service)?([^A-Za-z0-9_.-]|$)' \
+    | grep -vxF -e '    if (( changed )) && ! is_dry_run && systemctl is-active --quiet solana.service 2>/dev/null; then' \
+                -e '    systemctl kill -s USR1 solana.service' || true)
+check "static: lib/validatorcfg.sh and lib/nic.sh run systemctl on solana.service only for the is-active question and the logrotate kill (allowlist)" \
+      "${STATIC_SOL:-<none>}" "<none>"
+state_set solana_home /root/solana; seed; validatorcfg_resolve_config
+unset -f systemctl solana_unit_calls poh_files poh_left old_install phase6; systemctl() { :; }
 
 echo "== version floor at RENDER: phase 6 is reachable without phase 4 =="
 # The generated validator.sh's own header tells the operator to regenerate with
@@ -522,6 +494,7 @@ state_set jito_tag v4.0.0-jito
 VFOUT=$( ( unset JITO_TAG; MEV_MODE=bam validatorcfg_resolve_config ) 2>&1 ); VFRC=$?
 check "recorded 4.0.0 -> render refused"        "$VFRC" "1"
 check "refusal names the render, not the build" "$(grep -c 'refusing to render validator.sh' <<<"$VFOUT")" "1"
+check "refusal names the flag the render passes, none it no longer does" "$(grep -c 'passes --no-xdp where XDP is off, and --no-xdp first exists in' <<<"$VFOUT")|$(grep -c 'poh-pinned-cpu-core' <<<"$VFOUT")" "1|0"
 check "refusal points at the upgrade path"      "$(grep -c 'upgrade' <<<"$VFOUT")" "1"
 state_set jito_tag v4.2.1-jito
 ( unset JITO_TAG; MEV_MODE=bam validatorcfg_resolve_config ) >/dev/null 2>&1

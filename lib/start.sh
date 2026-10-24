@@ -2,7 +2,7 @@
 # ============================================================================
 # DeePloy — lib/start.sh   (Phase 8: start -> catchup 0 -> verify)
 # Pre-start free-disk check -> enable+start solana.service -> wait for the node
-# to catch up (catchup 0) -> pin the PoH thread -> run the verification block ->
+# to catch up (catchup 0) -> run the verification block ->
 # print the final summary with the MANUAL staked-key hot-swap (the vote history
 # moved first; keys_print_swap_steps: path form in file mode, stdin form in
 # offbox mode) and a pointer to the separate failover tool.
@@ -31,7 +31,6 @@ start_resolve_config() {
     STAKED_KEYPAIR=""
     [[ "$STAKED_KEY_MODE" == offbox ]] || STAKED_KEYPAIR="$(state_get staked_keypair "$SOLANA_HOME/mainnet-validator-keypair.json")"
     VOTE_ACCOUNT_PUBKEY="$(state_get vote_account_pubkey "")"
-    SET_POH_SCRIPT="${SET_POH_SCRIPT:-$SOLANA_HOME/set_poh_affinity.sh}"
     DZ_ENABLED="$(state_get dz_enabled false)"   # was dz_multicast (latent bug): the finalize pointer keys on ENABLEMENT
     # Resolve the validator bin dir WITHOUT $HOME — Phase 8 runs under the systemd
     # resume service where $HOME is empty (was: "/.local/.../solana" -> not found).
@@ -120,15 +119,6 @@ start_wait_catchup() {
     done
 }
 
-start_pin_poh() {
-    step "Pinning PoH thread"
-    [[ -f "$SET_POH_SCRIPT" ]] || { warn "$SET_POH_SCRIPT missing — the poh-pin timer will handle it"; return 0; }
-    # Non-fatal: the node is already up + synced here, and set_poh_affinity now
-    # reports a real failure (H4) instead of swallowing it — a pin failure must not
-    # abort the run; the hourly poh-pin timer retries.
-    run bash "$SET_POH_SCRIPT" || warn "PoH pin did not succeed — the poh-pin timer will retry (check 'systemctl status solana-poh-pin')"
-}
-
 start_print_summary() {
     local catchup_rc="${1:-0}" verify_rc="${2:-0}" when=""
     if is_dry_run; then
@@ -181,9 +171,10 @@ start_run() {
     # Universal CPU-isolation gate: EVERY route to start — the post-reboot resume,
     # a manual --resume, AND `install --only 8` (which bypasses the reboot boundary)
     # — must confirm the recorded isolation is actually live before launching the
-    # validator (PoH on a non-isolated core skips slots). This closes the --only 8
-    # bypass (I2) and backstops a stale reboot_done latch (I1). Guarded: defined in
-    # deeploy.sh, so it no-ops when start.sh is unit-tested standalone.
+    # validator (the XDP cores must be reserved for the retransmit threads). This
+    # closes the --only 8 bypass (I2) and backstops a stale reboot_done latch (I1).
+    # Guarded: defined in deeploy.sh, so it no-ops when start.sh is unit-tested
+    # standalone.
     if declare -F _install_verify_isolation >/dev/null 2>&1; then
         _install_verify_isolation || fail "CPU isolation not verified — refusing to start the validator. Fix GRUB and re-run (see the diagnostics above)."
     fi
@@ -196,7 +187,6 @@ start_run() {
     local catchup_rc=0 verify_rc=0
     start_wait_catchup || catchup_rc=$?
     [[ $catchup_rc -eq 0 ]] || warn "catchup did not complete (timed out, or solana.service is not active)"
-    start_pin_poh
     if declare -F verify_run >/dev/null 2>&1; then verify_run || verify_rc=$?; else info "verify.sh not loaded — skipping verification"; fi
     start_print_summary "$catchup_rc" "$verify_rc"
     # An unsynced node is NOT a clean Phase 8: return non-zero so run_phase does not

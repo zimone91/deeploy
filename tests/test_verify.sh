@@ -26,8 +26,13 @@ check() { if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$1
 reset() { _VF_WARN=0; _VF_FAIL=0; }
 
 DRY_RUN=0 common_init
+# The rc9 box's isolated set: its IRQ placement is what the R10-3 cases below
+# measure. Here it is only a value verify_isolation compares with the kernel's.
 state_set isolated_set "1-2,10,25-26,34"
-state_set poh_core 10
+# Hermetic: no PoH-pin file of a real older install is looked for under /root or /etc.
+export SOLANA_SERVICE="$WORK/units/solana.service"; state_set solana_home "$WORK/home"
+# The real probe, kept under another name for its own test (the next block mocks it).
+eval "$(declare -f _vf_blk_creation_thread | sed '1s/^_vf_blk_creation_thread/_real_vf_blk_creation_thread/')"
 
 # "Good" system
 _vf_pid()          { echo 12345; }
@@ -35,8 +40,7 @@ _vf_proc_limits()  { printf 'Max core file size        0           0           b
 _vf_coredump_filter() { echo 00000010; }
 _vf_proc_nice()    { echo "-10"; }
 _vf_oom_score()    { echo "-1000"; }
-_vf_poh_thread()   { echo 999; }
-_vf_taskset()      { echo "10"; }
+_vf_blk_creation_thread() { echo 999; }
 _vf_isolated()     { echo "1-2,10,25-26,34"; }
 # Fake cpufreq sysfs (R10-2): mkcpus <gov of cpu0> <gov of the others> <count>
 mkcpus() { local i; rm -rf "$WORK/cpu"
@@ -48,18 +52,17 @@ _vf_ksm()          { echo 0; }
 _vf_numa()         { echo 0; }
 _vf_sysctl()       { case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }
 _vf_catchup()      { echo "caught up (us:100 them:100)"; }
-_vf_timer_active() { echo active; }
 
 echo "== good system: every check clean =="
 reset; verify_process      >/dev/null 2>&1; check "process running"  "$_VF_FAIL/$_VF_WARN" "0/0"
 reset; verify_limits       >/dev/null 2>&1; check "limits ok"        "$_VF_WARN" "0"
 reset; verify_priority     >/dev/null 2>&1; check "priority ok"      "$_VF_WARN" "0"
 reset; verify_isolation    >/dev/null 2>&1; check "isolation ok"     "$_VF_FAIL" "0"
-reset; verify_poh_affinity >/dev/null 2>&1; check "poh affinity ok"  "$_VF_WARN" "0"
+reset; verify_block_creation_loop >"$WORK/bcl" 2>&1; check "block creation loop ok" "$_VF_WARN|$(grep -c 'Alpenglow block creation loop running' "$WORK/bcl")" "0|1"
 reset; verify_perf_tweaks  >/dev/null 2>&1; check "perf tweaks ok"   "$_VF_WARN" "0"
 reset; verify_sysctl       >/dev/null 2>&1; check "sysctl ok"        "$_VF_WARN" "0"
 reset; verify_catchup      >/dev/null 2>&1; check "catchup ok"       "$_VF_WARN" "0"
-reset; verify_pohpin_timer >/dev/null 2>&1; check "timer ok"         "$_VF_WARN" "0"
+reset; verify_poh_leftovers >"$WORK/lo" 2>&1; check "no PoH-pin leftovers: ok and silent" "$_VF_WARN|$(wc -c <"$WORK/lo" | tr -d ' ')" "0|0"
 
 echo "== env-class: verify_run resolves SOLANA_BIN absolute with HOME UNSET (systemd) =="
 # verify runs inside Phase 8 via the resume service, where $HOME is empty. The
@@ -79,15 +82,45 @@ _vf_isolated() { echo "10,34"; }
 reset; verify_isolation >/dev/null 2>&1; check "isolation mismatch -> FAIL" "$_VF_FAIL" "1"
 _vf_isolated() { echo "1-2,10,25-26,34"; }
 VF_PID=12345   # restore (the no-process test left it empty)
-_vf_taskset() { echo "5"; }
-reset; verify_poh_affinity >/dev/null 2>&1; check "poh wrong core -> warn" "$_VF_WARN" "1"
-_vf_taskset() { echo "10"; }
+_vf_blk_creation_thread() { echo ""; }
+reset; verify_block_creation_loop >"$WORK/bcl" 2>&1; check "no solBlkCreatLoop thread -> warn, naming it" "$_VF_WARN|$(grep -c 'no solBlkCreatLoop thread in pid 12345' "$WORK/bcl")" "1|1"
+VF_PID=""; reset; verify_block_creation_loop >"$WORK/bcl" 2>&1; check "no validator process -> the thread is not looked for" "$_VF_WARN|$(wc -c <"$WORK/bcl" | tr -d ' ')" "0|0"
+VF_PID=12345
+_vf_blk_creation_thread() { echo 999; }
 mkcpus powersave powersave 4
 reset; verify_perf_tweaks >/dev/null 2>&1; check "bad governor -> >=1 warn" "$([[ $_VF_WARN -ge 1 ]] && echo y || echo n)" "y"
 mkcpus performance performance 4
 _vf_catchup() { echo "85 slots behind (us:10 them:95)"; }
 reset; verify_catchup >/dev/null 2>&1; check "behind -> warn" "$_VF_WARN" "1"
 _vf_catchup() { echo "caught up (us:100 them:100)"; }
+
+echo "== R5: the solBlkCreatLoop probe reads the validator's thread list =="
+# The probe asks for the threads of one pid, `ps -T -p <pid> -o spid,comm`; the mock answers that call and no other.
+ps() { [[ "$*" == "-T -p 100 -o spid,comm" ]] || return 1; printf '   SPID COMMAND\n  101 agave-validator\n  102 solBlkCreatLoop\n  103 solPohTickProd\n'; }
+check "probe: the thread id of solBlkCreatLoop"            "$(_real_vf_blk_creation_thread 100)" "102"
+ps() { [[ "$*" == "-T -p 100 -o spid,comm" ]] || return 1; printf '   SPID COMMAND\n  101 agave-validator\n  103 solPohTickProd\n'; }
+check "probe: no such thread -> nothing (solPohTickProd is not it)" "$(_real_vf_blk_creation_thread 100)" ""
+ps() { return 1; }
+check "probe: ps fails (pid gone) -> nothing, no abort under set -Eeuo pipefail" "$( ( set -Eeuo pipefail; _real_vf_blk_creation_thread 100 ); echo "rc=$?" )" "rc=0"
+unset -f ps
+
+echo "== R5: leftovers of an older DeePloy's PoH pinning =="
+LH="$WORK/home"; LU="$WORK/units"; mkdir -p "$LH" "$LU"
+for f in "$LH/set_poh_affinity.sh" "$LH/wait_and_pin_poh.sh" "$LU/solana-poh-pin.service" "$LU/solana-poh-pin.timer"; do
+    : >"$f"; reset; verify_poh_leftovers >"$WORK/lo" 2>&1
+    check "leftover ${f##*/} alone -> one WARN with the re-run hint" "$_VF_WARN|$(grep -c 'leftover PoH-pin unit from an older DeePloy: re-run phase 6 to remove it' "$WORK/lo")|$(grep -c "found: .*${f##*/}" "$WORK/lo")" "1|1|1"
+    rm -f "$f"
+done
+reset; verify_poh_leftovers >"$WORK/lo" 2>&1
+check "after they are gone: ok and silent again" "$_VF_WARN|$(wc -c <"$WORK/lo" | tr -d ' ')" "0|0"
+: >"$LH/set_poh_affinity.sh"; : >"$LH/wait_and_pin_poh.sh"; : >"$LU/solana-poh-pin.service"; : >"$LU/solana-poh-pin.timer"
+reset; verify_poh_leftovers >"$WORK/lo" 2>&1
+check "all four there -> still ONE warning, all four listed" "$_VF_WARN|$(grep -c 'leftover PoH-pin unit' "$WORK/lo")|$(grep -o 'solana-poh-pin\.\(service\|timer\)\|set_poh_affinity.sh\|wait_and_pin_poh.sh' "$WORK/lo" | sort -u | wc -l | tr -d ' ')" "1|1|4"
+verify_run >"$WORK/run" 2>&1
+check "verify_run runs the leftovers check and the thread check" "$(grep -c 'leftover PoH-pin unit' "$WORK/run")|$(grep -c 'Alpenglow block creation loop running' "$WORK/run")" "1|1"
+check "verify_run: nothing about a PoH thread's affinity or a timer being active (the leftovers lines aside)" "$(grep -v 'found:\|leftover PoH-pin unit' "$WORK/run" | grep -ci 'solPohTickProd\|poh-pin\|PoH thread\|PoH core')" "0"
+rm -f "$LH/set_poh_affinity.sh" "$LH/wait_and_pin_poh.sh" "$LU/solana-poh-pin.service" "$LU/solana-poh-pin.timer"
+check "the old checks are gone" "$(declare -F verify_poh_affinity verify_pohpin_timer _vf_poh_thread _vf_timer_active _vf_taskset 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo "== R10-2: the governor of every cpufreq CPU, not cpu0 alone =="
 mkcpus performance ondemand 12

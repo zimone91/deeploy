@@ -286,6 +286,19 @@ deeploy_solana_bin() {
     printf '%s' "${SOLANA_INSTALL_HOME:-/root}/.local/share/solana/install/active_release/bin"
 }
 
+# --- an older install's PoH pinning (shared by validatorcfg.sh and verify.sh) -
+# The four files an older DeePloy wrote for it: the two scripts in the solana
+# home, the two units beside solana.service (SOLANA_SERVICE names that one).
+# Phase 6 removes them and verify warns while any exists; no current phase
+# writes them. One path per line.
+deeploy_poh_pin_files() {
+    local home unit_dir
+    home="$(state_get solana_home /root/solana)"
+    unit_dir="$(dirname "${SOLANA_SERVICE:-/etc/systemd/system/solana.service}")"
+    printf '%s\n' "$home/set_poh_affinity.sh" "$home/wait_and_pin_poh.sh" \
+        "$unit_dir/solana-poh-pin.service" "$unit_dir/solana-poh-pin.timer"
+}
+
 # --- identities (read-only; shared by upgrade.sh and verify.sh) ---------------
 # The staked identity is applied at runtime with set-identity, so argv
 # (/proc/<pid>/cmdline) always shows the sync identity and a keypair file proves

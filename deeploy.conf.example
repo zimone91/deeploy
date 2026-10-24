@@ -12,11 +12,10 @@
 # --- Network and SSH ---
 SSH_PORT="22"                          # a non-default port reduces noise/scans
 
-# --- CPU tuning (PoH core is the single source of truth) ---
-POH_CORE="10"                          # isolated core for PoH (default: auto-detect)
-XDP_CORES_COUNT="2"                    # extra cores for XDP retransmit (0 = none)
+# --- CPU tuning (the XDP cores are the whole isolated set) ---
+XDP_CORES_COUNT="2"                    # cores reserved for XDP retransmit (0 = none: nothing is isolated)
 XDP_CORES="1-2"                        # computed: the reserved XDP cores
-ISOLATED_SET="1-2,10,25-26,34"         # computed by tuning; informational
+ISOLATED_SET="1-2,25-26"               # computed by tuning (the XDP cores and their SMT siblings); informational
 
 # --- NIC / retransmit (detected in preflight) ---
 NIC_DRIVER="mlx5_core"                 # mlx5_core (XDP+ZC) | bnxt_en (XDP, no ZC)
@@ -37,7 +36,7 @@ JITO_TAG="v4.3.2-jito"                 # see github.com/jito-foundation/jito-sol
 #                                      # RECOMMENDED: v4.3.2-jito or newer (SFDP requires
 #                                      # Agave 4.3.2 from epoch 1063); older tags get a warning
 #                                      # MINIMUM SUPPORTED: v4.2.0-jito (older
-#                                      # clients lack --no-xdp / --poh-pinned-cpu-core)
+#                                      # tags lack --no-xdp)
 
 # --- Keys: PATHS and PUBKEYS only (no key material). ---
 UNSTAKED_KEYPAIR="/root/solana/unstaked-identity.json"   # the unstaked SYNC identity the node runs under until the swap

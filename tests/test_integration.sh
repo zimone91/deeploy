@@ -30,8 +30,7 @@ export SYSCTL_FILE="$WORK/21.conf" SYSCTL_SERVICE_FILE="$WORK/sysctl.service" LI
 export FSTAB_FILE="$WORK/etc/fstab" LEDGER_MOUNT="$WORK/mnt/ledger" ACCOUNTS_MOUNT="$WORK/mnt/accounts" SOLANA_LINK="$WORK/root/solana"
 export XFS_SYSCTL_FILE="$WORK/etc/22-agave-xfs.conf" XFS_MODLOAD_FILE="$WORK/etc/modules-load-xfs.conf"
 export VALIDATOR_SH="$WORK/root/solana/validator.sh" SOLANA_SERVICE="$WORK/root/solana/solana.service"
-export SET_POH_SCRIPT="$WORK/root/solana/set_poh_affinity.sh" WAIT_PIN_SCRIPT="$WORK/root/solana/wait_and_pin_poh.sh"
-export LOGROTATE_FILE="$WORK/logrotate" POH_PIN_SERVICE="$WORK/poh.service" POH_PIN_TIMER="$WORK/poh.timer"
+export LOGROTATE_FILE="$WORK/logrotate"
 export MLX5_IRQ_SCRIPT="$WORK/root/solana/mlx5-irq.sh" MLX5_IRQ_SERVICE="$WORK/mlx5.service"
 export SOLANA_INSTALL_DIR="$WORK/install" MOSTLY_THRESHOLD_ROOT="$WORK/mct" RESUME_SERVICE_FILE="$WORK/deeploy-resume.service"
 export SOLANA_BIN="$WORK/bin" OS_RELEASE_FILE="$WORK/os-release" PROC_CPUINFO="$WORK/cpuinfo" PROC_MEMINFO="$WORK/meminfo" PROC_MDSTAT="$WORK/mdstat"
@@ -132,6 +131,16 @@ curl()        { case "$*" in *getGenesisHash*) printf '{"result":"5eykt4UsFv8P8N
 ALLCALLS="$WORK/allcalls"; : >"$ALLCALLS"
 for c in apt-get ufw systemctl blkdiscard mount swapoff umount mdadm cargo rustup setcap getcap update-grub sysctl cp logger sh git; do eval "${c}() { echo '${c}' \"\$*\" >>'$CALLS'; echo '${c}' >>'$ALLCALLS'; return 0; }"; done
 mkfs.xfs() { echo "mkfs.xfs $*" >>"$CALLS"; echo mkfs.xfs >>"$ALLCALLS"; }
+# The recorded systemctl calls that name the validator's own unit (solana or solana.service; solana-poh-pin.* and solana-sysctl.service are
+# other units), minus the whole lines the caller allows. An allowlist and not a list of verbs: a call nobody thought of (disable --now,
+# --no-block restart, mask) is listed too. <none> when there is nothing else. (The first allowed line is a sentinel: an empty allowlist
+# file is no pattern at all.)
+solana_unit_calls() {                # <calls file> [allowed line]...
+    local calls=$1 allow="$WORK/solana-allow" out; shift
+    printf '%s\n' '(allowlist)' "$@" >"$allow"
+    out=$(grep -E '^systemctl( .*)? solana(\.service)?( |$)' "$calls" | grep -vxFf "$allow" || true)
+    rm -f "$allow"; printf '%s' "${out:-<none>}"
+}
 # tuning_grub reads the GENERATED grub.cfg back before arming the reboot, so the
 # walkthrough needs an update-grub that behaves like one. The candidate list is
 # pinned at the fixture: the ubuntu runner has a real /boot/grub/grub.cfg, and
@@ -149,12 +158,12 @@ require_yes() { return 0; }   # simulate the operator typing 'yes' to the disk w
 # stub heavy build/network/wait subprocesses (their logic is unit-tested elsewhere)
 for s in toolchain_deps toolchain_rust toolchain_anza_cli toolchain_fetch_source toolchain_apply_overlay \
          toolchain_inject_lto_profile toolchain_patch_cargo_script toolchain_compile toolchain_install_release \
-         toolchain_write_threshold toolchain_setcap toolchain_verify start_wait_catchup start_pin_poh; do eval "${s}() { :; }"; done
+         toolchain_write_threshold toolchain_setcap toolchain_verify start_wait_catchup; do eval "${s}() { :; }"; done
 # verify probes: simulate a correctly-isolated, running node
 _vf_pid(){ echo 12345; }; _vf_proc_limits(){ printf 'Max open files 2000000 2000000 files\nMax locked memory unlimited unlimited bytes\n'; }
-_vf_proc_nice(){ echo -10; }; _vf_oom_score(){ echo -1000; }; _vf_poh_thread(){ echo 999; }; _vf_taskset(){ sget poh_core; }
+_vf_proc_nice(){ echo -10; }; _vf_oom_score(){ echo -1000; }; _vf_blk_creation_thread(){ echo 999; }
 _vf_isolated(){ sget isolated_set; }; _vf_governors(){ echo "cpu0 performance"; }; _vf_thp(){ echo "[never]"; }; _vf_ksm(){ echo 0; }; _vf_numa(){ echo 0; }
-_vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "caught up (us:100 them:100)"; }; _vf_timer_active(){ echo active; }
+_vf_sysctl(){ case "$1" in net.core.rmem_max) echo 134217728;; fs.nr_open) echo 2000000;; esac; }; _vf_catchup(){ echo "caught up (us:100 them:100)"; }
 _vf_nic(){ echo enp1s0; }; _vf_nic_bus(){ echo 0000:85:00.0; }; _vf_mlx5_irqs(){ echo "254 mlx5_comp0@pci:0000:85:00.0 0"; }
 _vf_hugepages(){ echo 32; }; _vf_hugepage_fails(){ echo 0; }
 _vf_log_first(){ echo 2026-10-05T14:00:00.000000000Z; }; _vf_log_last(){ echo 2026-10-05T14:45:00.000000000Z; }; _vf_bam_lines(){ :; }
@@ -195,19 +204,21 @@ check "dry-run: the sandbox is byte-identical"         "$(sandbox_sig)" "$SIG0"
 
 echo "############ FULL-FLOW WALKTHROUGH (phases 0 -> 7, state threading) ############"
 for p in 0 1 2 3 4 5 6 7; do
+    P_FROM=$(wc -l <"$CALLS")
     run_phase "$p" >/dev/null 2>&1
+    if [[ "$p" == 6 ]]; then sed -n "$((P_FROM + 1)),\$p" "$CALLS" >"$WORK/phase6.calls"; fi
     printf '— after phase %s (%s):\n' "$p" "$(phase_name "$p")"
     case "$p" in
         0) printf '    writes: nic_driver=%s retransmit_supported=%s retransmit_zero_copy=%s data_disk_count=%s\n' \
                "$(sget nic_driver)" "$(sget retransmit_supported)" "$(sget retransmit_zero_copy)" "$(sget data_disk_count)"
            printf '    region: suggested_bam_url=%s\n' "$(sget suggested_bam_url)" ;;
-        2) printf '    reads retransmit_supported=%s -> writes poh_core=%s xdp_cores=%s\n' "$(sget retransmit_supported)" "$(sget poh_core)" "$(sget xdp_cores)"
+        2) printf '    reads retransmit_supported=%s -> writes xdp_cores=%s\n' "$(sget retransmit_supported)" "$(sget xdp_cores)"
            printf '    isolated_set=%s  irqaffinity=%s  reboot_required=%s\n' "$(sget isolated_set)" "$(sget irqaffinity)" "$(sget reboot_required)" ;;
         3) printf '    writes: solana_home=%s ledger_path=%s accounts_path=%s snapshots_path=%s\n' \
                "$(sget solana_home)" "$(sget ledger_path)" "$(sget accounts_path)" "$(sget snapshots_path)" ;;
         4) printf '    writes: jito_tag=%s\n' "$(sget jito_tag)" ;;
         5) printf '    writes: sync_identity=%s vote_account_pubkey=%s\n' "$(sget sync_identity)" "$(sget vote_account_pubkey)" ;;
-        6) printf '    reads poh_core/paths -> generated validator.sh + solana.service + mlx5-irq service\n' ;;
+        6) printf '    reads xdp_cores/paths -> generated validator.sh + solana.service + mlx5-irq service\n' ;;
         7) printf '    DZ_ENABLED=false -> skipped\n' ;;
     esac
 done
@@ -217,8 +228,8 @@ echo "############ SEAM ASSERTIONS (each phase reads the prior format) #########
 check "preflight->tuning: nic_driver = mlx5_core"          "$(sget nic_driver)" "mlx5_core"
 check "preflight->tuning: retransmit_supported = 1"        "$(sget retransmit_supported)" "1"
 check "preflight->validatorcfg: zero_copy = 1"             "$(sget retransmit_zero_copy)" "1"
-check "tuning: default POH_CORE propagated = 10"           "$(sget poh_core)" "10"
-check "tuning: isolated_set = 1-2,10,25-26,34"             "$(sget isolated_set)" "1-2,10,25-26,34"
+check "tuning: no PoH core recorded"                       "$(sget poh_core)" "<unset>"
+check "tuning: isolated_set = the XDP cores + siblings, 1-2,25-26" "$(sget isolated_set)" "1-2,25-26"
 check "tuning: xdp_cores = 1-2 (-> RETRANSMIT)"            "$(sget xdp_cores)" "1-2"
 check "tuning: reboot_required = 1"                        "$(sget reboot_required)" "1"
 check "disk->validatorcfg: ledger_path"                   "$(sget ledger_path)" "$WORK/root/solana/ledger"
@@ -235,7 +246,7 @@ check "Phase 3 wrote the XFS drop-in"                     "$(grep -c 'fs.xfs.xfs
 echo ""
 echo "############ GENERATED validator.sh threads the chain ############"
 check_true "validator.sh generated"                  "[[ -f \"$VALIDATOR_SH\" ]]"
-check "POH_CORE (tuning) -> --poh-pinned-cpu-core"             "$(grep -c -- '--poh-pinned-cpu-core "10"' "$VALIDATOR_SH")" "1"
+check "no PoH core in validator.sh: no --poh-pinned-cpu-core"  "$(grep -c -- 'poh-pinned-cpu-core' "$VALIDATOR_SH")" "0"
 check "RETRANSMIT cpu-cores from xdp_cores (tuning)"           "$(grep -c -- '--xdp-cpu-cores "1-2"' "$VALIDATOR_SH")" "1"
 check "zero-copy present (mlx5)"                              "$(grep -c -- '--xdp-zero-copy' "$VALIDATOR_SH")" "1"
 check "XDP enabled on this box -> no --no-xdp"                "$(grep -c -- '--no-xdp' "$VALIDATOR_SH")" "0"
@@ -246,6 +257,16 @@ check "vote-account from keys state"                         "$(grep -c -- '--vo
 check "X1: every interpolated path is quoted (no bare --ledger /)" "$(grep -c -- '--ledger /' "$VALIDATOR_SH")" "0"
 check_true "generated validator.sh is valid bash"           "bash -n \"$VALIDATOR_SH\""
 check "mlx5-irq service generated (NIC layer)"               "$(grep -c 'Before=solana.service' "$MLX5_IRQ_SERVICE")" "1"
+# R3/R4: phase 6 writes no PoH-pin script or unit, solana.service starts none,
+# and phase 6 leaves the running validator alone.
+POHF=""; for f in "$WORK/root/solana/set_poh_affinity.sh" "$WORK/root/solana/wait_and_pin_poh.sh" "$WORK/root/solana/solana-poh-pin.service" "$WORK/root/solana/solana-poh-pin.timer" \
+    "$WORK/poh.service" "$WORK/poh.timer"; do [[ -e "$f" ]] && POHF+=" $f"; done
+check "phase 6 wrote no PoH-pin script or unit"              "${POHF:-<none>}" "<none>"
+check "solana.service starts no PoH-pin unit"                "$(grep -c 'poh-pin\|ExecStartPost' "$SOLANA_SERVICE")" "0"
+check_true "phase 6 ran systemctl daemon-reload (the slice is the right one)" "(( $(grep -c '^systemctl daemon-reload' "$WORK/phase6.calls") >= 1 ))"
+check "phase 6 enabled no poh-pin timer"                     "$(grep -c 'poh-pin' "$WORK/phase6.calls")" "0"
+check "phase 6: the only systemctl call that names solana.service is the is-active question (allowlist)" \
+      "$(solana_unit_calls "$WORK/phase6.calls" 'systemctl is-active --quiet solana.service')" "<none>"
 
 echo ""
 echo "############ R10-7e control: an unsafe checkout refuses at the gate, in a dry-run too ############"
@@ -285,10 +306,47 @@ check "install recorded deeploy_version in state" "$(sget deeploy_version)" "$SR
 echo ""
 echo "############ POST-REBOOT RESUME -> verify isolation -> phase 8 ############"
 : >"$CALLS"
-POST_REBOOT=1 install_run >/dev/null 2>&1; POST_REBOOT=0
+POST_REBOOT=1 install_run >"$WORK/postreboot.out" 2>&1; POST_REBOOT=0
 check "post-reboot: isolation verified, reboot_done set" "$(state_has reboot_done && echo y || echo n)" "y"
+check "post-reboot: verify finds the block creation loop"  "$(grep -c 'Alpenglow block creation loop running' "$WORK/postreboot.out")" "1"
+check "post-reboot: no PoH pinning, no PoH warning anywhere in phase 8" "$(grep -ci 'poh' "$WORK/postreboot.out")" "0"
 check "post-reboot: phase 8 completed"                   "$(state_has phase-8 && echo y || echo n)" "y"
 check "post-reboot: resume service disabled"             "$(grep -c 'systemctl disable deeploy-resume.service' "$CALLS")" "1"
+
+echo ""
+echo "############ MIGRATION: an older install re-run through phases 2 and 6, on a running validator ############"
+# A box installed while DeePloy still pinned PoH: its isolated set carries the PoH core 10 and its sibling 34, the four
+# PoH-pin files are there, validator.sh passes --poh-pinned-cpu-core and solana.service starts the pin unit. Each phase runs
+# in its own shell, so that an older DeePloy (the red run) ends in failed checks and not in a dead suite.
+SOLD="$WORK/root/solana"
+state_set poh_core 10; state_set isolated_set "1-2,10,25-26,34"; state_set irqaffinity "0,3-9,11-24,27-33,35-47"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34 rcu_nocbs=1-2,10,25-26,34 irqaffinity=0,3-9,11-24,27-33,35-47"' >"$GRUB_FILE"
+for f in set_poh_affinity.sh wait_and_pin_poh.sh solana-poh-pin.service solana-poh-pin.timer; do echo old >"$SOLD/$f"; done
+printf '#!/bin/bash\nexec agave-validator --poh-pinned-cpu-core "10"\n' >"$VALIDATOR_SH"
+printf '[Service]\nExecStart=%s\nExecStartPost=/bin/systemctl --no-block start solana-poh-pin.service\n' "$VALIDATOR_SH" >"$SOLANA_SERVICE"
+: >"$CALLS"
+( ONLY_PHASE=2; install_run ) >"$WORK/mig2.out" 2>&1
+check "migration, phase 2: the GRUB line has the XDP set once and no PoH core or sibling" \
+      "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26 ' "$GRUB_FILE")|$(grep -c '10,34' "$GRUB_FILE")|$(grep -o 'isolcpus=' "$GRUB_FILE" | wc -l | tr -d ' ')" "1|0|1"
+check "migration, phase 2: the generated grub.cfg agrees"      "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26 ' "$GCFG")|$(grep -c '10,34' "$GCFG")" "1|0"
+check "migration, phase 2: isolated_set and irqaffinity are the new ones" "$(sget isolated_set)|$(sget irqaffinity)" "1-2,25-26|0,3-24,27-47"
+check "migration, phase 2: says the change takes effect at the next planned reboot" "$(grep -c 'next planned reboot' "$WORK/mig2.out")" "1"
+check "migration, phase 2: a reboot is armed (the box is not rebooted by the phase)" "$(sget reboot_required)|$(grep -c 'systemctl reboot' "$CALLS")" "1|0"
+( ONLY_PHASE=6; install_run ) >"$WORK/mig6.out" 2>&1
+POHF=""; for f in set_poh_affinity.sh wait_and_pin_poh.sh solana-poh-pin.service solana-poh-pin.timer; do [[ -e "$SOLD/$f" ]] && POHF+=" $f"; done
+check "migration, phase 6: the four PoH-pin files are removed"  "${POHF:-<none>}" "<none>"
+check "migration, phase 6: one 'removed' line per file"         "$(grep -c ' removed ' "$WORK/mig6.out")" "4"
+check "migration, phase 6: validator.sh without the flag, solana.service without ExecStartPost" "$(grep -c 'poh-pinned-cpu-core' "$VALIDATOR_SH")|$(grep -c 'ExecStartPost' "$SOLANA_SERVICE")" "0|0"
+check "migration, phase 6: the timer and the service are disabled and stopped, then systemd reloaded" \
+      "$(grep -c '^systemctl disable --now solana-poh-pin.timer' "$CALLS")|$(grep -c '^systemctl stop solana-poh-pin.service' "$CALLS")|$(awk '/^systemctl disable --now solana-poh-pin.timer/ {t = NR} /^systemctl daemon-reload/ && t && !r {r = NR} END {print (t && r && r > t) ? "reloaded after" : "no reload after"}' "$CALLS")" "1|1|reloaded after"
+check "migration, phase 6: the new validator.sh waits for the next planned restart, a staked node for its standby" "$(grep -c 'new validator.sh takes effect at the next planned restart' "$WORK/mig6.out")|$(grep -c 'a staked node: move it to the standby first' "$WORK/mig6.out")" "1|1"
+check "migration, phase 6: reset-failed for both PoH-pin units, once" \
+      "$(grep -c '^systemctl reset-failed solana-poh-pin.service solana-poh-pin.timer$' "$CALLS")" "1"
+# phases 2 and 6 ask whether solana.service is running (phase 6) and do nothing else with it: an allowlist of whole calls.
+check "migration: the only systemctl call that names solana.service, in phases 2 and 6, is the is-active question (allowlist)" \
+      "$(solana_unit_calls "$CALLS" 'systemctl is-active --quiet solana.service')" "<none>"
+verify_run >"$WORK/migverify.out" 2>&1
+check "migration: verify afterwards has no leftover and no PoH warning, no failure" "$(grep -c 'leftover PoH-pin' "$WORK/migverify.out")|$(grep -ci 'poh' "$WORK/migverify.out")|$(grep -c 'Verification: .* 0 failure' "$WORK/migverify.out")" "0|0|1"
 
 echo ""
 echo "############ ZERO REAL SIDE EFFECTS ############"

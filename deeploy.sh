@@ -67,8 +67,9 @@ _install_read_isolated() { cat /sys/devices/system/cpu/isolated 2>/dev/null; }  
 _install_read_cmdline()  { cat /proc/cmdline 2>/dev/null; }                       # mockable
 
 # Verify GRUB CPU isolation actually took effect after the reboot. A node up
-# WITHOUT isolation runs PoH on a non-isolated core (skips) — so on mismatch we
-# log FAIL and refuse to start the validator.
+# WITHOUT the isolation phase 2 recorded runs other work on the cores reserved
+# for XDP retransmit — so on mismatch we log FAIL and refuse to start the
+# validator. No XDP cores means no recorded set, and nothing to verify.
 _install_verify_isolation() {
     local want actual cmdline cmd_isol count
     want="$(state_get isolated_set "")"
@@ -86,7 +87,7 @@ _install_verify_isolation() {
             printf '    expected isolated set : %s\n' "$want"
             printf '    actual   isolated set : %s\n' "${actual:-<none>}"
             printf '    /proc/cmdline         : %s\n' "$cmd_isol"
-            printf '    Why: PoH on a non-isolated core causes skipped slots — refusing to start.\n'
+            printf '    Why: the XDP cores are reserved for the retransmit threads; without the isolation other work runs on them — refusing to start.\n'
             printf '    Fix:\n'
             printf '      1) inspect /etc/default/grub (GRUB_CMDLINE_LINUX_DEFAULT) and /boot/grub/grub.cfg\n'
             printf '      2) regenerate + re-apply:  %s install --only 2   (then reboot)\n' "$DEEPLOY_SELF"
@@ -161,8 +162,8 @@ _install_disable_resume_service() {
 
 # Post-reboot completion, shared by the auto-resume service AND a manual --resume
 # that detects the reboot already happened. Verify CPU isolation is actually live
-# (fail-closed — a node started without it runs PoH on a non-isolated core and
-# skips slots), restore a CONNECTED DoubleZero tunnel, latch reboot_done.
+# (fail-closed — a node started without it runs other work on the XDP cores),
+# restore a CONNECTED DoubleZero tunnel, latch reboot_done.
 _install_post_reboot_proceed() {
     _install_verify_isolation || fail "Isolation verification failed — not starting the validator. Fix GRUB and re-run."
     # Only the CONNECTED tunnel needs restore. DZ prepared-but-not-connected (the
@@ -179,10 +180,26 @@ _install_post_reboot_proceed() {
     return 0
 }
 
+# Does the running kernel carry what phase 2 wrote to GRUB? With an isolated set:
+# its isolcpus value. Without one (no XDP cores, nothing isolated): the two fixed
+# parameters phase 2 always writes, and no isolcpus — an older install's
+# isolation still on the line means the box has not rebooted onto the new GRUB.
+_install_grub_params_live() {                     # <isolated set, possibly empty>
+    local want=$1 cmdline
+    cmdline="$(_install_read_cmdline)"
+    if [[ -n "$want" ]]; then
+        grep -q "isolcpus=domain,managed_irq,${want}" <<<"$cmdline"
+    else
+        grep -q 'amd_pstate=passive' <<<"$cmdline" \
+            && grep -q 'nvme_core.default_ps_max_latency_us=0' <<<"$cmdline" \
+            && ! grep -q 'isolcpus=' <<<"$cmdline"
+    fi
+}
+
 # Called right before phase 8. Returns 0 to proceed to phase 8, 1 to STOP
 # install_run (a reboot was requested and the box must reboot first).
 _install_reboot_boundary() {
-    local want
+    local want what
     # No GRUB change, or we already came back from the reboot -> just proceed.
     if [[ "$(state_get reboot_required 0)" != "1" ]] || state_has reboot_done; then
         return 0
@@ -193,6 +210,9 @@ _install_reboot_boundary() {
         _install_post_reboot_proceed
         return 0
     fi
+    # An empty set is a set too: no XDP cores, nothing isolated, and the check
+    # reads the two fixed GRUB parameters instead (_install_grub_params_live).
+    what="CPU isolation"; [[ -n "$want" ]] || what="the GRUB kernel parameters"
     # A MANUAL `install --resume` after the reboot ALREADY happened (the resume
     # service died before recording reboot_done): the booted kernel already carries
     # the wanted isolation, so verify + proceed to Phase 8 instead of re-prompting a
@@ -200,9 +220,8 @@ _install_reboot_boundary() {
     # not-yet-rebooted box lacks the new isolcpus in /proc/cmdline, and a sanctioned
     # re-tune clears reboot_pending (I1) — so only a genuine post-reboot manual
     # resume reaches here.
-    if [[ -n "$want" ]] && state_has reboot_pending \
-       && grep -q "isolcpus=domain,managed_irq,${want}" <<<"$(_install_read_cmdline)"; then
-        info "CPU-isolation reboot already applied — resuming to Phase 8 (no second reboot needed)."
+    if state_has reboot_pending && _install_grub_params_live "$want"; then
+        info "Reboot for ${what} already applied — resuming to Phase 8 (no second reboot needed)."
         _install_post_reboot_proceed
         return 0
     fi
@@ -215,9 +234,9 @@ _install_reboot_boundary() {
     if [[ "$(state_get dz_enabled false)" == "true" ]] && declare -F dz_print_old_server_reminder >/dev/null 2>&1; then
         dz_print_old_server_reminder
     fi
-    step "Reboot required to apply CPU isolation"
+    step "Reboot required to apply ${what}"
     info "All interactive setup (phases 0-7) is complete."
-    info "After reboot, ${RESUME_SERVICE_NAME} auto-runs: it verifies isolation, then phase 8 (start -> catchup -> verify)."
+    info "After reboot, ${RESUME_SERVICE_NAME} auto-runs: it verifies the isolation (if any), then phase 8 (start -> catchup -> verify)."
     info "Manual alternative after reboot:  ${DEEPLOY_SELF} install --resume"
     if confirm "Reboot now?" Y; then
         ok "Rebooting now — DeePloy will resume automatically."

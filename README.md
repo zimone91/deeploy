@@ -119,10 +119,9 @@ annotated but not signed, so a checksum proves integrity, not authorship.
 DeePloy is not a daemon and does not supervise the validator. `solana.service`
 runs the node. The rest of what it installs is DeePloy's own and keeps running
 without it: `performance-tweaks.service` and `solana-sysctl.service` reapply
-host tuning at every boot, `solana-poh-pin` re-pins the PoH thread, and an mlx5
-or bnxt_en NIC adds a tuning unit. Phase 2 also leaves exactly one
-`GOVERNOR="performance"` line in `/etc/default/cpufrequtils` and keeps the
-file's other lines.
+host tuning at every boot, and an mlx5 or bnxt_en NIC adds a tuning unit.
+Phase 2 also leaves exactly one `GOVERNOR="performance"` line in
+`/etc/default/cpufrequtils` and keeps the file's other lines.
 
 One unit runs DeePloy itself. `deeploy-resume.service` carries the install
 across its single reboot. The automatic resume disables it; a manual
@@ -154,6 +153,12 @@ executed on hardware, the revision you are reading included.
   changed on a hardware-proven path. The new form ran on an mlx5 box with
   zero-copy on 2026-10-05. On bnxt_en, which has no zero-copy, metal has not
   seen it.
+- DeePloy sets no PoH core and pins no PoH thread: after the Alpenglow
+  migration, jito-solana 4.3.2-jito does not start PohService
+  (`poh/src/poh_service.rs` 121-129), so there is nothing to pin. Phase 2
+  isolates the XDP cores and their SMT siblings only. Over an older install,
+  re-running phase 2 strips the old PoH core from GRUB (it takes effect at the
+  next reboot) and re-running phase 6 removes the `solana-poh-pin` units.
 - `upgrade` is beta. Tests exercise it; a real client upgrade on a staked box
   has not.
 - `dz-connect` hands your keypair path to `doublezero-solana`, which comes from
