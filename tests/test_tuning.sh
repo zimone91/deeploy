@@ -31,6 +31,11 @@ DRY_RUN=0 common_init
 # that older code, fails its checks instead of set -u ending the file at the first tuning_grub.
 POH_CORE=""
 
+# The real _cpu_total and _cpu_siblings, kept under other names before the mocks below replace them: the checks of how a box with a hole in
+# its online list is counted and laid out call these.
+eval "$(declare -f _cpu_total | sed '1s/^_cpu_total/_cpu_total_real/')"
+eval "$(declare -f _cpu_siblings | sed '1s/^_cpu_siblings/_cpu_siblings_real/')"
+
 # Parameterized AMD topology: physical core c (c < total/2) -> "c,c+total/2".
 MOCK_TOTAL=48
 _cpu_total()    { echo "$MOCK_TOTAL"; }
@@ -60,6 +65,40 @@ iso() { MOCK_TOTAL=$1 _isolation_compute "$1" "$2"; }   # <total> <xdp count>; s
 echo "== list helpers =="
 check "_expand_list ranges" "$(_expand_list '1-2,10,25-26' | tr '\n' ' ')" "1 2 10 25 26 "
 check "_compress_ranges"    "$(printf '%s\n' 0 1 3 4 5 7 | _compress_ranges)" "0-1,3-5,7"
+
+echo "== _cpu_total counts the CPUs online, not the CPUs of the caller's affinity =="
+# nproc is the CALLER's affinity: on a box booted with isolcpus that is online minus isolated. Box 2, 2026-10-24: nproc 42, nproc --all 48,
+# online 0-47, and phase 2 wrote irqaffinity=0,3-24,27-41 (CPUs 42-47 missing). The stub is that caller; the fixtures are the kernel's list.
+nproc() { echo 42; }
+mkdir -p "$WORK/sys48" "$WORK/sysgap" "$WORK/sysone" "$WORK/sysbad" "$WORK/sysempty" "$WORK/nosys"
+printf '0-47\n' >"$WORK/sys48/online";      printf '0-95\n' >"$WORK/sys48/present"       # present is the decoy: it is not what is online
+printf '0-3,5-7\n' >"$WORK/sysgap/online";  printf '0\n' >"$WORK/sysone/online"
+printf 'not a list\n' >"$WORK/sysbad/online"; : >"$WORK/sysempty/online"
+{ for i in 0 1 2 3 4 5; do printf 'processor\t: %s\n' "$i"; done; } >"$WORK/cpuinfo6"
+cpu_total_at() { CPU_SYSFS_ROOT=$1 PROC_CPUINFO="$WORK/cpuinfo6" _cpu_total_real; }          # <sysfs root>
+check "online 0-47, the caller's affinity cut to 42: 48, not nproc's 42"       "$(cpu_total_at "$WORK/sys48")"    "48"
+check "online 0-3,5-7 (CPU 4 offline): 8 = the highest online CPU + 1"         "$(cpu_total_at "$WORK/sysgap")"   "8"
+check "online 0: 1"                                                             "$(cpu_total_at "$WORK/sysone")"   "1"
+check "no list under the root: /proc/cpuinfo (6), not nproc's 42"              "$(cpu_total_at "$WORK/nosys")"    "6"
+check "a list that is not a list: /proc/cpuinfo (6)"                           "$(cpu_total_at "$WORK/sysbad")"   "6"
+check "an empty list: /proc/cpuinfo (6)"                                       "$(cpu_total_at "$WORK/sysempty")" "6"
+unset -f nproc
+# The real function on this machine, in a process of its own (no mock, no fixture): pinned to CPU 0 with taskset it must still count every CPU
+# that is online. Where one CPU is all there is, nothing can differ, so that is "cannot measure", not a pass.
+if [[ -r /sys/devices/system/cpu/online ]]; then
+    ONLINE=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+    # shellcheck disable=SC2016  # the text is for bash -c, which expands $1
+    REAL='source "$1/lib/common.sh"; source "$1/lib/tuning.sh"; _cpu_total'
+    if [[ "$ONLINE" =~ ^[0-9]+$ ]] && (( ONLINE > 1 )); then
+        check "the real _cpu_total here: the $ONLINE CPUs online"                              "$(bash -c "$REAL" _ "$ROOT" 2>/dev/null)" "$ONLINE"
+        if have taskset; then
+            check "(control) nproc pinned to CPU 0 by taskset says 1: the affinity is cut"      "$(taskset -c 0 nproc 2>/dev/null)" "1"
+            check "the real _cpu_total pinned to CPU 0 by taskset: still $ONLINE"               "$(taskset -c 0 bash -c "$REAL" _ "$ROOT" 2>/dev/null)" "$ONLINE"
+        else FAIL=$((FAIL+1)); printf '  FAIL cannot measure: no taskset on this machine, so the affinity cannot be cut\n'; fi
+    else FAIL=$((FAIL+1)); printf '  FAIL cannot measure: %s CPU online on this machine, so the affinity cannot differ from online\n' "${ONLINE:-?}"; fi
+else
+    printf '  note: no /sys/devices/system/cpu/online here (not Linux): the real-machine checks run on the Linux CI; the fixtures above run everywhere\n'
+fi
 
 echo "== isolation math: the XDP cores and their SMT siblings, from CPU 1 up =="
 iso 48 1;  check "1 xdp/48  set" "$_ISO_SET" "1,25";      check "1 xdp/48  irq" "$_ISO_IRQ" "0,2-24,26-47";    check "1 xdp/48  xdp" "$_ISO_XDP" "1"
@@ -189,6 +228,52 @@ check "old install: reboot re-armed, the stale latch cleared" \
 state_clear reboot_done
 tuning_grub >"$WORK/fresh.out" 2>&1
 check "no reboot gate behind it yet: no 'next planned reboot' line" "$(grep -c 'next planned reboot' "$WORK/fresh.out")" "0"
+
+echo "== phase 2 on a box that already boots with isolcpus: irqaffinity covers every online CPU =="
+# Box 2, 2026-10-24: the caller's affinity is cut to 42 CPUs (nproc 42), the kernel's list says 0-47, and the box has the old isolation in GRUB.
+GI="$WORK/grub_iso"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor isolcpus=domain,managed_irq,1-2,10,25-26,34 nohz_full=1-2,10,25-26,34 rcu_nocbs=1-2,10,25-26,34 irqaffinity=0,3-9,11-24,27-33,35-47"' >"$GI"
+_cpu_total() { _cpu_total_real; }; nproc() { echo 42; }
+MOCK_TOTAL=48; XDP_CORES_COUNT=2; GRUB_FILE="$GI"; CPU_SYSFS_ROOT="$WORK/sys48"
+tuning_resolve_config >/dev/null 2>&1
+check "TUNE_TOTAL: the 48 CPUs online, not the 42 of the caller's affinity" "$TUNE_TOTAL" "48"
+tuning_grub >/dev/null 2>&1
+check "the GRUB line: the XDP cores with their siblings, irqaffinity over all 48 CPUs" "$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GI")" \
+      'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor amd_pstate=passive nvme_core.default_ps_max_latency_us=0 isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26 rcu_nocbs=1-2,25-26 irqaffinity=0,3-24,27-47"'
+check "state: the isolated set and the irqaffinity it recorded" "$(state_get isolated_set)|$(state_get irqaffinity)" "1-2,25-26|0,3-24,27-47"
+unset CPU_SYSFS_ROOT; _cpu_total() { echo "$MOCK_TOTAL"; }; unset -f nproc
+
+echo "== a CPU offline in the middle of the online list (0-9,11-47) =="
+# A kernel's sysfs for a 48-CPU AMD box with CPU 10 offline: no topology directory for it (so _cpu_siblings falls back to the CPU itself), and its
+# sibling 34 lists only itself. The caller's affinity is cut (nproc 41 = 47 online minus 6 isolated). Checked with the REAL _cpu_total and
+# _cpu_siblings; the answers are recorded as the code gives them, including what it does with CPU 10, which is NOT hidden:
+#   - CPU 10 stays in irqaffinity (0..total-1 minus the isolated): a boot parameter may name an offline CPU, so that is harmless;
+#   - KNOWN GAP, v0.1.1 backlog ISOLATION-OFFLINE-CPU: _isolation_compute walks 0..total-1, not the online list, so an offline CPU among the
+#     lowest physical-core primaries can be taken as an XDP core. It needs ten XDP cores here to reach CPU 10; no box and no CI has a hole.
+mkdir -p "$WORK/sysgap48"; printf '0-9,11-47\n' >"$WORK/sysgap48/online"
+for c in $(seq 0 47); do
+    [[ $c == 10 ]] && continue
+    mkdir -p "$WORK/sysgap48/cpu$c/topology"
+    if (( c == 34 )); then sib="34"; elif (( c < 24 )); then sib="$c,$((c + 24))"; else sib="$((c - 24)),$c"; fi
+    printf '%s\n' "$sib" >"$WORK/sysgap48/cpu$c/topology/thread_siblings_list"
+done
+GH="$WORK/grub_hole"
+printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet vendor"' >"$GH"
+( _cpu_total() { _cpu_total_real; }; _cpu_siblings() { _cpu_siblings_real "$@"; }; nproc() { echo 41; }
+  export CPU_SYSFS_ROOT="$WORK/sysgap48" MOCK_TOTAL=48
+  tot=$(_cpu_total)
+  _isolation_compute "$tot" 2;  printf '%s|%s|%s|%s\n' "$tot" "$_ISO_SET" "$_ISO_IRQ" "$_ISO_XDP" >"$WORK/gap_two"
+  _isolation_compute "$tot" 10; printf '%s|%s|%s\n' "$_ISO_SET" "$_ISO_IRQ" "$_ISO_XDP" >"$WORK/gap_ten"
+  XDP_CORES_COUNT=2 GRUB_FILE="$GH" tuning_resolve_config >/dev/null 2>&1
+  XDP_CORES_COUNT=2 GRUB_FILE="$GH" tuning_grub >/dev/null 2>&1 )
+check "online 0-9,11-47, affinity cut to 41: the total is 48 (highest online 47 + 1), not 47 (the number online) and not 41" \
+      "$(cut -d'|' -f1 "$WORK/gap_two")" "48"
+check "2 XDP cores: the isolated set, the irqaffinity (CPU 47 in it) and the XDP cores" "$(cut -d'|' -f2- "$WORK/gap_two")" "1-2,25-26|0,3-24,27-47|1-2"
+check "CPU 47 is in irqaffinity" "$(cut -d'|' -f3 "$WORK/gap_two" | tr ',' '\n' | grep -c '^27-47$')" "1"
+check "AS IT IS: the offline CPU 10 is listed in irqaffinity too (3-24 covers it)" "$(cut -d'|' -f3 "$WORK/gap_two")" "0,3-24,27-47"
+check "the GRUB line over this box: isolcpus 1-2,25-26, irqaffinity 0,3-24,27-47" "$(grep -c 'isolcpus=domain,managed_irq,1-2,25-26 nohz_full=1-2,25-26 rcu_nocbs=1-2,25-26 irqaffinity=0,3-24,27-47"' "$GH")" "1"
+check "KNOWN GAP (v0.1.1, ISOLATION-OFFLINE-CPU): with 10 XDP cores asked the offline CPU 10 is taken as the tenth, its sibling list being just itself" \
+      "$(cut -d'|' -f1,3 "$WORK/gap_ten")" "1-10,25-33|1-10"
 
 echo "== R1: no XDP cores -> nothing isolated, GRUB keeps its two fixed parameters =="
 GN="$WORK/grub_noxdp"; printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0"' 'GRUB_TIMEOUT=5' >"$GN"

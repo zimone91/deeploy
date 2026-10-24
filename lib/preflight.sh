@@ -9,10 +9,10 @@
 # Requires: common.sh and constants.sh already sourced.
 #
 # Testability: every external probe (curl/ping/ss/ethtool/ip/lsblk/findmnt/
-# timedatectl/nproc/uname/systemd-detect-virt/lvs) is a real command call so
+# timedatectl/uname/systemd-detect-virt/lvs) is a real command call so
 # tests can shadow it with a shell function; /proc and /etc/os-release paths
 # are overridable via env (PROC_CPUINFO, PROC_MEMINFO, PROC_MDSTAT,
-# OS_RELEASE_FILE) so tests can point at fixtures.
+# CPU_SYSFS_ROOT, OS_RELEASE_FILE) so tests can point at fixtures.
 # ============================================================================
 
 [[ -n "${_DEEPLOY_PREFLIGHT_SOURCED:-}" ]] && return 0
@@ -228,8 +228,15 @@ _pf_check_platform() {
 
 # --- CPU: cores, AES-NI ------------------------------------------------------
 _pf_check_cpu() {
-    local cpuinfo="${PROC_CPUINFO:-/proc/cpuinfo}" logical model
-    if have nproc; then logical=$(nproc 2>/dev/null); else logical=$(grep -c '^processor' "$cpuinfo" 2>/dev/null || echo 0); fi
+    local cpuinfo="${PROC_CPUINFO:-/proc/cpuinfo}" online="${CPU_SYSFS_ROOT:-/sys/devices/system/cpu}/online" list="" logical model
+    # The online CPUs from the kernel's list, not nproc: nproc counts the CPUs of the caller's affinity, which on a box booted with isolcpus is
+    # online minus isolated (42 of 48 on box 2). /proc/cpuinfo lists the online CPUs too and serves without a usable list.
+    [[ -r "$online" ]] && list=$(cat "$online" 2>/dev/null || true)
+    if [[ "$list" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then
+        logical=$(tr ',' '\n' <<<"$list" | awk -F- '{ n += (NF == 2) ? $2 - $1 + 1 : 1 } END { print n + 0 }')
+    else
+        logical=$(grep -c '^processor' "$cpuinfo" 2>/dev/null || echo 0)
+    fi
     model=$(grep -m1 '^model name' "$cpuinfo" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//' || true)
     info "CPU: ${model:-unknown} (${logical:-0} logical cores)"
     if grep -qm1 '\baes\b' "$cpuinfo" 2>/dev/null; then pf_ok "AES-NI present"

@@ -80,14 +80,39 @@ check "PROBE-RC-ZERO: no os-release, under the production traps -> 'OS is unknow
       "$PRC|$(grep -cE '\[FAIL\] line [0-9]+:' <<<"$POUT")|$(grep -c "OS is 'unknown'" <<<"$POUT")|$(grep -cx 'hard=1' <<<"$POUT")" "0|0|1|1"
 
 echo "== cpu =="
-# nproc IS present on real test hosts (coreutils) and would return the host's core
-# count, overriding the cpuinfo fixture (tripped both boxes in mirror directions).
-# Mock it to count the fixture's processors so the core-count cases are deterministic
-# on any host. (F5)
-nproc() { grep -c '^processor' "${PROC_CPUINFO:-/proc/cpuinfo}" 2>/dev/null || echo 0; }
-reset; PROC_CPUINFO="$CPU_GOOD" PF_MIN_CORES=2 _pf_check_cpu >/dev/null 2>&1; counts "aes + enough cores" 0 0
-reset; PROC_CPUINFO="$CPU_BAD"  PF_MIN_CORES=24 _pf_check_cpu >/dev/null 2>&1; counts "no aes + few cores" 0 2
+# The core count is the CPUs ONLINE, from the kernel's list ($CPU_SYSFS_ROOT/online) or, without one, from the /proc/cpuinfo fixture: never the
+# host's own, and never nproc, which counts the CPUs of the caller's affinity (on a box booted with isolcpus that is online minus isolated:
+# nproc 42, online 0-47 on box 2, 2026-10-24). The stub is a caller whose affinity is cut to one CPU; the roots below keep the host's /sys out. (F5)
+nproc() { echo 1; }
+mkdir -p "$WORK/nosys" "$WORK/sys48" "$WORK/sysgap" "$WORK/sysmix" "$WORK/sysbad"
+printf '0-47\n' >"$WORK/sys48/online";     printf '0-95\n' >"$WORK/sys48/present"          # present is the decoy: it is not what is online
+printf '0-3,5-7\n' >"$WORK/sysgap/online"; printf '0,2-3\n' >"$WORK/sysmix/online"; printf 'not a list\n' >"$WORK/sysbad/online"
+pf_cpu() { CPU_SYSFS_ROOT=$1 PROC_CPUINFO="$2" PF_MIN_CORES=$3 _pf_check_cpu 2>&1; }       # <sysfs root> <cpuinfo> <min cores>
+reset; CPU_SYSFS_ROOT="$WORK/nosys" PROC_CPUINFO="$CPU_GOOD" PF_MIN_CORES=2 _pf_check_cpu >/dev/null 2>&1;  counts "aes + enough cores (no list: the cpuinfo fixture)" 0 0
+reset; CPU_SYSFS_ROOT="$WORK/nosys" PROC_CPUINFO="$CPU_BAD"  PF_MIN_CORES=24 _pf_check_cpu >/dev/null 2>&1; counts "no aes + few cores (no list: the cpuinfo fixture)" 0 2
+reset; CPU_SYSFS_ROOT="$WORK/sys48" PROC_CPUINFO="$CPU_GOOD" PF_MIN_CORES=32 _pf_check_cpu >/dev/null 2>&1; counts "online 0-47, the caller's affinity cut to 1: enough cores" 0 0
+check "and it says 48 logical cores"                                      "$(pf_cpu "$WORK/sys48"  "$CPU_GOOD" 32 | grep -c '(48 logical cores)')" "1"
+check "online 0-3,5-7: 7 logical cores, the number online"               "$(pf_cpu "$WORK/sysgap" "$CPU_GOOD" 32 | grep -c '(7 logical cores)')"  "1"
+check "online 0,2-3: 3 logical cores (a single CPU in the list counts 1)" "$(pf_cpu "$WORK/sysmix" "$CPU_GOOD" 32 | grep -c '(3 logical cores)')"  "1"
+check "a list that is not a list: the cpuinfo fixture (2)"                "$(pf_cpu "$WORK/sysbad" "$CPU_GOOD" 32 | grep -c '(2 logical cores)')"  "1"
+check "no list under the root: the cpuinfo fixture (2), not nproc's 1"    "$(pf_cpu "$WORK/nosys"  "$CPU_GOOD" 32 | grep -c '(2 logical cores)')"  "1"
 unset -f nproc
+# The real function on this machine, in a process of its own: pinned to CPU 0 with taskset it must still count every CPU that is online. With
+# one CPU nothing can differ, so that is "cannot measure", not a pass.
+if [[ -r /sys/devices/system/cpu/online ]]; then
+    ONLINE=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+    # shellcheck disable=SC2016  # the text is for bash -c, which expands $1
+    REAL='source "$1/lib/common.sh"; source "$1/lib/constants.sh"; source "$1/lib/preflight.sh"; DRY_RUN=0 common_init; _PF_HARD=0; _PF_WARN=0; _pf_check_cpu'
+    cores() { sed -n 's/.*(\([0-9][0-9]*\) logical cores).*/\1/p' | head -n 1; }
+    if [[ "$ONLINE" =~ ^[0-9]+$ ]] && (( ONLINE > 1 )); then
+        check "the real _pf_check_cpu here: the $ONLINE CPUs online"                       "$(bash -c "$REAL" _ "$ROOT" 2>&1 | cores)" "$ONLINE"
+        if have taskset; then
+            check "the real _pf_check_cpu pinned to CPU 0 by taskset: still $ONLINE"        "$(taskset -c 0 bash -c "$REAL" _ "$ROOT" 2>&1 | cores)" "$ONLINE"
+        else FAIL=$((FAIL+1)); printf '  FAIL cannot measure: no taskset on this machine, so the affinity cannot be cut\n'; fi
+    else FAIL=$((FAIL+1)); printf '  FAIL cannot measure: %s CPU online on this machine, so the affinity cannot differ from online\n' "${ONLINE:-?}"; fi
+else
+    printf '  note: no /sys/devices/system/cpu/online here (not Linux): the real-machine checks run on the Linux CI; the fixtures above run everywhere\n'
+fi
 
 echo "== memory =="
 reset; PROC_MEMINFO="$MEM_BIG"   _pf_check_memory >/dev/null 2>&1; counts "377 GiB ok"   0 0

@@ -23,7 +23,16 @@ _DEEPLOY_TUNING_SOURCED=1
 TUNING_MANAGED_GRUB_KEYS=(amd_pstate nvme_core.default_ps_max_latency_us isolcpus nohz_full rcu_nocbs irqaffinity)
 
 # --- topology (overridable in tests) -----------------------------------------
-_cpu_total()    { if have nproc; then nproc; else grep -c '^processor' "${PROC_CPUINFO:-/proc/cpuinfo}"; fi; }
+# The CPUs as the callers index them (0..total-1): the highest ONLINE cpu + 1, from the kernel's own list. Not the number of CPUs in the list: with
+# one offline in the middle (online 0-9,11-47) that is 47, and the loops would drop CPU 47. Not nproc either: nproc counts the CPUs of the caller's
+# affinity, and on a box booted with isolcpus that is online minus isolated (42 of 48 on box 2, measured 2026-10-24), so irqaffinity lost CPUs 42-47.
+# Same test root as the topology below; /proc/cpuinfo lists the online CPUs too and serves without a usable list.
+_cpu_total() {
+    local f="${CPU_SYSFS_ROOT:-/sys/devices/system/cpu}/online" list="" last=""
+    [[ -r "$f" ]] && list=$(cat "$f" 2>/dev/null || true)
+    if [[ "$list" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]]; then last=$(_expand_list "$list" | sort -n | tail -1); fi
+    if [[ "$last" =~ ^[0-9]+$ ]]; then echo $((last + 1)); else grep -c '^processor' "${PROC_CPUINFO:-/proc/cpuinfo}"; fi
+}
 _cpu_siblings() {                       # thread_siblings_list for logical cpu $1
     local f="${CPU_SYSFS_ROOT:-/sys/devices/system/cpu}/cpu${1}/topology/thread_siblings_list"
     if [[ -r "$f" ]]; then cat "$f"; else echo "$1"; fi
