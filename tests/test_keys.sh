@@ -232,7 +232,7 @@ check "KEY-MODEL: the connection count of the offbox steps is the printed text's
 echo "== R10-9c: set-identity's refusal is conditional — step c and KEY-MODEL say when =="
 # The client refuses a set-identity without the vote history only while the bank has the Alpenglow genesis
 # certificate, the vote account names the identity being set and it has voted past the genesis slot
-# (core/src/validator.rs 2187-2224, v4.3.2-jito). Step c names that, in both forms, before its commands.
+# (core/src/validator.rs 2233-2270, v4.4.0-rc.1-jito). Step c names that, in both forms, before its commands.
 for form in file offbox; do
     if [[ $form == file ]]; then t=$SWAP_FILE; vp="authorized-voter add /root/solana/mainnet-validator-keypair.json"
     else t=$SWAP_OFF; vp="authorized-voter add' < staked.json"; fi
@@ -247,8 +247,8 @@ check "KEY-MODEL: the refusal is conditional on the vote account, and its text i
 echo "== R10-9d: the cold bring-up waits for lastVote to settle — under Alpenglow it moves after the old node has stopped =="
 # The vote account is written from the reward and finalization certificates in the blocks
 # (runtime/src/block_component_processor/vote_reward.rs 260-286, 325-337), and the block of slot S carries the
-# reward certificate for slot S - 8 (core/src/block_creation_loop/rewards/certs_builder.rs 39,
-# votor-messages/src/reward_certificate.rs 20, v4.3.2-jito): lastVote still moves after the old node has
+# reward certificate for slot S - 8 (core/src/block_creation_loop/rewards/certs_builder.rs 95,
+# votor-messages/src/reward_certificate.rs 20, v4.4.0-rc.1-jito): lastVote still moves after the old node has
 # stopped. The printed cold line asks for a settled lastVote in both forms (checked above, with the line itself);
 # KEY-MODEL asks for it too, and says why.
 check "KEY-MODEL: the cold bring-up waits for lastVote to stop changing, and says why" \

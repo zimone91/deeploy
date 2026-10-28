@@ -599,7 +599,7 @@ _disk_assert_not_mounted() {
 # device that is not there. The point is then a plain directory on the root
 # filesystem, the mkdir after it puts the data directories there, and the paths
 # are recorded. agave creates whatever is missing itself
-# (validator/src/commands/run/args.rs 79-85 at c21f9074), so the validator would
+# (validator/src/commands/run/args.rs 79-85 at c21f9074, the same lines at d545d8c2), so the validator would
 # write its ledger to the system disk without a word. Hence: an empty UUID
 # refuses, and after 'mount -a' each point is asked on its own which device it is
 # mounted from — findmnt given two mount points prints nothing at all.

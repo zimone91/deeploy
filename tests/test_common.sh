@@ -558,32 +558,46 @@ check_true "the recommendation clears the floor"          "deeploy_tag_floor_pro
 check_true "the pin is a version tag"                     "deeploy_tag_version \"\${DEEPLOY_PIN_JITO_TAG:-}\" >/dev/null"
 check_true "the pin is not below the recommendation"      "deeploy_tag_floor_problem \"\${DEEPLOY_PIN_JITO_TAG:-}\" \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-v999.0.0-jito}\" >/dev/null"
 check_true "the pinned commit is 40 hex digits"          "[[ \"\${DEEPLOY_PIN_JITO_COMMIT:-}\" =~ ^[0-9a-f]{40}\$ ]]"
-# The shipped pin as GitHub served it on 2026-10-27 (git/ref/tags/v4.3.2-jito.0 -> tag object 2a95675c -> commit;
+# The shipped pin as GitHub served it on 2026-10-28 (git/ref/tags/v4.4.0-rc.1-jito -> tag object aeb255a5 -> commit;
 # git ls-remote agrees). Literals on purpose: a typo in constants.sh, or one of the two bumped without the other, shows here.
-check "the recommended tag is v4.3.2-jito.0"             "${DEEPLOY_RECOMMENDED_JITO_TAG:-<none>}" "v4.3.2-jito.0"
-check "the pin is v4.3.2-jito.0"                         "${DEEPLOY_PIN_JITO_TAG:-<none>}"         "v4.3.2-jito.0"
-check "the pin is at the commit its tag peels to"        "${DEEPLOY_PIN_JITO_COMMIT:-<none>}"      "7037b4f425e655b8f973ee8ebea9a4de1a85b208"
-check "the pin's -jito.0 suffix parses: Anza base v4.3.2" "$(deeploy_tag_agave_base "${DEEPLOY_PIN_JITO_TAG:-}")" "v4.3.2"
+check "the recommended tag is v4.4.0-rc.1-jito"          "${DEEPLOY_RECOMMENDED_JITO_TAG:-<none>}" "v4.4.0-rc.1-jito"
+check "the pin is v4.4.0-rc.1-jito"                      "${DEEPLOY_PIN_JITO_TAG:-<none>}"         "v4.4.0-rc.1-jito"
+check "the pin is at the commit its tag peels to"        "${DEEPLOY_PIN_JITO_COMMIT:-<none>}"      "d545d8c264cccf8695a262583133a4301a91ba76"
+check "the pin's -rc.1 suffix parses: Anza base v4.4.0-rc.1" "$(deeploy_tag_agave_base "${DEEPLOY_PIN_JITO_TAG:-}")" "v4.4.0-rc.1"
+check "the pin's numeric head is 4 4 0"                  "$(deeploy_tag_version "${DEEPLOY_PIN_JITO_TAG:-}")" "4 4 0"
 RNOTE=$(deeploy_tag_recommendation_note v4.3.0-jito.1); RNRC=$?
 check "below -> rc 0 (a note, not a refusal)" "$RNRC" "0"
 check "below -> one line: tag, recommendation, reason" \
-      "$(grep -c "^v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.3.2" <<<"$RNOTE")" "1"
+      "$(grep -c "^v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.4.0-rc.1" <<<"$RNOTE")" "1"
 # Alpenglow is active on mainnet-beta (epoch 1064): the reason is SFDP's requirement, and no advice "before Alpenglow".
 check "below -> the whole note: SFDP's requirement, nothing about a time before Alpenglow" \
-      "$RNOTE" "v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.3.2 or newer from epoch 1063"
+      "$RNOTE" "v4.3.0-jito.1 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.4.0-rc.1 or newer from epoch 1073"
+# The previous pin is below SFDP's new minimum: it gets the note now.
+RNOTE=$(deeploy_tag_recommendation_note v4.3.2-jito.0)
+check "the previous pin v4.3.2-jito.0 is below the recommendation now" \
+      "$RNOTE" "v4.3.2-jito.0 is below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}: SFDP requires Agave 4.4.0-rc.1 or newer from epoch 1073"
 IJ=$(tr '\n' ' ' <"$ROOT/docs/INSTALL.md" | tr -s ' ')
 check "INSTALL: the recommendation's reason is SFDP's requirement; no 'before Alpenglow' in lib, docs, README or the example conf" \
-      "$(grep -cF 'requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning' <<<"$IJ")|$(grep -rnF 'before Alpenglow' "$ROOT/lib" "$ROOT/docs" "$ROOT/README.md" "$ROOT/deeploy.conf.example" | grep -c .)" "1|0"
+      "$(grep -cF 'requires Agave 4.4.0-rc.1 or newer from epoch 1073. A tag below it gets a warning' <<<"$IJ")|$(grep -rnF 'before Alpenglow' "$ROOT/lib" "$ROOT/docs" "$ROOT/README.md" "$ROOT/deeploy.conf.example" | grep -c .)" "1|0"
 # The docs name what the code ships: the pin (INSTALL) and the recommendation (UPGRADE).
 check "INSTALL: names the shipped pin" \
       "$(grep -cF "pins \`JITO_TAG=\"${DEEPLOY_PIN_JITO_TAG:-?}\"\`" <<<"$IJ")" "1"
 UJ=$(tr '\n' ' ' <"$ROOT/docs/UPGRADE.md" | tr -s ' ')
 check "UPGRADE: names the recommended tag" \
       "$(grep -cF "Below the recommended **${DEEPLOY_RECOMMENDED_JITO_TAG:-?}** it warns" <<<"$UJ")" "1"
-for t in "${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}" v4.3.3-jito v4.4.0-beta.1-jito v5.0.0-jito; do
+for t in "${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.4.0-rc.1-jito}" v4.4.1-jito v5.0.0-jito; do
     TN=$(deeploy_tag_recommendation_note "$t"); TNRC=$?
     check "at or above: $t -> nothing, rc 0" "${TNRC}/${TN}" "0/"
 done
+# The 4.4.0 alpha, beta and rc.0 tags (all of them tags of the repository) are below SFDP's 4.4.0-rc.1, and the note stays silent: the comparison reads MAJOR.MINOR.PATCH only. The docs and the example say so.
+for t in v4.4.0-alpha.2-jito v4.4.0-beta.1-jito v4.4.0-rc.0-jito; do
+    TN=$(deeploy_tag_recommendation_note "$t"); TNRC=$?
+    check "a 4.4.0 prerelease below the requirement ($t) -> no note: the comparison reads MAJOR.MINOR.PATCH only" "${TNRC}/${TN}" "0/"
+done
+check "INSTALL: says the 4.4.0 alpha, beta and rc.0 tags get no warning" \
+      "$(grep -cF 'The comparison reads MAJOR.MINOR.PATCH only, so the 4.4.0 alpha, beta and rc.0 tags, which are below that requirement, get no warning.' <<<"$IJ")" "1"
+check "UPGRADE: says the 4.4.0 alpha, beta and rc.0 tags get no warning" \
+      "$(grep -cF 'The comparison reads MAJOR.MINOR.PATCH only: the 4.4.0 alpha, beta and rc.0 tags get no warning.' <<<"$UJ")" "1"
 TN=$(deeploy_tag_recommendation_note latest); TNRC=$?
 check "garbage -> nothing, rc 0 (refusing it is the floor's job)" "${TNRC}/${TN}" "0/"
 

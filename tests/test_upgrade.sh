@@ -83,7 +83,7 @@ ask() { REPLY="v4.3.0-jito.0"; }
 UPJ=$( ( upgrade_check_releases; echo "CHOSEN $UPGRADE_TAG" ) 2>&1 ); UPJRC=$?
 check "v4.3.0-jito.0 -> proceeds"             "$UPJRC" "0"
 check "v4.3.0-jito.0 -> the choice stands"    "$(lines_with CHOSEN "$UPJ")" "CHOSEN v4.3.0-jito.0"
-# No shape warning; the one warning left is the recommendation (v4.3.0 < 4.3.2).
+# No shape warning; the one warning left is the recommendation (v4.3.0 < 4.4.0).
 check "v4.3.0-jito.0 -> one warning, the recommendation" \
       "$(lines_with WARN "$UPJ" | grep -c "below the recommended ${DEEPLOY_RECOMMENDED_JITO_TAG:-?}")|$(lines_with WARN "$UPJ" | wc -l | tr -d ' ')" "1|1"
 ask() { REPLY="${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}"; }

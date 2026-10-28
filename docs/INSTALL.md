@@ -3,22 +3,28 @@
 Target: a fresh Ubuntu 24.04 x86-64 box (every run so far: 48 threads,
 377 GiB RAM, 2× ~1.92 TB data NVMe + a separate system disk).
 
-**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.2-jito.0"`,
+**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.4.0-rc.1-jito"`,
 and a bare Enter at the install's tag prompt builds the same tag; a run without
 a terminal has to name one. It is also the **recommended** minimum: SFDP
-requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning at
-the build, the upgrade and the render, and the run goes on. The code enforces a
-floor of **v4.2.0-jito**.
+requires Agave 4.4.0-rc.1 or newer from epoch 1073. A tag below it gets a warning at
+the build, the upgrade and the render, and the run goes on. The comparison reads
+MAJOR.MINOR.PATCH only, so the 4.4.0 alpha, beta and rc.0 tags, which are below
+that requirement, get no warning. The code enforces a floor of **v4.2.0-jito**.
 Older clients are refused before the build: where XDP is off, the generated
 `validator.sh` passes `--no-xdp`, which does not exist before 4.2.0, so an
-older binary would go through a whole build (v4.3.2-jito took 724 s on the
-hardware above) and then refuse to start. While the build
+older binary would go through a whole build (a build of v4.3.2-jito took 724 s
+on the hardware above; the shipped pin has not been timed there) and then refuse
+to start. While the build
 is still ahead, the tag is checked before the disk phase erases anything: its
 form, the floor, and that it exists, both in the jito-solana repository and as
 an Anza CLI release for its base. A tag that does not exist, and one that cannot
 be checked, are refused there. After the checkout, the pinned tag must be at its
 pinned commit: if the tag has moved, the build is refused. Any other tag is
 built, and its commit is printed so it can be compared with the release page.
+The build is made from a git checkout of the tag, submodules included: the `src:`
+in `agave-validator --version` is the first eight digits of that commit
+(`src:d545d8c2` for the pin), and a build from a source tarball, or from a
+directory without `.git`, prints a random one.
 
 - **Ideal:** **two separate data NVMe** — `accounts` and `ledger` on *different*
   physical disks. This keeps snapshot packaging and accountsdb writes from
@@ -67,12 +73,12 @@ is isolated, and GRUB gets only `amd_pstate=passive` and
 gate has no set to compare.
 
 CPU 0 is never an XDP core: without `--poh-pinned-cpu-core`, jito-solana
-v4.3.2-jito counts CPU 0 as the PoH core (`poh/src/poh_service.rs` 43) and
+v4.4.0-rc.1-jito counts CPU 0 as the PoH core (`poh/src/poh_service.rs` 43) and
 refuses `--xdp-cpu-cores` that include it (`validator/src/commands/run/execute.rs`
-1515-1532).
+1512-1527).
 
 There is no PoH core to set. After the Alpenglow migration, jito-solana
-v4.3.2-jito does not start PohService (`poh/src/poh_service.rs` 121-129), so
+v4.4.0-rc.1-jito does not start PohService (`poh/src/poh_service.rs` 121-129), so
 there is no PoH thread to pin, and `POH_CORE` is no longer a setting: a
 `deeploy.conf` that still has it gets a warning and the line is ignored.
 
@@ -139,7 +145,7 @@ and the one Jito's BAM validator guide recommends
 Collection").
 SFDP's metric-reporting check used to read one core metric,
 `optimistic_slot.slot`, from that database. Under Alpenglow the validator
-no longer sends it: in jito-solana v4.3.2-jito the metric has one source, the
+no longer sends it: in jito-solana v4.4.0-rc.1-jito the metric has one source, the
 optimistic-confirmation verifier, and the vote listener drops that verifier once
 Alpenglow is enabled. SFDP's API, read on 2026-10-22 for one validator, shows
 `optimistic_slot.slot` for epoch 1060 and the exemption

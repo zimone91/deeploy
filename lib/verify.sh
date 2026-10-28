@@ -70,13 +70,14 @@ _vf_hugepage_fails() {
 }
 _vf_catchup()      { deeploy_catchup_status; }    # two bounded getSlot reads (common.sh)
 # BAM connection attempts in solana.log (R10-8). Each attempt of jito's BAM
-# manager ends in exactly one of three lines (core/src/bam_manager.rs @
-# c21f9074): "Failed to connect to BAM with url" (187), "BAM connection not
-# healthy after waiting for …" (199-203) or "BAM connection established"
-# (210); "BAM connection unhealthy" (222) is a loss after that. The duration in
-# the not-healthy line is a constant (MAX_DURATION_BETWEEN_NODE_HEARTBEATS),
+# manager ends in exactly one of three lines (core/src/bam_manager.rs, the same
+# lines at c21f9074 and d545d8c2): "Failed to connect to BAM with url" (187), "BAM
+# connection not healthy after waiting for …" (199-203) or "BAM connection
+# established" (210); "BAM connection unhealthy" (222) is a loss after that. The
+# duration in the not-healthy line is a constant (MAX_DURATION_BETWEEN_NODE_HEARTBEATS),
 # not the time waited, and is not read. Why an attempt failed is the server's
-# status, logged by core/src/bam_connection.rs 199. solana.log grows ~3 MB/min
+# status, logged by core/src/bam_connection.rs 204 at d545d8c2 (202 at 7037b4f4; this
+# comment gave 199 for c21f9074). solana.log grows ~3 MB/min
 # and rotates daily, so grep -aF picks the lines and awk reads only those. The
 # log's first and last timestamped lines, within 1000 lines of either end,
 # bound the window (a multi-line entry, such as the start line's argument
@@ -152,7 +153,7 @@ verify_isolation() {
     else vf_fail "isolated CPUs = '${actual:-<none>}' but expected '$want' (GRUB not applied / wrong reboot?)"; fi
 }
 
-# After the Alpenglow migration jito-solana 013a4306 does not start PohService
+# After the Alpenglow migration jito-solana d545d8c2 does not start PohService
 # (poh/src/poh_service.rs 121-129: the thread returns before it does any work),
 # and the block creation loop runs in the thread solBlkCreatLoop
 # (core/src/block_creation_loop.rs 107-108). That thread has no CPU pin, so its

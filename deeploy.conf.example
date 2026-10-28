@@ -32,9 +32,10 @@ ACCOUNTS_PATH="/mnt/accounts/solana/accounts"
 SNAPSHOTS_PATH="/root/solana/snapshots"   # rides with the LEDGER disk (I/O isolation)
 
 # --- Build (jito-solana from source) ---
-JITO_TAG="v4.3.2-jito.0"               # see github.com/jito-foundation/jito-solana/releases
-#                                      # RECOMMENDED: v4.3.2-jito.0 or newer (SFDP requires
-#                                      # Agave 4.3.2 from epoch 1063); older tags get a warning
+JITO_TAG="v4.4.0-rc.1-jito"            # see github.com/jito-foundation/jito-solana/releases
+#                                      # RECOMMENDED: v4.4.0-rc.1-jito or newer (SFDP requires
+#                                      # Agave 4.4.0-rc.1 from epoch 1073); tags below 4.4.0 get a
+#                                      # warning, the 4.4.0 alpha, beta and rc.0 tags get none
 #                                      # MINIMUM SUPPORTED: v4.2.0-jito (older
 #                                      # tags lack --no-xdp)
 

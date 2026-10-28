@@ -160,7 +160,7 @@ executed on hardware, the revision you are reading included.
   zero-copy on 2026-10-05. On bnxt_en, which has no zero-copy, metal has not
   seen it.
 - DeePloy sets no PoH core and pins no PoH thread: after the Alpenglow
-  migration, jito-solana 4.3.2-jito does not start PohService
+  migration, jito-solana 4.4.0-rc.1-jito does not start PohService
   (`poh/src/poh_service.rs` 121-129), so there is nothing to pin. Phase 2
   isolates the XDP cores and their SMT siblings only. Over an older install,
   re-running phase 2 strips the old PoH core from GRUB (it takes effect at the

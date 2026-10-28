@@ -231,12 +231,18 @@ _vcfg_render_validator_sh() {
     for k in "${MAINNET_KNOWN_VALIDATORS[@]}"; do known_lines+="  --known-validator \"${k}\""$'\n'; done
     known_lines="${known_lines%$'\n'}"   # strip trailing newline HERE (ANSI-C quoting isn't honored inside a heredoc)
 
+    # One value per occurrence of the flag: jito-solana v4.4.0-rc.1-jito defines it with
+    # multiple(true) and number_of_values(1) (validator/src/commands/jito_args.rs 61-76,
+    # clap 2.33.3), so `--shred-receiver-address "A" "B"` leaves B a stray positional
+    # argument and the validator does not start. The repeated flag parses on v4.3.2-jito.0
+    # too (args.rs 1329-1341, no number_of_values), and means the same: the help of both
+    # names it, and validator/src/shred_receiver_addresses.rs splits every value on commas.
+    shred_line="  --shred-receiver-address \"${SHRED_RECEIVER_ADDRESS}\""
     if [[ "${DZ_ENABLED_RESOLVED:-false}" == "true" ]]; then
-        # DZ enabled -> append the DZ multicast shred address (harmless before the
-        # tunnel is up: no route to it until 'connect multicast', so it just drops).
-        shred_line="  --shred-receiver-address \"${SHRED_RECEIVER_ADDRESS}\" \"${DZ_MULTICAST_SHRED}\""
-    else
-        shred_line="  --shred-receiver-address \"${SHRED_RECEIVER_ADDRESS}\""
+        # DZ enabled -> append the DZ multicast shred address, on a line of its own
+        # (harmless before the tunnel is up: no route to it until 'connect multicast',
+        # so it just drops).
+        shred_line+=$'\n'"  --shred-receiver-address \"${DZ_MULTICAST_SHRED}\""
     fi
 
     if [[ "$MEV_MODE" == "relayer" ]]; then

@@ -22,12 +22,16 @@ DEFAULT_PUBLIC_RPC="https://api.mainnet-beta.solana.com"
 
 # Alpenglow's validator admission ticket (VAT): 0.8 SOL per epoch (at 200 ms
 # slots), burned from the vote account (runtime/src/bank.rs,
-# maybe_burn_vat_from_staked_accounts, jito-solana v4.3.0-jito.1). Once Alpenglow
+# maybe_burn_vat_from_staked_accounts, jito-solana v4.3.0-jito.1; the same body at
+# v4.4.0-rc.1-jito). Once Alpenglow
 # is active the account must hold its rent-exempt minimum plus this
 # (minimum_vote_account_balance_for_vat); before that, the rent alone. Alpenglow is
 # active on mainnet-beta since epoch 1064 (2026-10-21) and DeePloy runs on
 # mainnet-beta only (MAINNET_GENESIS_HASH), so verify always asks for the sum. verify
-# reads the rent from the RPC, never from a constant.
+# reads the rent from the RPC, never from a constant. The node's own check
+# (Bank::get_vat_health_for_next_epoch, runtime/src/bank.rs 3045-3047, logged as "VAT
+# Health Check" by core/src/replay_stage.rs 3218-3233) adds the vote state's
+# pending_delegator_rewards to that sum in v4.4.0-rc.1-jito; verify does not.
 VAT_LAMPORTS_PER_EPOCH=800000000
 
 # A node at most this many slots behind the cluster counts as caught up.
@@ -98,32 +102,37 @@ ALT_PROGRAM_KEY="AddressLookupTab1e1111111111111111111111111"
 DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
 
 # Recommended jito-solana tag. The floor above refuses; this only warns, at the
-# same three checks, and the run goes on. SFDP requires Agave 4.3.2 or newer from
-# epoch 1063 (api.solana.org/api/community/v1/sfdp_required_versions). The note is
-# deeploy_tag_recommendation_note (common.sh): the floor's own comparison, against
-# this tag. It is SFDP's requirement and says nothing of which tags run Alpenglow:
-# votor, the migration code and the vote-history guard are already in the
-# v4.2.0-jito tree.
-DEEPLOY_RECOMMENDED_JITO_TAG="v4.3.2-jito.0"
-DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063"
+# same three checks, and the run goes on. SFDP requires Agave 4.4.0-rc.1 or newer
+# from epoch 1073, whose first slot is 463536000 (api.solana.org/api/community/v1/
+# sfdp_required_versions, read on 2026-10-28: the row for epoch 1073 has
+# agave_min_version 4.4.0-rc.1 and firedancer_full_min_version 26.10.5; epochs
+# 1069-1072 have 4.3.2 and 26.10.4). The note is deeploy_tag_recommendation_note
+# (common.sh): the floor's own comparison, against this tag. It reads MAJOR.MINOR.PATCH
+# only, so a 4.4.0 prerelease of any kind raises no note - the 4.4.0 alpha, beta and
+# rc.0 tags included, which are below SFDP's 4.4.0-rc.1 (backlog RECOMMENDATION-PRERELEASE,
+# v0.1.1). It is SFDP's requirement and says nothing of which tags run Alpenglow:
+# votor, the migration code and the vote-history guard are already in the v4.2.0-jito tree.
+DEEPLOY_RECOMMENDED_JITO_TAG="v4.4.0-rc.1-jito"
+DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.4.0-rc.1 or newer from epoch 1073"
 
 # The shipped pin: the tag deeploy.conf.example names, and the one a bare Enter
 # at the install's tag prompt builds. It may move ahead of the recommendation,
 # never below it (test_common).
-DEEPLOY_PIN_JITO_TAG="v4.3.2-jito.0"
-# The commit it is pinned to. v4.3.2-jito.0 is an annotated tag that peels to it
-# (git ls-remote on 2026-10-27; a build reports its first eight digits, src:7037b4f4).
+DEEPLOY_PIN_JITO_TAG="v4.4.0-rc.1-jito"
+# The commit it is pinned to. v4.4.0-rc.1-jito is an annotated tag that peels to it
+# (git ls-remote on 2026-10-28). A build from a checkout of the tag reports its first
+# eight digits, src:d545d8c2; one from a source tarball reports a random src.
 # A tag can be moved after it was pinned and a commit cannot, so a build of the
 # pin refuses any other commit (toolchain_check_commit). Bump the two together.
-DEEPLOY_PIN_JITO_COMMIT="7037b4f425e655b8f973ee8ebea9a4de1a85b208"
+DEEPLOY_PIN_JITO_COMMIT="d545d8c264cccf8695a262583133a4301a91ba76"
 
 # Public community metrics endpoints (NOT secrets). mainnet-beta is the default:
 # it is the endpoint Anza's cluster docs and Jito's BAM guide give (docs/INSTALL.md,
 # Metrics). SFDP's metric-reporting check used to read one core metric,
 # optimistic_slot.slot, from that database (metrics.solana.com). Under Alpenglow the
-# validator no longer sends it (jito-solana v4.3.2-jito: core/src/
+# validator no longer sends it (jito-solana v4.4.0-rc.1-jito: core/src/
 # optimistic_confirmation_verifier.rs 80 is the datapoint's only source, and
-# core/src/cluster_info_vote_listener.rs 657-660 drops that verifier), and SFDP's API
+# core/src/cluster_info_vote_listener.rs 660-663 drops that verifier), and SFDP's API
 # lists the exemption metric-reporting-ignored for epochs 1062 and 1063 (read
 # 2026-10-22, one validator). The BAM endpoint is an explicit choice,
 # METRICS_TARGET=bam (lib/validatorcfg.sh).

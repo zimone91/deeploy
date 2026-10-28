@@ -108,7 +108,7 @@ iso 32 2;  check "2 xdp/32  set" "$_ISO_SET" "1-2,17-18";  check "2 xdp/32  irq"
 iso 64 2;  check "2 xdp/64  set" "$_ISO_SET" "1-2,33-34";  check "2 xdp/64  irq" "$_ISO_IRQ" "0,3-32,35-63";    check "2 xdp/64  xdp" "$_ISO_XDP" "1-2"
 iso 192 2; check "2 xdp/192 set" "$_ISO_SET" "1-2,97-98";  check "2 xdp/192 irq" "$_ISO_IRQ" "0,3-96,99-191";   check "2 xdp/192 xdp" "$_ISO_XDP" "1-2"
 # CPU 0 stays out: without --poh-pinned-cpu-core the client counts it as the PoH
-# core and refuses XDP cores that include it (execute.rs 1515-1532). Its SMT
+# core and refuses XDP cores that include it (execute.rs 1512-1527). Its SMT
 # sibling is no physical-core primary, so it is no XDP core either.
 cpu_in() { _expand_list "$2" | grep -qx "$1"; }       # <cpu> <list>
 for t in 8 32 48 64 192; do

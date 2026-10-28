@@ -13,5 +13,6 @@ identity and skips its leader slots; prefer the failover path). The previous
 release is kept, so rollback is one symlink flip, behind the same check.
 
 The tag has the install's floor: below **v4.2.0-jito** the upgrade is refused
-before anything is built. Below the recommended **v4.3.2-jito.0** it warns (SFDP
-requires Agave 4.3.2 or newer from epoch 1063) and goes on.
+before anything is built. Below the recommended **v4.4.0-rc.1-jito** it warns (SFDP
+requires Agave 4.4.0-rc.1 or newer from epoch 1073) and goes on. The comparison
+reads MAJOR.MINOR.PATCH only: the 4.4.0 alpha, beta and rc.0 tags get no warning.

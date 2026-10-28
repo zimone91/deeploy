@@ -190,13 +190,13 @@ keys_print_manual() {
 # A hot swap moves the vote history. The old validator stops voting first — and
 # a restart of it must come back unstaked, or two nodes vote — and its
 # vote_history-<staked-pubkey>.bin comes here, into the ledger
-# (votor/src/vote_history_storage.rs 157-165, validator/src/commands/run/
-# execute.rs 590-592, jito-solana v4.3.0-jito.1). Without it the votes the old
+# (votor/src/vote_history_storage.rs 149-157, validator/src/commands/run/
+# execute.rs 590-592, jito-solana v4.4.0-rc.1-jito). Without it the votes the old
 # node cast are unknown here, and this node could cast conflicting ones, so
 # set-identity refuses to take the identity without it — but only while the bank
 # has the Alpenglow genesis certificate, the vote account names the identity being
 # set, and it has voted past the genesis slot (should_require_vote_history_file,
-# core/src/validator.rs 2187-2224, v4.3.2-jito). It does not look at the file when
+# core/src/validator.rs 2233-2270, v4.4.0-rc.1-jito). It does not look at the file when
 # there is no certificate yet, when the vote account names another node, or when it
 # has not voted past the genesis. The client's refusal reads "Unable to load vote
 # history file for identity <pubkey>: <error>. The vote account <vote> has prior
@@ -210,22 +210,22 @@ keys_print_manual() {
 # --do-not-require-vote-history. A hot swap never passes that flag. lastVote is not
 # the old node's last vote: under Alpenglow the vote account is written from the
 # reward and finalization certificates in the blocks (runtime/src/
-# block_component_processor/vote_reward.rs 260-286, 325-337, v4.3.2-jito), and the
+# block_component_processor/vote_reward.rs 260-286, 325-337, v4.4.0-rc.1-jito), and the
 # block of slot S carries the reward certificate for slot S - NUM_SLOTS_FOR_REWARD,
 # 8 (votor-messages/src/reward_certificate.rs 20, core/src/block_creation_loop/
-# rewards/certs_builder.rs 39), so lastVote still moves after the old node has
+# rewards/certs_builder.rs 95), so lastVote still moves after the old node has
 # stopped.
 #
 # The file keeps changing while the old node votes: its votor rewrites it after
 # every vote it casts, a .bin.new written and renamed over it, no fsync (jito-solana
-# v4.3.2-jito, votor/src/: voting_utils.rs 299-303, vote_history_storage.rs
-# 185-199). The rename makes every read a whole file, so a copy taken meanwhile
+# v4.4.0-rc.1-jito, votor/src/: voting_utils.rs 299-303, vote_history_storage.rs
+# 177-191). The rename makes every read a whole file, so a copy taken meanwhile
 # loads, and lacks the votes cast after it was read: the votes this node must know.
 # The admin RPC changes the identity and only then sends votor a SetIdentity event
 # (validator/src/admin_rpc_service.rs 1207-1217), which votor handles later, in its
-# own loop (event_handler.rs 568-581, 667-687); from then on it writes the new
+# own loop (event_handler.rs 548-561, 647-667); from then on it writes the new
 # identity's file and not this one, and says so: "set-identity: from <staked> to
-# ..." (event_handler.rs 684-687). getIdentity is no sign of that, it answers with
+# ..." (event_handler.rs 664-667). getIdentity is no sign of that, it answers with
 # the new identity before the event is sent. Nor is the first line of that kind in
 # the old node's log: an older swap of the same node leaves its own "from <staked>
 # to ..." there, with the switch back onto the staked key above it. Step b therefore
@@ -236,8 +236,8 @@ keys_print_manual() {
 # is 0700 on Ubuntu, so the copy runs through sudo -n at both ends (cat on the old
 # node, tee on this one), not through scp. A copy cut short does not load: in a hot
 # swap set-identity refuses it (admin_rpc_service.rs 1157-1172); the empty history
-# votor takes without a word (event_handler.rs 680-682) is reached only when
-# set-identity did not ask for the file (core/src/validator.rs 2187-2224,
+# votor takes without a word (event_handler.rs 660-662) is reached only when
+# set-identity did not ask for the file (core/src/validator.rs 2233-2270,
 # admin_rpc_service.rs 1148-1174).
 # Step d reads what votor does with it. votor rewrites the file only after it has
 # built a vote (voting_utils.rs 286-303), so a file whose time moves belongs to a
@@ -248,7 +248,7 @@ keys_print_manual() {
 # vote account's (204-219, which also logs "No authorized voter keypair matches",
 # 217). Until step c is done the node is in one of those states on every try, so
 # the log is read backwards, up to its latest set-identity line (event_handler.rs
-# 684-687), which must be the switch to <staked>: what is above that line is not the
+# 664-667), which must be the switch to <staked>: what is above that line is not the
 # swap's. If the latest line is another switch, votor has not handled step c yet; the
 # check says so and counts nothing, for the failed tries below an older switch are
 # the sync identity's, not the swap's. The log is the one validatorcfg renders

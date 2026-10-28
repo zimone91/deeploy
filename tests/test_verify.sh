@@ -229,7 +229,7 @@ export VF_PROC="$P"; state_clear nic_driver
 
 echo "== R10-5: the XDP UMEM's huge pages =="
 # meminfo and solana.log lines as on the rc9 box (§18: chk-18.txt, chk-18b.txt);
-# the start line is the one jito logs first (execute.rs:161).
+# the start line is the one jito logs first (execute.rs:160).
 export VF_MEMINFO="$WORK/meminfo"; mkdir -p "$WORK/solhome"; state_set solana_home "$WORK/solhome"
 meminfo() { printf 'HugePages_Total:    %s\nHugePages_Free:     %s\nHugePages_Rsvd:        0\nHugepagesize:       2048 kB\n' "$1" "$1" >"$VF_MEMINFO"; }
 START='[2026-10-05T14:37:40.101Z INFO  agave_validator::commands::run::execute] Starting validator with: ['
@@ -352,8 +352,9 @@ check "the node's RPC silent -> a WARN that says so" "$(grep -c "not caught up: 
 unset -f curl
 
 echo "== R10-8: BAM connection attempts in the window of solana.log =="
-# Lines in the rc9 box's format (jito c21f9074: core/src/bam_manager.rs 187,
-# 199-203, 210, 222; core/src/bam_connection.rs 199). Times and pubkey are
+# Lines in the rc9 box's format (jito c21f9074, the sites read again at d545d8c2:
+# core/src/bam_manager.rs 187, 199-203, 210, 222; core/src/bam_connection.rs 204
+# at d545d8c2, 202 at 7037b4f4, 199 as cited for c21f9074). Times and pubkey are
 # synthetic. bl <date-time> <kind> [elapsed] [max allowed] prints one line.
 mkdir -p "$WORK/bamhome"; state_set solana_home "$WORK/bamhome"; state_set mev_mode bam
 BLOG="$WORK/bamhome/solana.log"

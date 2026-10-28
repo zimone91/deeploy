@@ -316,6 +316,7 @@ check_true "example: JITO_TAG meets our own floor" "deeploy_tag_floor_problem \"
 check_true "example: JITO_TAG meets the recommendation" "deeploy_tag_floor_problem \"\$JITO_TAG\" \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-v999.0.0-jito}\" >/dev/null"
 check "example: JITO_TAG is the shipped pin"       "$JITO_TAG" "${DEEPLOY_PIN_JITO_TAG:-<no pin>}"
 check "example: the comment names the recommendation" "$(grep -cF "RECOMMENDED: ${DEEPLOY_RECOMMENDED_JITO_TAG:-?} or newer" "$EX")" "1"
+check "example: the comment says the 4.4.0 alpha, beta and rc.0 tags get no warning" "$(grep -cF 'the 4.4.0 alpha, beta and rc.0 tags get none' "$EX")" "1"
 check "example: JITO_TAG matches the file"         "$JITO_TAG" "$(sed -n 's/^JITO_TAG="\([^"]*\)".*/\1/p' "$EX")"
 # Phase 4's own toolchain_anza_cli, dry-run, on the tag the parser just read. The
 # expected name is derived here, independently: the tag with -jito[.N] cut off.

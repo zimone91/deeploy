@@ -171,11 +171,31 @@ state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xd
 # to state_get dz_enabled. dz_enabled=true -> both shred addresses.
 state_set dz_enabled true; unset DZ_ENABLED DZ_MULTICAST; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "dz_enabled=true: BOTH shred addrs (jito + DZ multicast)" "$(grep -c -- "--shred-receiver-address \"74.118.140.240:1002\" \"$DZ_MULTICAST_SHRED\"" <<<"$V")" "1"
+# One value per flag occurrence (v4.4: number_of_values(1)). A flag line with a second value - after one space, several or a tab, quoted or bare - is the
+# form that keeps a v4.4 validator from starting. A lone backslash at the end of a line (a continuation) is no value.
+TWO_VALUES='^[[:space:]]+--[a-z0-9-]+[[:space:]]+("[^"]*"|[^[:space:]"\\][^[:space:]"]*)[[:space:]]+("[^"]*"|[^[:space:]"\\][^[:space:]"]*)'
+two_values() { grep -cE -- "$TWO_VALUES"; }              # lines on stdin -> how many carry two values
+check "the two-values check sees A B after one space"      "$(printf '  --flag "A" "B"\n' | two_values)" "1"
+check "the two-values check sees A B after two spaces"     "$(printf '  --flag "A"  "B"\n' | two_values)" "1"
+check "the two-values check sees A B after a tab"          "$(printf '  --flag "A"\t"B"\n' | two_values)" "1"
+check "the two-values check sees bare values"              "$(printf '  --flag A B\n' | two_values)" "1"
+check "the two-values check sees a line indented by a tab" "$(printf '\t--flag "A" "B"\n' | two_values)" "1"
+check "the two-values check: one value is no hit"          "$(printf '  --flag "A"\n' | two_values)" "0"
+check "the two-values check: a bare flag is no hit"        "$(printf '  --no-xdp\n' | two_values)" "0"
+check "the two-values check: a continuation backslash is no value" "$(printf '  --flag "A" \\\n' | two_values)" "0"
+# v4.4.0-rc.1-jito takes ONE value per occurrence of the flag (jito_args.rs: multiple(true) + number_of_values(1)):
+# `--shred-receiver-address "A" "B"` is a clap error there, a crash loop under systemd. The flag is repeated, one
+# line per address, the jito address first (v4.3.2-jito.0 takes either form).
+check "dz_enabled=true: the jito address on a line of its own" "$(grep -c -- "^  --shred-receiver-address \"74.118.140.240:1002\"\$" <<<"$V")" "1"
+check "dz_enabled=true: the DZ multicast address on a line of its own" "$(grep -c -- "^  --shred-receiver-address \"$DZ_MULTICAST_SHRED\"\$" <<<"$V")" "1"
+check "dz_enabled=true: the flag is repeated, the jito address first" \
+      "$(grep -c -- '--shred-receiver-address' <<<"$V")|$(grep -- '--shred-receiver-address' <<<"$V" | sed -n 1p | grep -c '74.118.140.240:1002')|$(grep -- '--shred-receiver-address' <<<"$V" | sed -n 2p | grep -c "$DZ_MULTICAST_SHRED")" "2|1|1"
+check "dz_enabled=true: no flag line carries two values" "$(two_values <<<"$V")" "0"
 # dz_enabled=false -> ONLY the Jito primary, no DZ multicast address.
 state_set dz_enabled false; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
-check "dz_enabled=false: only Jito primary"  "$(grep -c -- "--shred-receiver-address \"74.118.140.240:1002\"\$" <<<"$V")" "1"
+check "dz_enabled=false: only Jito primary"  "$(grep -c -- "--shred-receiver-address \"74.118.140.240:1002\"\$" <<<"$V")|$(grep -c -- '--shred-receiver-address' <<<"$V")" "1|1"
+check "dz_enabled=false: no flag line carries two values" "$(two_values <<<"$V")" "0"
 check "dz_enabled=false: NO DZ multicast addr" "$(grep -c -- "$DZ_MULTICAST_SHRED" <<<"$V")" "0"
 
 echo "== validator.sh: relayer mode flips url + commission =="
@@ -357,8 +377,8 @@ state_clear metrics_target
 MEV_MODE=bam validatorcfg_resolve_config >/dev/null 2>&1   # restore clean globals
 
 echo "== metrics: the docs do not claim that SFDP reads optimistic_slot today =="
-# Under Alpenglow the validator no longer sends optimistic_slot (jito-solana v4.3.2-jito: the datapoint has one
-# source, core/src/optimistic_confirmation_verifier.rs 80, and core/src/cluster_info_vote_listener.rs 657-660
+# Under Alpenglow the validator no longer sends optimistic_slot (jito-solana v4.4.0-rc.1-jito: the datapoint has one
+# source, core/src/optimistic_confirmation_verifier.rs 80, and core/src/cluster_info_vote_listener.rs 660-663
 # drops that verifier); SFDP's API, read 2026-10-22, lists metric-reporting-ignored for epochs 1062 and 1063.
 # So the default stays mainnet-beta on Anza's and Jito's word, and the check on optimistic_slot is history.
 MET=$(awk '/^## Metrics$/ {on = 1; next} /^## / {on = 0} on' "$ROOT/docs/INSTALL.md")
