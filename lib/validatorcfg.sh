@@ -101,9 +101,17 @@ validatorcfg_resolve_config() {
     [[ -z "$_mev_missing" ]] || fail "MEV endpoints unset (${_mev_missing# }) — the region scan likely failed. Set them in deeploy.conf / env (or re-run 'import --rescore'). Refusing to render a validator with empty MEV flags — it would crash-loop at start."
     # commission-bps: mode-derived DEFAULT (bam->0, relayer->1000) but PROMPTED
     # at install so the operator can override — never set silently (0 is required
-    # by many pools, but some want otherwise).
-    local commission_default=0
+    # by many pools, but some want otherwise). On a re-run the default is the
+    # operator's own commission from the last run (state commission_bps, written
+    # below), so Enter keeps it; a stored value that is no longer valid is
+    # ignored and the mode default applies. COMMISSION_BPS from env or
+    # deeploy.conf still skips the prompt and wins over the stored value.
+    local commission_default=0 stored_commission
     [[ "$MEV_MODE" == "relayer" ]] && commission_default=1000
+    stored_commission="$(state_get commission_bps "")"
+    if [[ -n "$stored_commission" ]] && _cfg_validate_type bps "$stored_commission"; then
+        commission_default="$stored_commission"
+    fi
     if [[ -z "${COMMISSION_BPS:-}" ]]; then
         ask "Validator MEV commission in bps (0 is required by many pools)" "$commission_default"
         COMMISSION_BPS="$REPLY"

@@ -179,6 +179,8 @@ check "dz_enabled=false: only Jito primary"  "$(grep -c -- "--shred-receiver-add
 check "dz_enabled=false: NO DZ multicast addr" "$(grep -c -- "$DZ_MULTICAST_SHRED" <<<"$V")" "0"
 
 echo "== validator.sh: relayer mode flips url + commission =="
+# nothing stored, so the mode default applies (a stored commission would win: U4 below)
+state_clear commission_bps
 MEV_MODE=relayer; state_set dz_enabled false; unset COMMISSION_BPS; validatorcfg_resolve_config
 V=$(_vcfg_render_validator_sh)
 check "relayer-url present"     "$(grep -c -- '--relayer-url ' <<<"$V")" "1"
@@ -188,6 +190,66 @@ check "commission-bps 1000"     "$(grep -c -- '--commission-bps "1000"' <<<"$V")
 COMMISSION_BPS=700; MEV_MODE=bam; validatorcfg_resolve_config
 check "explicit commission 700 kept" "$COMMISSION_BPS" "700"
 unset COMMISSION_BPS
+
+echo "== U4: a re-run offers the operator's stored commission as the prompt default =="
+# u4_run <mev mode> <reply> [env COMMISSION_BPS]: resolve in a subshell with the prompt mocked and print
+# "rc|commission|questions asked|the --commission-bps argument validator.sh gets". <reply> empty = Enter (the default
+# the prompt offered is the answer), otherwise the typed value. The state dir is shared and every run writes the
+# resolved value back, so each case sets commission_bps first.
+# SC2030/SC2031: the prompt mock and the COMMISSION_BPS/MEV_MODE tweaks are deliberately subshell-local.
+# shellcheck disable=SC2030,SC2031
+u4_run() {
+    local mode=$1 reply=$2 env_bps=${3:-}
+    (
+        MEV_MODE=$mode; ASKED=0
+        ask() { ASKED=$((ASKED + 1)); if [[ -n "$reply" ]]; then REPLY="$reply"; else REPLY="$2"; fi; }
+        if [[ -n "$env_bps" ]]; then COMMISSION_BPS=$env_bps; else unset COMMISSION_BPS; fi
+        validatorcfg_resolve_config >/dev/null 2>&1; rc=$?
+        printf '%s|%s|%s|%s' "$rc" "${COMMISSION_BPS:-}" "$ASKED" "$(_vcfg_render_validator_sh 2>/dev/null | grep -o -- '--commission-bps "[^"]*"')"
+    )
+}
+state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""; state_set dz_enabled false
+# (a) the stored value is the default: Enter keeps it
+state_set commission_bps 500
+check "U4a: bam, stored 500, Enter -> 500 (one question, validator.sh carries it)" "$(u4_run bam '')" '0|500|1|--commission-bps "500"'
+check "U4a: the state keeps 500"                                                   "$(state_get commission_bps "")" "500"
+state_set commission_bps 500
+check "U4a: relayer, stored 500, Enter -> 500 (the stored value, not 1000)"        "$(u4_run relayer '')" '0|500|1|--commission-bps "500"'
+# (b) a typed value replaces it
+state_set commission_bps 500
+check "U4b: stored 500, typed 800 -> 800"                                          "$(u4_run bam 800)" '0|800|1|--commission-bps "800"'
+check "U4b: the state follows to 800"                                              "$(state_get commission_bps "")" "800"
+# (c) nothing stored: the mode default, as before
+state_clear commission_bps
+check "U4c: bam, nothing stored, Enter -> 0"                                       "$(u4_run bam '')" '0|0|1|--commission-bps "0"'
+state_clear commission_bps
+check "U4c: relayer, nothing stored, Enter -> 1000"                                "$(u4_run relayer '')" '0|1000|1|--commission-bps "1000"'
+# (d) a stored value that is no longer valid is ignored: the mode default, and Enter does not fail the run
+for bad in abc 20000 -5 1e3; do
+    state_set commission_bps "$bad"
+    check "U4d: bam, stored '$bad' (invalid), Enter -> 0, the run does not fail"    "$(u4_run bam '')" '0|0|1|--commission-bps "0"'
+done
+state_set commission_bps abc
+check "U4d: relayer, stored 'abc' (invalid), Enter -> 1000"                        "$(u4_run relayer '')" '0|1000|1|--commission-bps "1000"'
+state_set commission_bps ""
+check "U4d: bam, stored empty, Enter -> 0"                                         "$(u4_run bam '')" '0|0|1|--commission-bps "0"'
+# (e) COMMISSION_BPS from env or deeploy.conf wins over the stored value and skips the question
+state_set commission_bps 500
+check "U4e: env COMMISSION_BPS=300 with stored 500 -> 300, no question"            "$(u4_run bam '' 300)" '0|300|0|--commission-bps "300"'
+# (f) the non-interactive run (the log's noninteractive=1) takes the stored value without a question, through the real ask
+state_set commission_bps 500; unset COMMISSION_BPS; MEV_MODE=bam
+NONINTERACTIVE=1 validatorcfg_resolve_config >"$WORK/u4f.out" 2>&1; U4F_RC=$?
+# shellcheck disable=SC2031
+check "U4f: non-interactive, stored 500 -> 500, the run succeeds"                  "$U4F_RC|$COMMISSION_BPS" "0|500"
+check "U4f: ... and no question was printed"                                       "$(grep -c 'Validator MEV commission' "$WORK/u4f.out")" "0"
+unset COMMISSION_BPS
+# (g) the real prompt: it shows the stored value as its default, and Enter keeps it
+state_set commission_bps 500
+# shellcheck disable=SC2031
+U4G=$(printf '\n' | { NONINTERACTIVE=0; unset COMMISSION_BPS; MEV_MODE=bam; validatorcfg_resolve_config 2>&1; printf '\nRESULT=%s\n' "$COMMISSION_BPS"; })
+check "U4g: the prompt offers [500]"                                               "$(grep -c 'Validator MEV commission.*\[500\]' <<<"$U4G")" "1"
+check "U4g: Enter keeps 500"                                                       "$(grep -c '^RESULT=500$' <<<"$U4G")" "1"
+state_clear commission_bps; unset COMMISSION_BPS; MEV_MODE=bam
 
 echo "== N9: COMMISSION_BPS bounded 0-10000 — at prompt, env, and the render gate =="
 seed; state_set retransmit_supported 0; state_set retransmit_zero_copy 0; state_set xdp_cores ""
