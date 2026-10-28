@@ -104,18 +104,18 @@ DEEPLOY_MIN_JITO_TAG="v4.2.0-jito"
 # this tag. It is SFDP's requirement and says nothing of which tags run Alpenglow:
 # votor, the migration code and the vote-history guard are already in the
 # v4.2.0-jito tree.
-DEEPLOY_RECOMMENDED_JITO_TAG="v4.3.2-jito"
+DEEPLOY_RECOMMENDED_JITO_TAG="v4.3.2-jito.0"
 DEEPLOY_RECOMMENDED_JITO_WHY="SFDP requires Agave 4.3.2 or newer from epoch 1063"
 
 # The shipped pin: the tag deeploy.conf.example names, and the one a bare Enter
 # at the install's tag prompt builds. It may move ahead of the recommendation,
 # never below it (test_common).
-DEEPLOY_PIN_JITO_TAG="v4.3.2-jito"
-# The commit it is pinned to. v4.3.2-jito is an annotated tag that peels to it
-# (git ls-remote on 2026-10-19; the box's 4.3.2 build reports src:013a4306).
+DEEPLOY_PIN_JITO_TAG="v4.3.2-jito.0"
+# The commit it is pinned to. v4.3.2-jito.0 is an annotated tag that peels to it
+# (git ls-remote on 2026-10-27; a build reports its first eight digits, src:7037b4f4).
 # A tag can be moved after it was pinned and a commit cannot, so a build of the
 # pin refuses any other commit (toolchain_check_commit). Bump the two together.
-DEEPLOY_PIN_JITO_COMMIT="013a4306f585cbd213ee5071550339af766f930c"
+DEEPLOY_PIN_JITO_COMMIT="7037b4f425e655b8f973ee8ebea9a4de1a85b208"
 
 # Public community metrics endpoints (NOT secrets). mainnet-beta is the default:
 # it is the endpoint Anza's cluster docs and Jito's BAM guide give (docs/INSTALL.md,

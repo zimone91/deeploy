@@ -72,7 +72,7 @@ _compress_ranges() {
 #   No XDP cores means nothing is isolated: all three are empty.
 #
 #   There is no PoH core. Under Alpenglow the pinned client (jito-solana
-#   013a4306 = v4.3.2-jito) logs "Post Alpenglow migration, not starting
+#   7037b4f4 = v4.3.2-jito.0) logs "Post Alpenglow migration, not starting
 #   PohService" and returns (poh/src/poh_service.rs 121-129), so the CPU pin
 #   after it (155-165) is never reached. What is left of --poh-pinned-cpu-core
 #   is the check that --xdp-cpu-cores does not include the PoH core
@@ -80,6 +80,8 @@ _compress_ranges() {
 #   core is CPU 0 on Linux (DEFAULT_PINNED_CPU_CORE = Some(0), poh_service.rs
 #   43), so CPU 0 is never an XDP core: the loop starts at CPU 1, and CPU 0's
 #   own SMT sibling is no physical-core primary.
+#   (The lines cited above were read at 013a4306 = v4.3.2-jito; poh_service.rs
+#   and execute.rs are byte-identical at 7037b4f4 = v4.3.2-jito.0.)
 _isolation_compute() {
     local total=$1 xdp=${2:-0} c primary x count=0
     local -a isolated=() xdp_primaries=()

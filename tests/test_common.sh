@@ -558,6 +558,12 @@ check_true "the recommendation clears the floor"          "deeploy_tag_floor_pro
 check_true "the pin is a version tag"                     "deeploy_tag_version \"\${DEEPLOY_PIN_JITO_TAG:-}\" >/dev/null"
 check_true "the pin is not below the recommendation"      "deeploy_tag_floor_problem \"\${DEEPLOY_PIN_JITO_TAG:-}\" \"\${DEEPLOY_RECOMMENDED_JITO_TAG:-v999.0.0-jito}\" >/dev/null"
 check_true "the pinned commit is 40 hex digits"          "[[ \"\${DEEPLOY_PIN_JITO_COMMIT:-}\" =~ ^[0-9a-f]{40}\$ ]]"
+# The shipped pin as GitHub served it on 2026-10-27 (git/ref/tags/v4.3.2-jito.0 -> tag object 2a95675c -> commit;
+# git ls-remote agrees). Literals on purpose: a typo in constants.sh, or one of the two bumped without the other, shows here.
+check "the recommended tag is v4.3.2-jito.0"             "${DEEPLOY_RECOMMENDED_JITO_TAG:-<none>}" "v4.3.2-jito.0"
+check "the pin is v4.3.2-jito.0"                         "${DEEPLOY_PIN_JITO_TAG:-<none>}"         "v4.3.2-jito.0"
+check "the pin is at the commit its tag peels to"        "${DEEPLOY_PIN_JITO_COMMIT:-<none>}"      "7037b4f425e655b8f973ee8ebea9a4de1a85b208"
+check "the pin's -jito.0 suffix parses: Anza base v4.3.2" "$(deeploy_tag_agave_base "${DEEPLOY_PIN_JITO_TAG:-}")" "v4.3.2"
 RNOTE=$(deeploy_tag_recommendation_note v4.3.0-jito.1); RNRC=$?
 check "below -> rc 0 (a note, not a refusal)" "$RNRC" "0"
 check "below -> one line: tag, recommendation, reason" \
@@ -568,6 +574,12 @@ check "below -> the whole note: SFDP's requirement, nothing about a time before 
 IJ=$(tr '\n' ' ' <"$ROOT/docs/INSTALL.md" | tr -s ' ')
 check "INSTALL: the recommendation's reason is SFDP's requirement; no 'before Alpenglow' in lib, docs, README or the example conf" \
       "$(grep -cF 'requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning' <<<"$IJ")|$(grep -rnF 'before Alpenglow' "$ROOT/lib" "$ROOT/docs" "$ROOT/README.md" "$ROOT/deeploy.conf.example" | grep -c .)" "1|0"
+# The docs name what the code ships: the pin (INSTALL) and the recommendation (UPGRADE).
+check "INSTALL: names the shipped pin" \
+      "$(grep -cF "pins \`JITO_TAG=\"${DEEPLOY_PIN_JITO_TAG:-?}\"\`" <<<"$IJ")" "1"
+UJ=$(tr '\n' ' ' <"$ROOT/docs/UPGRADE.md" | tr -s ' ')
+check "UPGRADE: names the recommended tag" \
+      "$(grep -cF "Below the recommended **${DEEPLOY_RECOMMENDED_JITO_TAG:-?}** it warns" <<<"$UJ")" "1"
 for t in "${DEEPLOY_RECOMMENDED_JITO_TAG:-v4.3.2-jito}" v4.3.3-jito v4.4.0-beta.1-jito v5.0.0-jito; do
     TN=$(deeploy_tag_recommendation_note "$t"); TNRC=$?
     check "at or above: $t -> nothing, rc 0" "${TNRC}/${TN}" "0/"

@@ -194,6 +194,14 @@ check "the pin at another commit -> refused, both named, nothing recorded" "$(li
 OUT=$(commit_check v4.3.3-jito "$OTHER")
 check "another tag -> built, its commit named and recorded" "$(lines_with CHECKED "$OUT")|$(grep -c "v4.3.3-jito is commit ${OTHER}" <<<"$OUT")|$(state_get jito_commit '<none>')" "CHECKED rc=0|1|${OTHER}"
 state_clear jito_commit
+# A half bump: the pin's tag at the commit of the previous pin (v4.3.2-jito, 013a4306, until 2026-10-27) is refused,
+# and that old tag is just another tag now.
+PREVC=013a4306f585cbd213ee5071550339af766f930c
+OUT=$(commit_check "$PIN" "$PREVC")
+check "the pin at the previous pin's commit -> refused, nothing recorded" "$(lines_with CHECKED "$OUT")|$(grep -c "it checks out ${PREVC}, not the pinned ${PINC}" <<<"$OUT")|$(state_get jito_commit '<none>')" "|1|<none>"
+OUT=$(commit_check v4.3.2-jito "$PREVC")
+check "the previous pin's tag is another tag now -> built, its commit named and recorded" "$(lines_with CHECKED "$OUT")|$(grep -c "v4.3.2-jito is commit ${PREVC}" <<<"$OUT")|$(state_get jito_commit '<none>')" "CHECKED rc=0|1|${PREVC}"
+state_clear jito_commit
 OUT=$(commit_check "$PIN" "")
 check "no commit from rev-parse -> refused" "$(lines_with CHECKED "$OUT")|$(grep -c 'could not read the commit' <<<"$OUT")" "|1"
 OUT=$( ( DRY_RUN=1; commit_check "$PIN" "$OTHER" ) )

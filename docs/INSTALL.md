@@ -3,7 +3,7 @@
 Target: a fresh Ubuntu 24.04 x86-64 box (every run so far: 48 threads,
 377 GiB RAM, 2× ~1.92 TB data NVMe + a separate system disk).
 
-**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.2-jito"`,
+**Client:** the shipped `deeploy.conf.example` pins `JITO_TAG="v4.3.2-jito.0"`,
 and a bare Enter at the install's tag prompt builds the same tag; a run without
 a terminal has to name one. It is also the **recommended** minimum: SFDP
 requires Agave 4.3.2 or newer from epoch 1063. A tag below it gets a warning at
